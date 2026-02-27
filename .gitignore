@@ -21,19 +21,22 @@ venv/
 env/
 ENV/
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# Project/user runtime data
+Projects/
+.checkout_records.json
+settings.json
+projects.json
+.doc_control_history.csv
+.app_settings.json
+.projects.json
 
-# Unit test / coverage reports
+# Test / tooling caches
 .pytest_cache/
 .coverage
 .coverage.*
 htmlcov/
 .tox/
 .nox/
-
-# Type checkers / linters
 .mypy_cache/
 .pyre/
 .ruff_cache/
@@ -42,12 +45,6 @@ htmlcov/
 *.qrc.depends
 *.qm
 *.jsc
-
-# Local app state / project runtime data
-.checkout_records.json
-.projects.json
-.app_settings.json
-.doc_control_history.csv
 
 # IDE/editor
 .vscode/
@@ -58,3 +55,5 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+change-document-overhaul-001.md
