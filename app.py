@@ -158,12 +158,13 @@ class DocumentControlApp(QMainWindow):
 
         splitter = QSplitter(Qt.Horizontal)
 
-        source_panel = QWidget()
-        source_layout = QVBoxLayout(source_panel)
-        source_layout.addWidget(QLabel("Tracked Source Directories"))
+        tracked_panel = QWidget()
+        tracked_layout = QVBoxLayout(tracked_panel)
+        tracked_layout.addWidget(QLabel("Tracked Source Directories"))
         self.source_roots_list = QListWidget()
         self.source_roots_list.currentItemChanged.connect(self._on_source_root_changed)
-        source_layout.addWidget(self.source_roots_list)
+        self.source_roots_list.setMinimumWidth(220)
+        tracked_layout.addWidget(self.source_roots_list)
 
         source_button_bar = QHBoxLayout()
         add_source_btn = QPushButton("Track Dir")
@@ -172,18 +173,24 @@ class DocumentControlApp(QMainWindow):
         remove_source_btn.clicked.connect(self._remove_source_directory)
         source_button_bar.addWidget(add_source_btn)
         source_button_bar.addWidget(remove_source_btn)
-        source_layout.addLayout(source_button_bar)
+        tracked_layout.addLayout(source_button_bar)
 
-        source_layout.addWidget(QLabel("Directory Browser"))
+        directory_panel = QWidget()
+        directory_layout = QVBoxLayout(directory_panel)
+        directory_layout.addWidget(QLabel("Directory Browser"))
         self.directory_model = QFileSystemModel()
         self.directory_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot)
-        self.directory_model.setRootPath("")
+        self.directory_model.setRootPath(str(APP_ROOT))
         self.directory_tree = QTreeView()
         self.directory_tree.setModel(self.directory_model)
+        self.directory_tree.setAnimated(False)
+        self.directory_tree.setUniformRowHeights(True)
         self.directory_tree.clicked.connect(self._on_directory_selected)
+        self.directory_tree.setMinimumWidth(300)
+        self.directory_tree.setMinimumHeight(260)
         for column in range(1, 4):
             self.directory_tree.hideColumn(column)
-        source_layout.addWidget(self.directory_tree, stretch=1)
+        directory_layout.addWidget(self.directory_tree, stretch=1)
 
         files_panel = QWidget()
         files_layout = QVBoxLayout(files_panel)
@@ -222,10 +229,11 @@ class DocumentControlApp(QMainWindow):
         self.history_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         history_layout.addWidget(self.history_table, stretch=1)
 
-        splitter.addWidget(source_panel)
+        splitter.addWidget(tracked_panel)
+        splitter.addWidget(directory_panel)
         splitter.addWidget(files_panel)
         splitter.addWidget(history_panel)
-        splitter.setSizes([280, 420, 420])
+        splitter.setSizes([240, 340, 420, 360])
 
         layout.addWidget(splitter, stretch=1)
         return group
@@ -578,15 +586,19 @@ class DocumentControlApp(QMainWindow):
             self.current_folder_label.setText("Current folder: -")
             self.files_list.clear()
             self.history_table.setRowCount(0)
-            self.directory_tree.setRootIndex(self.directory_model.index(""))
+            self._set_directory_tree_root(None)
+
+    def _set_directory_tree_root(self, root_path: Optional[Path]) -> None:
+        target = root_path if root_path is not None else APP_ROOT
+        model_index = self.directory_model.setRootPath(str(target))
+        self.directory_tree.setRootIndex(model_index)
+        self.directory_tree.setCurrentIndex(model_index)
 
     def _on_source_root_changed(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
         if not current:
             return
         root_path = Path(str(current.data(Qt.UserRole)))
-        model_index = self.directory_model.index(str(root_path))
-        self.directory_tree.setRootIndex(model_index)
-        self.directory_tree.setCurrentIndex(model_index)
+        self._set_directory_tree_root(root_path)
         self._set_current_directory(root_path)
 
     def _set_current_directory(self, directory: Path) -> None:
