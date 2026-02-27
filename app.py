@@ -224,6 +224,23 @@ class DocumentControlApp(QMainWindow):
         file_button_bar.addStretch()
         files_layout.addLayout(file_button_bar)
 
+        controlled_panel = QWidget()
+        controlled_layout = QVBoxLayout(controlled_panel)
+        controlled_layout.addWidget(QLabel("Directory's Controlled Files"))
+        self.controlled_files_list = QListWidget()
+        self.controlled_files_list.setSelectionMode(QListWidget.ExtendedSelection)
+        controlled_layout.addWidget(self.controlled_files_list, stretch=1)
+
+        controlled_button_bar = QHBoxLayout()
+        refresh_controlled_btn = QPushButton("Refresh")
+        refresh_controlled_btn.clicked.connect(self._refresh_controlled_files)
+        force_checkin_btn = QPushButton("Force Check In")
+        force_checkin_btn.clicked.connect(self._force_checkin_selected)
+        controlled_button_bar.addWidget(refresh_controlled_btn)
+        controlled_button_bar.addWidget(force_checkin_btn)
+        controlled_button_bar.addStretch()
+        controlled_layout.addLayout(controlled_button_bar)
+
         history_panel = QWidget()
         history_layout = QVBoxLayout(history_panel)
         history_layout.addWidget(QLabel("Document History"))
@@ -239,8 +256,9 @@ class DocumentControlApp(QMainWindow):
         splitter.addWidget(tracked_panel)
         splitter.addWidget(directory_panel)
         splitter.addWidget(files_panel)
+        splitter.addWidget(controlled_panel)
         splitter.addWidget(history_panel)
-        splitter.setSizes([240, 340, 420, 360])
+        splitter.setSizes([220, 280, 300, 280, 300])
 
         layout.addWidget(splitter, stretch=1)
         return group
@@ -688,6 +706,7 @@ class DocumentControlApp(QMainWindow):
     def _refresh_source_files(self) -> None:
         self.files_list.clear()
         if not self.current_directory or not self.current_directory.is_dir():
+            self.controlled_files_list.clear()
             return
 
         for item in sorted(self.current_directory.iterdir()):
@@ -697,7 +716,25 @@ class DocumentControlApp(QMainWindow):
                 list_item.setToolTip(str(item))
                 self.files_list.addItem(list_item)
 
+        self._refresh_controlled_files()
         self._refresh_selected_file_history()
+
+    def _refresh_controlled_files(self) -> None:
+        self.controlled_files_list.clear()
+        if not self.current_directory or not self.current_directory.is_dir():
+            return
+
+        for entry in self._checked_out_files_for_directory(self.current_directory):
+            label = entry["file_name"]
+            if entry["initials"]:
+                label = f"{label} ({entry['initials']})"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, entry)
+            tooltip = entry["locked_source_file"]
+            if entry["full_name"]:
+                tooltip = f"{tooltip}\n{entry['full_name']}"
+            item.setToolTip(tooltip)
+            self.controlled_files_list.addItem(item)
 
     def _add_source_directory(self) -> None:
         project_dir = self._validate_current_project()
@@ -784,6 +821,49 @@ class DocumentControlApp(QMainWindow):
                 ]
             )
 
+    def _read_history_rows(self, source_dir: Path) -> List[Dict[str, str]]:
+        history_file = source_dir / HISTORY_FILE_NAME
+        if not history_file.exists():
+            return []
+
+        try:
+            with history_file.open("r", encoding="utf-8", newline="") as handle:
+                return [
+                    {key: str(value) for key, value in row.items()}
+                    for row in csv.DictReader(handle)
+                ]
+        except OSError:
+            return []
+
+    def _checked_out_files_for_directory(self, source_dir: Path) -> List[Dict[str, str]]:
+        latest_by_file: Dict[str, Dict[str, str]] = {}
+        for row in self._read_history_rows(source_dir):
+            file_name = row.get("file_name", "")
+            if file_name:
+                latest_by_file[file_name] = row
+
+        active_entries: List[Dict[str, str]] = []
+        for file_name, row in latest_by_file.items():
+            if row.get("action") != "CHECK_OUT":
+                continue
+
+            initials = row.get("user_initials", "")
+            source_file = source_dir / file_name
+            locked_source_file = (
+                self._locked_name_for(source_file, initials) if initials else source_file
+            )
+            active_entries.append(
+                {
+                    "file_name": file_name,
+                    "initials": initials,
+                    "full_name": row.get("user_full_name", ""),
+                    "locked_source_file": str(locked_source_file),
+                }
+            )
+
+        active_entries.sort(key=lambda entry: entry["file_name"].lower())
+        return active_entries
+
     def _checkout_selected(self) -> None:
         if not self._validate_identity():
             return
@@ -839,6 +919,7 @@ class DocumentControlApp(QMainWindow):
 
         self._save_records()
         self._refresh_source_files()
+        self._refresh_controlled_files()
         self._render_records_tables()
 
         if errors:
@@ -899,6 +980,7 @@ class DocumentControlApp(QMainWindow):
         self.records = remaining
         self._save_records()
         self._refresh_source_files()
+        self._refresh_controlled_files()
         self._render_records_tables()
 
         if errors:
@@ -940,6 +1022,7 @@ class DocumentControlApp(QMainWindow):
                 errors.append(f"{local_file.name}: {exc}")
 
         self._refresh_source_files()
+        self._refresh_controlled_files()
 
         if errors:
             self._error("Some files failed to add:\n" + "\n".join(errors))
@@ -985,6 +1068,70 @@ class DocumentControlApp(QMainWindow):
                 errors.append(f"Could not open: {path}")
         if errors:
             self._error("Some files could not be opened:\n" + "\n".join(errors))
+
+    def _force_checkin_selected(self) -> None:
+        if not self._validate_identity():
+            return
+
+        current_directory = self._validate_current_directory()
+        if not current_directory:
+            return
+
+        selected_items = self.controlled_files_list.selectedItems()
+        if not selected_items:
+            self._error("Select at least one controlled file to force check in.")
+            return
+
+        errors: List[str] = []
+        released_files: List[str] = []
+        selected_locked_paths: set[str] = set()
+
+        for item in selected_items:
+            entry = item.data(Qt.UserRole)
+            if not isinstance(entry, dict):
+                continue
+
+            file_name = str(entry.get("file_name", ""))
+            locked_source_file = Path(str(entry.get("locked_source_file", "")))
+            source_file = current_directory / file_name
+            if not file_name:
+                continue
+
+            try:
+                if locked_source_file.exists():
+                    locked_source_file.replace(source_file)
+                elif not source_file.exists():
+                    errors.append(f"Missing locked or source file: {file_name}")
+                    continue
+
+                self._append_history(current_directory, "FORCE_CHECK_IN", file_name)
+                released_files.append(file_name)
+                selected_locked_paths.add(str(locked_source_file))
+            except OSError as exc:
+                errors.append(f"{file_name}: {exc}")
+
+        if released_files:
+            self.records = [
+                record
+                for record in self.records
+                if not (
+                    Path(record.source_file).parent == current_directory
+                    and (
+                        Path(record.source_file).name in released_files
+                        or Path(record.locked_source_file).name in released_files
+                        or str(Path(record.locked_source_file)) in selected_locked_paths
+                    )
+                )
+            ]
+            self._save_records()
+
+        self._refresh_source_files()
+        self._render_records_tables()
+
+        if errors:
+            self._error("Some files failed to force check in:\n" + "\n".join(errors))
+        elif released_files:
+            self._info("Force check-in complete.")
 
     def _refresh_selected_file_history(self) -> None:
         selected_items = self.files_list.selectedItems()
