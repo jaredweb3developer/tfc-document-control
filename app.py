@@ -168,7 +168,7 @@ class DocumentControlApp(QMainWindow):
         tracked_layout.addWidget(self.source_roots_list)
 
         source_button_bar = QHBoxLayout()
-        add_source_btn = QPushButton("Track Dir")
+        add_source_btn = QPushButton("Track Dir (Browse)")
         add_source_btn.clicked.connect(self._add_source_directory)
         remove_source_btn = QPushButton("Untrack Dir")
         remove_source_btn.clicked.connect(self._remove_source_directory)
@@ -189,9 +189,15 @@ class DocumentControlApp(QMainWindow):
         self.directory_tree.setMinimumWidth(300)
         self.directory_tree.setMinimumHeight(260)
         directory_layout.addWidget(self.directory_tree, stretch=1)
+        directory_button_bar = QHBoxLayout()
         browse_directory_btn = QPushButton("Browse")
         browse_directory_btn.clicked.connect(self._browse_directory_tree_root)
-        directory_layout.addWidget(browse_directory_btn)
+        track_current_directory_btn = QPushButton("Track Directory")
+        track_current_directory_btn.clicked.connect(self._track_current_directory)
+        directory_button_bar.addWidget(browse_directory_btn)
+        directory_button_bar.addWidget(track_current_directory_btn)
+        directory_button_bar.addStretch()
+        directory_layout.addLayout(directory_button_bar)
 
         files_panel = QWidget()
         files_layout = QVBoxLayout(files_panel)
@@ -722,6 +728,28 @@ class DocumentControlApp(QMainWindow):
         sources = [source for source in self._source_roots_from_list() if source != source_path]
         self._write_project_config(project_dir, self._current_project_name(), sources)
         self._refresh_source_roots(sources)
+        self._save_settings()
+
+    def _track_current_directory(self) -> None:
+        project_dir = self._validate_current_project()
+        current_directory = self._validate_current_directory()
+        if not project_dir or not current_directory:
+            return
+
+        sources = self._source_roots_from_list()
+        current_dir_str = str(current_directory)
+        if current_dir_str in sources:
+            self._info("The current directory is already tracked.")
+            return
+
+        sources.append(current_dir_str)
+        self._write_project_config(project_dir, self._current_project_name(), sources)
+        self._refresh_source_roots(sources)
+        for row in range(self.source_roots_list.count()):
+            item = self.source_roots_list.item(row)
+            if item.data(Qt.UserRole) == current_dir_str:
+                self.source_roots_list.setCurrentItem(item)
+                break
         self._save_settings()
 
     def _selected_source_file_paths(self) -> List[Path]:
