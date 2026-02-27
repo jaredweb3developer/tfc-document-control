@@ -127,7 +127,7 @@ class DocumentControlApp(QMainWindow):
 
         self.tracked_projects_list = QListWidget()
         self.tracked_projects_list.itemDoubleClicked.connect(
-            lambda item: self._load_project_from_dir(item.data(Qt.UserRole))
+            lambda item: self._load_project_from_dir(Path(str(item.data(Qt.UserRole))))
         )
 
         self.project_path_label = QLabel("Config: -")
