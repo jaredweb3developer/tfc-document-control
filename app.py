@@ -12,7 +12,6 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QFileSystemModel,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -28,7 +27,8 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
-    QTreeView,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -63,6 +63,7 @@ class DocumentControlApp(QMainWindow):
         self.tracked_projects: List[Dict[str, str]] = []
         self.current_project_dir: str = ""
         self.current_directory: Optional[Path] = None
+        self.directory_tree_root: Optional[Path] = None
 
         self._build_ui()
         self._load_settings()
@@ -178,19 +179,19 @@ class DocumentControlApp(QMainWindow):
         directory_panel = QWidget()
         directory_layout = QVBoxLayout(directory_panel)
         directory_layout.addWidget(QLabel("Directory Browser"))
-        self.directory_model = QFileSystemModel()
-        self.directory_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot)
-        self.directory_model.setRootPath(str(APP_ROOT))
-        self.directory_tree = QTreeView()
-        self.directory_tree.setModel(self.directory_model)
+        self.directory_tree = QTreeWidget()
+        self.directory_tree.setColumnCount(1)
+        self.directory_tree.setHeaderHidden(True)
+        self.directory_tree.itemExpanded.connect(self._on_tree_item_expanded)
+        self.directory_tree.itemClicked.connect(self._on_directory_selected)
         self.directory_tree.setAnimated(False)
         self.directory_tree.setUniformRowHeights(True)
-        self.directory_tree.clicked.connect(self._on_directory_selected)
         self.directory_tree.setMinimumWidth(300)
         self.directory_tree.setMinimumHeight(260)
-        for column in range(1, 4):
-            self.directory_tree.hideColumn(column)
         directory_layout.addWidget(self.directory_tree, stretch=1)
+        browse_directory_btn = QPushButton("Browse")
+        browse_directory_btn.clicked.connect(self._browse_directory_tree_root)
+        directory_layout.addWidget(browse_directory_btn)
 
         files_panel = QWidget()
         files_layout = QVBoxLayout(files_panel)
@@ -588,11 +589,72 @@ class DocumentControlApp(QMainWindow):
             self.history_table.setRowCount(0)
             self._set_directory_tree_root(None)
 
+    def _create_directory_item(self, path: Path) -> QTreeWidgetItem:
+        label = path.name or str(path)
+        item = QTreeWidgetItem([label])
+        item.setData(0, Qt.UserRole, str(path))
+        item.setToolTip(0, str(path))
+        item.addChild(QTreeWidgetItem([""]))
+        return item
+
+    def _populate_directory_children(self, item: QTreeWidgetItem) -> None:
+        if item.childCount() != 1 or item.child(0).data(0, Qt.UserRole) is not None:
+            return
+
+        item.takeChildren()
+        path_value = item.data(0, Qt.UserRole)
+        if not path_value:
+            return
+
+        try:
+            children = sorted(
+                [entry for entry in Path(path_value).iterdir() if entry.is_dir()],
+                key=lambda entry: entry.name.lower(),
+            )
+        except OSError:
+            children = []
+
+        for child_path in children:
+            item.addChild(self._create_directory_item(child_path))
+
+    def _populate_system_roots(self) -> None:
+        drives = QDir.drives()
+        if drives:
+            for drive in drives:
+                drive_path = Path(drive.absoluteFilePath())
+                self.directory_tree.addTopLevelItem(self._create_directory_item(drive_path))
+            return
+
+        self.directory_tree.addTopLevelItem(self._create_directory_item(Path("/")))
+
     def _set_directory_tree_root(self, root_path: Optional[Path]) -> None:
-        target = root_path if root_path is not None else APP_ROOT
-        model_index = self.directory_model.setRootPath(str(target))
-        self.directory_tree.setRootIndex(model_index)
-        self.directory_tree.setCurrentIndex(model_index)
+        self.directory_tree.clear()
+        self.directory_tree_root = root_path
+
+        if root_path is None:
+            self._populate_system_roots()
+            return
+
+        root_item = self._create_directory_item(root_path)
+        self.directory_tree.addTopLevelItem(root_item)
+        self._populate_directory_children(root_item)
+        root_item.setExpanded(True)
+        self.directory_tree.setCurrentItem(root_item)
+
+    def _browse_directory_tree_root(self) -> None:
+        start_dir = str(
+            self.current_directory
+            or self.directory_tree_root
+            or self._current_source_root()
+            or Path.home()
+        )
+        path = QFileDialog.getExistingDirectory(self, "Browse Directory", start_dir)
+        if not path:
+            return
+
+        selected_path = Path(path)
+        self._set_directory_tree_root(selected_path)
+        self._set_current_directory(selected_path)
 
     def _on_source_root_changed(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
         if not current:
@@ -606,8 +668,14 @@ class DocumentControlApp(QMainWindow):
         self.current_folder_label.setText(f"Current folder: {directory}")
         self._refresh_source_files()
 
-    def _on_directory_selected(self, index) -> None:  # type: ignore[no-untyped-def]
-        path = Path(self.directory_model.filePath(index))
+    def _on_tree_item_expanded(self, item: QTreeWidgetItem) -> None:
+        self._populate_directory_children(item)
+
+    def _on_directory_selected(self, item: QTreeWidgetItem, _column: int) -> None:
+        path_value = item.data(0, Qt.UserRole)
+        if not path_value:
+            return
+        path = Path(path_value)
         if path.is_dir():
             self._set_current_directory(path)
 
