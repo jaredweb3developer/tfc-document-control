@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -98,7 +99,7 @@ class DocumentControlApp(QMainWindow):
         self.source_files_section = self._build_collapsible_section(
             "Source Files", self._build_source_files_group()
         )
-        main_layout.addWidget(self.projects_section)
+        main_layout.addWidget(self.projects_section, stretch=1)
         main_layout.addWidget(self.source_files_section, stretch=1)
 
         configuration_tab = QWidget()
@@ -111,8 +112,8 @@ class DocumentControlApp(QMainWindow):
         checked_out_layout.addWidget(self._build_checked_out_group(), stretch=1)
 
         self.main_tabs.addTab(main_tab, "Main")
-        self.main_tabs.addTab(configuration_tab, "Configuration")
         self.main_tabs.addTab(checked_out_tab, "Checked Out Files")
+        self.main_tabs.addTab(configuration_tab, "Configuration")
 
         layout.addWidget(self.main_tabs)
 
@@ -128,15 +129,27 @@ class DocumentControlApp(QMainWindow):
         toggle.setChecked(True)
         toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         toggle.setArrowType(Qt.DownArrow)
+        toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         def _toggle_section(checked: bool) -> None:
             content.setVisible(checked)
             toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+            if checked:
+                content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            else:
+                content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            content.updateGeometry()
+            container.updateGeometry()
 
         toggle.toggled.connect(_toggle_section)
 
         layout.addWidget(toggle)
-        layout.addWidget(content)
+        layout.addWidget(content, stretch=1)
         return container
 
     def _build_configuration_group(self) -> QGroupBox:
