@@ -1051,13 +1051,30 @@ class DocumentControlApp(QMainWindow):
 
         return lookup
 
+    def _format_history_timestamp(self, raw_timestamp: str) -> str:
+        try:
+            dt = datetime.fromisoformat(raw_timestamp)
+        except ValueError:
+            return raw_timestamp
+
+        day = dt.day
+        if 10 <= day % 100 <= 20:
+            suffix = "th"
+        else:
+            suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+
+        hour = dt.hour % 12 or 12
+        minute = f"{dt.minute:02d}"
+        meridiem = "AM" if dt.hour < 12 else "PM"
+        return f"{dt.strftime('%A, %B')} {day}{suffix}, {dt.year} @ {hour}:{minute} {meridiem}"
+
     def _history_rows_for_file(self, source_dir: Path, file_name: str) -> List[List[str]]:
         rows: List[List[str]] = []
         for row in self._read_history_rows(source_dir):
             if row.get("file_name") == file_name:
                 rows.append(
                     [
-                        row.get("timestamp", ""),
+                        self._format_history_timestamp(row.get("timestamp", "")),
                         row.get("action", ""),
                         row.get("user_initials", ""),
                         row.get("user_full_name", ""),
