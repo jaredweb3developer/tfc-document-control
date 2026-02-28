@@ -53,13 +53,14 @@ class CheckoutRecord:
     project_name: str
     project_dir: str
     source_root: str
+    checked_out_at: str = ""
 
 
 class DocumentControlApp(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Document Control")
-        self.resize(1360, 860)
+        self.resize(1500, 980)
 
         self.records: List[CheckoutRecord] = []
         self.tracked_projects: List[Dict[str, str]] = []
@@ -329,13 +330,21 @@ class DocumentControlApp(QMainWindow):
         return group
 
     def _build_records_table(self) -> QTableWidget:
-        table = QTableWidget(0, 4)
-        table.setHorizontalHeaderLabels(["Source", "Locked", "Local", "Initials"])
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(
+            ["Source", "Locked", "Local", "Initials", "Project", "Checked Out"]
+        )
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setSelectionMode(QTableWidget.ExtendedSelection)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.cellDoubleClicked.connect(self._open_record_row)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         return table
 
     def _default_projects_dir(self) -> Path:
@@ -989,6 +998,19 @@ class DocumentControlApp(QMainWindow):
         cleaned = raw.replace(":", "").replace("\\", "_").replace("/", "_")
         return cleaned.strip("_") or "source"
 
+    def _format_checkout_timestamp(self, raw_timestamp: str) -> str:
+        if not raw_timestamp:
+            return ""
+        try:
+            dt = datetime.fromisoformat(raw_timestamp)
+        except ValueError:
+            return raw_timestamp
+
+        hour = dt.hour % 12 or 12
+        minute = f"{dt.minute:02d}"
+        meridiem = "AM" if dt.hour < 12 else "PM"
+        return f"{dt.year:04d}/{dt.month:02d}/{dt.day:02d} {hour}:{minute} {meridiem}"
+
     def _locked_name_for(self, source_file: Path, initials: str) -> Path:
         return source_file.with_name(f"{source_file.stem}-{initials}{source_file.suffix}")
 
@@ -1150,8 +1172,23 @@ class DocumentControlApp(QMainWindow):
         initials = self._normalize_initials()
         project_checkout_dir = project_dir / "checked_out" / self._source_key(source_root)
         errors: List[str] = []
+        checked_out_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        # Refresh before checkout so the UI and history reflect any recent activity by other users.
+        self._refresh_source_files()
+        history_lookup = self._history_lookup_for_directory(current_directory)
 
         for source_file in selected_files:
+            latest_row = history_lookup.get(source_file.name)
+            if latest_row and latest_row.get("action") == "CHECK_OUT":
+                original_name = latest_row.get("original_file_name", source_file.name)
+                checked_out_by = latest_row.get("user_initials", "")
+                if checked_out_by == initials:
+                    errors.append(f"Already checked out by you: {original_name}")
+                else:
+                    who = latest_row.get("user_full_name", "") or checked_out_by or "another user"
+                    errors.append(f"Already checked out by {who}: {original_name}")
+                continue
+
             locked_source_file = self._locked_name_for(source_file, initials)
             try:
                 relative_path = source_file.relative_to(source_root)
@@ -1179,6 +1216,7 @@ class DocumentControlApp(QMainWindow):
                         project_name=self._current_project_name(),
                         project_dir=str(project_dir),
                         source_root=str(source_root),
+                        checked_out_at=checked_out_at,
                     )
                 )
                 self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
@@ -1448,6 +1486,9 @@ class DocumentControlApp(QMainWindow):
             return anchor + sep + ".." + sep + sep.join(parts[-2:])
         return ".." + sep + sep.join(parts[-2:])
 
+    def _local_display_name(self, local_path: str) -> str:
+        return Path(local_path).name
+
     def _render_records_tables(self) -> None:
         self._populate_records_table(self.all_records_table, list(enumerate(self.records)))
         current_project = self.current_project_dir
@@ -1466,16 +1507,34 @@ class DocumentControlApp(QMainWindow):
             values = [
                 record.source_file,
                 record.locked_source_file,
-                record.local_file,
+                self._local_display_name(record.local_file),
                 record.initials,
+                record.project_name,
+                self._format_checkout_timestamp(record.checked_out_at),
             ]
             for col_idx, value in enumerate(values):
-                display_value = self._short_path(value) if col_idx < 3 else value
+                if col_idx in (0, 1):
+                    display_value = self._short_path(value)
+                else:
+                    display_value = value
                 item = QTableWidgetItem(display_value)
-                item.setToolTip(value)
+                if col_idx == 2:
+                    item.setToolTip(record.local_file)
+                elif col_idx == 4:
+                    item.setToolTip(record.project_dir)
+                else:
+                    item.setToolTip(value)
                 if col_idx == 0:
                     item.setData(Qt.UserRole, record_idx)
                 table.setItem(row_idx, col_idx, item)
+
+        table.resizeColumnsToContents()
+        table.setColumnWidth(0, max(table.columnWidth(0), 260))
+        table.setColumnWidth(1, max(table.columnWidth(1), 260))
+        table.setColumnWidth(2, max(table.columnWidth(2), 180))
+        table.setColumnWidth(3, max(table.columnWidth(3), 72))
+        table.setColumnWidth(4, max(table.columnWidth(4), 170))
+        table.setColumnWidth(5, max(table.columnWidth(5), 150))
 
     def _load_records(self) -> None:
         if not RECORDS_FILE.exists():
@@ -1497,6 +1556,7 @@ class DocumentControlApp(QMainWindow):
                         project_name=str(entry.get("project_name", "")),
                         project_dir=str(entry.get("project_dir", "")),
                         source_root=str(entry.get("source_root", "")),
+                        checked_out_at=str(entry.get("checked_out_at", "")),
                     )
                 )
         except (OSError, ValueError, TypeError):
