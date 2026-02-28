@@ -11,6 +11,7 @@ from PySide6.QtCore import QDir, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -202,6 +203,38 @@ class DocumentControlApp(QMainWindow):
         files_panel = QWidget()
         files_layout = QVBoxLayout(files_panel)
         files_layout.addWidget(QLabel("Files"))
+
+        filter_bar = QHBoxLayout()
+        self.file_filter_mode_combo = QComboBox()
+        self.file_filter_mode_combo.addItems(["No Filter", "Include Only", "Exclude"])
+        self.file_filter_mode_combo.currentIndexChanged.connect(self._refresh_source_files)
+
+        self.file_extension_combo = QComboBox()
+        self.file_extension_combo.setEditable(True)
+        self.file_extension_combo.addItems(
+            [
+                ".dwg",
+                ".dxf",
+                ".pdf",
+                ".xlsx",
+                ".xls",
+                ".doc",
+                ".docx",
+                ".txt",
+                ".csv",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".zip",
+            ]
+        )
+        self.file_extension_combo.currentTextChanged.connect(self._refresh_source_files)
+
+        filter_bar.addWidget(QLabel("Extension Filter"))
+        filter_bar.addWidget(self.file_filter_mode_combo)
+        filter_bar.addWidget(self.file_extension_combo, stretch=1)
+        files_layout.addLayout(filter_bar)
+
         self.files_list = QListWidget()
         self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
         self.files_list.itemSelectionChanged.connect(self._refresh_selected_file_history)
@@ -711,6 +744,8 @@ class DocumentControlApp(QMainWindow):
 
         for item in sorted(self.current_directory.iterdir()):
             if item.is_file() and item.name != HISTORY_FILE_NAME:
+                if not self._matches_extension_filter(item):
+                    continue
                 list_item = QListWidgetItem(item.name)
                 list_item.setData(Qt.UserRole, str(item))
                 list_item.setToolTip(str(item))
@@ -791,6 +826,27 @@ class DocumentControlApp(QMainWindow):
 
     def _selected_source_file_paths(self) -> List[Path]:
         return [Path(item.data(Qt.UserRole)) for item in self.files_list.selectedItems()]
+
+    def _normalized_extension_filter(self) -> str:
+        value = self.file_extension_combo.currentText().strip().lower()
+        if not value:
+            return ""
+        if not value.startswith("."):
+            value = f".{value}"
+        return value
+
+    def _matches_extension_filter(self, file_path: Path) -> bool:
+        mode = self.file_filter_mode_combo.currentText()
+        extension = self._normalized_extension_filter()
+        if mode == "No Filter" or not extension:
+            return True
+
+        suffix = file_path.suffix.lower()
+        if mode == "Include Only":
+            return suffix == extension
+        if mode == "Exclude":
+            return suffix != extension
+        return True
 
     def _source_key(self, source_root: Path) -> str:
         raw = str(source_root.resolve())
