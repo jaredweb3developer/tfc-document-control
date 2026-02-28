@@ -67,8 +67,8 @@ class DocumentControlApp(QMainWindow):
         self.directory_tree_root: Optional[Path] = None
         self.extension_filter_debounce = QTimer(self)
         self.extension_filter_debounce.setSingleShot(True)
-        self.extension_filter_debounce.setInterval(1000)
-        self.extension_filter_debounce.timeout.connect(self._save_current_project_filters)
+        self.extension_filter_debounce.setInterval(2000)
+        self.extension_filter_debounce.timeout.connect(self._apply_debounced_extension_filters)
 
         self._build_ui()
         self._load_settings()
@@ -940,7 +940,9 @@ class DocumentControlApp(QMainWindow):
 
     def _on_extension_list_changed(self) -> None:
         self.extension_filter_debounce.start()
-        self._refresh_source_files()
+
+    def _apply_debounced_extension_filters(self) -> None:
+        self._save_current_project_filters()
 
     def _save_current_project_filters(self) -> None:
         project_dir = self._current_project_path()
