@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+from uuid import uuid4
 
 from PySide6.QtCore import QDir, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QRadioButton,
     QPushButton,
     QSplitter,
@@ -122,7 +124,7 @@ class DocumentControlApp(QMainWindow):
 
     def _build_projects_group(self) -> QGroupBox:
         group = QGroupBox("Projects")
-        layout = QGridLayout(group)
+        layout = QVBoxLayout(group)
 
         new_project_btn = QPushButton("New Project")
         new_project_btn.clicked.connect(self._show_new_project_dialog)
@@ -133,7 +135,7 @@ class DocumentControlApp(QMainWindow):
         remove_project_btn = QPushButton("Untrack Selected")
         remove_project_btn.clicked.connect(self._remove_selected_project)
         open_location_btn = QPushButton("Open Location")
-        open_location_btn.clicked.connect(self._open_current_project_location)
+        open_location_btn.clicked.connect(self._open_selected_project_location)
 
         self.tracked_projects_list = QListWidget()
         self.tracked_projects_list.itemDoubleClicked.connect(
@@ -143,18 +145,63 @@ class DocumentControlApp(QMainWindow):
         self.current_project_label = QLabel("Current Project: -")
         self.current_project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        controls_bar = QHBoxLayout()
-        controls_bar.addWidget(new_project_btn)
-        controls_bar.addWidget(load_project_btn)
-        controls_bar.addWidget(add_project_btn)
-        controls_bar.addWidget(remove_project_btn)
-        controls_bar.addWidget(open_location_btn)
-        controls_bar.addStretch()
+        tracked_panel = QWidget()
+        tracked_layout = QVBoxLayout(tracked_panel)
+        tracked_layout.addWidget(QLabel("Tracked Projects"))
+        tracked_layout.addWidget(self.tracked_projects_list, stretch=1)
 
-        layout.addWidget(self.current_project_label, 0, 0, 1, 2)
-        layout.addLayout(controls_bar, 0, 2)
-        layout.addWidget(QLabel("Tracked Projects:"), 1, 0)
-        layout.addWidget(self.tracked_projects_list, 1, 1, 2, 1)
+        tracked_controls = QGridLayout()
+        tracked_controls.addWidget(new_project_btn, 0, 0)
+        tracked_controls.addWidget(load_project_btn, 0, 1)
+        tracked_controls.addWidget(add_project_btn, 1, 0)
+        tracked_controls.addWidget(remove_project_btn, 1, 1)
+        tracked_controls.addWidget(open_location_btn, 2, 0, 1, 2)
+        tracked_layout.addLayout(tracked_controls)
+
+        favorites_panel = QWidget()
+        favorites_layout = QVBoxLayout(favorites_panel)
+        favorites_layout.addWidget(QLabel("Favorite Files"))
+        self.favorites_list = QListWidget()
+        self.favorites_list.itemDoubleClicked.connect(self._open_favorite_item)
+        favorites_layout.addWidget(self.favorites_list, stretch=1)
+        favorites_controls = QGridLayout()
+        add_favorite_btn = QPushButton("Add Favorite")
+        add_favorite_btn.clicked.connect(self._browse_and_add_favorites)
+        remove_favorite_btn = QPushButton("Remove Favorite")
+        remove_favorite_btn.clicked.connect(self._remove_selected_favorites)
+        open_favorite_btn = QPushButton("Open Selected")
+        open_favorite_btn.clicked.connect(self._open_selected_favorites)
+        favorites_controls.addWidget(add_favorite_btn, 0, 0)
+        favorites_controls.addWidget(remove_favorite_btn, 0, 1)
+        favorites_controls.addWidget(open_favorite_btn, 1, 0, 1, 2)
+        favorites_layout.addLayout(favorites_controls)
+
+        notes_panel = QWidget()
+        notes_layout = QVBoxLayout(notes_panel)
+        notes_layout.addWidget(QLabel("Notes"))
+        self.notes_list = QListWidget()
+        self.notes_list.itemDoubleClicked.connect(self._edit_note_item)
+        notes_layout.addWidget(self.notes_list, stretch=1)
+        notes_controls = QGridLayout()
+        new_note_btn = QPushButton("New Note")
+        new_note_btn.clicked.connect(self._create_note)
+        edit_note_btn = QPushButton("Edit Note")
+        edit_note_btn.clicked.connect(self._edit_selected_note)
+        remove_note_btn = QPushButton("Remove Note")
+        remove_note_btn.clicked.connect(self._remove_selected_note)
+        notes_controls.addWidget(new_note_btn, 0, 0)
+        notes_controls.addWidget(edit_note_btn, 0, 1)
+        notes_controls.addWidget(remove_note_btn, 1, 0, 1, 2)
+        notes_layout.addLayout(notes_controls)
+
+        content_splitter = QSplitter(Qt.Horizontal)
+        content_splitter.addWidget(tracked_panel)
+        content_splitter.addWidget(favorites_panel)
+        content_splitter.addWidget(notes_panel)
+        content_splitter.setSizes([280, 320, 320])
+
+        layout.addWidget(self.current_project_label)
+        layout.addWidget(content_splitter, stretch=1)
 
         return group
 
@@ -272,12 +319,15 @@ class DocumentControlApp(QMainWindow):
         open_btn.clicked.connect(self._open_selected_source_files)
         view_history_btn = QPushButton("View History")
         view_history_btn.clicked.connect(self._show_selected_file_history)
+        add_to_favorites_btn = QPushButton("Add Selected To Favorites")
+        add_to_favorites_btn.clicked.connect(self._add_selected_source_files_to_favorites)
         add_new_btn = QPushButton("Add Local File(s) To Here")
         add_new_btn.clicked.connect(self._add_new_files_to_source)
         file_button_bar.addWidget(refresh_btn)
         file_button_bar.addWidget(checkout_btn)
         file_button_bar.addWidget(open_btn)
         file_button_bar.addWidget(view_history_btn)
+        file_button_bar.addWidget(add_to_favorites_btn)
         file_button_bar.addWidget(add_new_btn)
         file_button_bar.addStretch()
         files_layout.addLayout(file_button_bar)
@@ -491,37 +541,73 @@ class DocumentControlApp(QMainWindow):
         sources: List[str],
         extension_filters: Optional[List[str]] = None,
         filter_mode: str = "No Filter",
+        favorites: Optional[List[str]] = None,
+        notes: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, object]:
         return {
             "name": name,
             "sources": sources,
             "extension_filters": extension_filters or [],
             "filter_mode": filter_mode,
+            "favorites": favorites or [],
+            "notes": notes or [],
         }
 
     def _read_project_config(self, project_dir: Path) -> Dict[str, object]:
         config_path = self._project_config_path(project_dir)
         if not config_path.exists():
-            return self._project_payload(project_dir.name, [], [], "No Filter")
+            return self._project_payload(project_dir.name, [], [], "No Filter", [], [])
 
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            return self._project_payload(project_dir.name, [], [], "No Filter")
+            return self._project_payload(project_dir.name, [], [], "No Filter", [], [])
 
         name = str(data.get("name", project_dir.name)).strip() or project_dir.name
         raw_sources = data.get("sources", [])
         raw_extension_filters = data.get("extension_filters", [])
         filter_mode = str(data.get("filter_mode", "No Filter")).strip() or "No Filter"
+        raw_favorites = data.get("favorites", [])
+        raw_notes = data.get("notes", [])
         sources = [str(item) for item in raw_sources if str(item).strip()] if isinstance(raw_sources, list) else []
         extension_filters = (
             [str(item) for item in raw_extension_filters if str(item).strip()]
             if isinstance(raw_extension_filters, list)
             else []
         )
+        favorites = (
+            [str(item) for item in raw_favorites if str(item).strip()]
+            if isinstance(raw_favorites, list)
+            else []
+        )
+        notes: List[Dict[str, str]] = []
+        if isinstance(raw_notes, list):
+            for entry in raw_notes:
+                if not isinstance(entry, dict):
+                    continue
+                subject = str(entry.get("subject", "")).strip()
+                body = str(entry.get("body", ""))
+                if not subject:
+                    continue
+                notes.append(
+                    {
+                        "id": str(entry.get("id", "")).strip() or str(uuid4()),
+                        "subject": subject,
+                        "body": body,
+                        "created_at": str(entry.get("created_at", "")).strip(),
+                        "updated_at": str(entry.get("updated_at", "")).strip(),
+                    }
+                )
         if filter_mode not in {"No Filter", "Include Only", "Exclude"}:
             filter_mode = "No Filter"
-        return self._project_payload(name, sources, extension_filters, filter_mode)
+        return self._project_payload(
+            name,
+            sources,
+            extension_filters,
+            filter_mode,
+            favorites,
+            notes,
+        )
 
     def _write_project_config(
         self,
@@ -530,17 +616,50 @@ class DocumentControlApp(QMainWindow):
         sources: List[str],
         extension_filters: Optional[List[str]] = None,
         filter_mode: str = "No Filter",
+        favorites: Optional[List[str]] = None,
+        notes: Optional[List[Dict[str, str]]] = None,
     ) -> None:
         project_dir.mkdir(parents=True, exist_ok=True)
         config_path = self._project_config_path(project_dir)
-        payload = self._project_payload(name, sources, extension_filters, filter_mode)
+        payload = self._project_payload(
+            name,
+            sources,
+            extension_filters,
+            filter_mode,
+            favorites,
+            notes,
+        )
         config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _save_project_config(
+        self,
+        project_dir: Path,
+        *,
+        name: Optional[str] = None,
+        sources: Optional[List[str]] = None,
+        extension_filters: Optional[List[str]] = None,
+        filter_mode: Optional[str] = None,
+        favorites: Optional[List[str]] = None,
+        notes: Optional[List[Dict[str, str]]] = None,
+    ) -> None:
+        current = self._read_project_config(project_dir)
+        self._write_project_config(
+            project_dir,
+            name or str(current.get("name", project_dir.name)),
+            sources if sources is not None else list(current.get("sources", [])),  # type: ignore[arg-type]
+            extension_filters
+            if extension_filters is not None
+            else list(current.get("extension_filters", [])),  # type: ignore[arg-type]
+            filter_mode or str(current.get("filter_mode", "No Filter")),
+            favorites if favorites is not None else list(current.get("favorites", [])),  # type: ignore[arg-type]
+            notes if notes is not None else list(current.get("notes", [])),  # type: ignore[arg-type]
+        )
 
     def _ensure_default_project(self) -> None:
         base_dir = self._ensure_base_projects_dir()
         default_dir = base_dir / DEFAULT_PROJECT_NAME
         if not self._project_config_path(default_dir).exists():
-            self._write_project_config(default_dir, DEFAULT_PROJECT_NAME, [], [], "No Filter")
+            self._write_project_config(default_dir, DEFAULT_PROJECT_NAME, [], [], "No Filter", [], [])
         self._register_tracked_project(DEFAULT_PROJECT_NAME, default_dir)
         self._refresh_tracked_projects_list()
 
@@ -594,6 +713,8 @@ class DocumentControlApp(QMainWindow):
         sources: Optional[List[str]] = None,
         extension_filters: Optional[List[str]] = None,
         filter_mode: str = "No Filter",
+        favorites: Optional[List[str]] = None,
+        notes: Optional[List[Dict[str, str]]] = None,
     ) -> None:
         base_dir = self._ensure_base_projects_dir()
         _ = base_dir
@@ -604,6 +725,8 @@ class DocumentControlApp(QMainWindow):
             sources or [],
             extension_filters or [],
             filter_mode,
+            favorites or [],
+            notes or [],
         )
         self.current_project_dir = str(project_dir)
         self._register_tracked_project(name, project_dir)
@@ -761,6 +884,8 @@ class DocumentControlApp(QMainWindow):
             str(item) for item in config.get("extension_filters", [])
         ]  # type: ignore[arg-type]
         filter_mode = str(config.get("filter_mode", "No Filter"))
+        favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
+        notes = [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
 
         self.current_project_dir = str(project_dir)
         self.file_filter_mode_combo.blockSignals(True)
@@ -770,12 +895,21 @@ class DocumentControlApp(QMainWindow):
         self.current_project_label.setText(f"Current Project: {name}")
         self._register_tracked_project(name, project_dir)
         self._refresh_source_roots(sources)
+        self._refresh_favorites_list(favorites)
+        self._refresh_notes_list(notes)
         self._save_settings()
         self._render_records_tables()
 
-    def _open_current_project_location(self) -> None:
-        project_dir = self._validate_current_project()
-        if not project_dir:
+    def _selected_tracked_project_dir(self) -> Optional[Path]:
+        item = self.tracked_projects_list.currentItem()
+        if not item:
+            return None
+        return Path(str(item.data(Qt.UserRole)))
+
+    def _open_selected_project_location(self) -> None:
+        project_dir = self._selected_tracked_project_dir()
+        if not project_dir or not project_dir.is_dir():
+            self._error("Select a tracked project to open.")
             return
         self._open_paths([project_dir])
 
@@ -940,12 +1074,12 @@ class DocumentControlApp(QMainWindow):
         sources = self._source_roots_from_list()
         if str(source_path) not in sources:
             sources.append(str(source_path))
-            self._write_project_config(
+            self._save_project_config(
                 project_dir,
-                self._current_project_name(),
-                sources,
-                self._current_extension_filters(),
-                self.file_filter_mode_combo.currentText(),
+                name=self._current_project_name(),
+                sources=sources,
+                extension_filters=self._current_extension_filters(),
+                filter_mode=self.file_filter_mode_combo.currentText(),
             )
             self._refresh_source_roots(sources)
             self._save_settings()
@@ -959,12 +1093,12 @@ class DocumentControlApp(QMainWindow):
 
         source_path = str(item.data(Qt.UserRole))
         sources = [source for source in self._source_roots_from_list() if source != source_path]
-        self._write_project_config(
+        self._save_project_config(
             project_dir,
-            self._current_project_name(),
-            sources,
-            self._current_extension_filters(),
-            self.file_filter_mode_combo.currentText(),
+            name=self._current_project_name(),
+            sources=sources,
+            extension_filters=self._current_extension_filters(),
+            filter_mode=self.file_filter_mode_combo.currentText(),
         )
         self._refresh_source_roots(sources)
         self._save_settings()
@@ -982,12 +1116,12 @@ class DocumentControlApp(QMainWindow):
             return
 
         sources.append(current_dir_str)
-        self._write_project_config(
+        self._save_project_config(
             project_dir,
-            self._current_project_name(),
-            sources,
-            self._current_extension_filters(),
-            self.file_filter_mode_combo.currentText(),
+            name=self._current_project_name(),
+            sources=sources,
+            extension_filters=self._current_extension_filters(),
+            filter_mode=self.file_filter_mode_combo.currentText(),
         )
         self._refresh_source_roots(sources)
         for row in range(self.source_roots_list.count()):
@@ -999,6 +1133,211 @@ class DocumentControlApp(QMainWindow):
 
     def _selected_source_file_paths(self) -> List[Path]:
         return [Path(item.data(Qt.UserRole)) for item in self.files_list.selectedItems()]
+
+    def _current_project_config(self) -> Optional[Dict[str, object]]:
+        project_dir = self._current_project_path()
+        if not project_dir or not project_dir.is_dir():
+            return None
+        return self._read_project_config(project_dir)
+
+    def _current_project_favorites(self) -> List[str]:
+        config = self._current_project_config()
+        if not config:
+            return []
+        return [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
+
+    def _current_project_notes(self) -> List[Dict[str, str]]:
+        config = self._current_project_config()
+        if not config:
+            return []
+        return [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
+
+    def _favorite_display_name(self, favorite_path: str) -> str:
+        return Path(favorite_path).name or favorite_path
+
+    def _refresh_favorites_list(self, favorites: List[str]) -> None:
+        self.favorites_list.clear()
+        for favorite in favorites:
+            item = QListWidgetItem(self._favorite_display_name(favorite))
+            item.setData(Qt.UserRole, favorite)
+            item.setToolTip(favorite)
+            self.favorites_list.addItem(item)
+
+    def _set_project_favorites(self, favorites: List[str]) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        normalized: List[str] = []
+        for favorite in favorites:
+            raw = str(favorite).strip()
+            if raw and raw not in normalized:
+                normalized.append(raw)
+        self._save_project_config(project_dir, favorites=normalized)
+        self._refresh_favorites_list(normalized)
+
+    def _add_favorite_paths(self, paths: List[Path]) -> None:
+        if not paths:
+            return
+        favorites = self._current_project_favorites()
+        for path in paths:
+            favorite = str(path)
+            if favorite not in favorites:
+                favorites.append(favorite)
+        self._set_project_favorites(favorites)
+
+    def _browse_and_add_favorites(self) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        start_dir = str(self.current_directory or project_dir)
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add Favorite File(s)",
+            start_dir,
+            "All Files (*)",
+        )
+        if not file_paths:
+            return
+        self._add_favorite_paths([Path(path) for path in file_paths])
+
+    def _add_selected_source_files_to_favorites(self) -> None:
+        selected_files = self._selected_source_file_paths()
+        if not selected_files:
+            self._error("Select at least one source file to favorite.")
+            return
+        self._add_favorite_paths(selected_files)
+
+    def _remove_selected_favorites(self) -> None:
+        selected_items = self.favorites_list.selectedItems()
+        if not selected_items:
+            self._error("Select at least one favorite to remove.")
+            return
+        selected_paths = {str(item.data(Qt.UserRole)) for item in selected_items}
+        favorites = [favorite for favorite in self._current_project_favorites() if favorite not in selected_paths]
+        self._set_project_favorites(favorites)
+
+    def _open_favorite_item(self, item: QListWidgetItem) -> None:
+        self._open_paths([Path(str(item.data(Qt.UserRole)))])
+
+    def _open_selected_favorites(self) -> None:
+        selected_items = self.favorites_list.selectedItems()
+        if not selected_items:
+            self._error("Select at least one favorite to open.")
+            return
+        self._open_paths([Path(str(item.data(Qt.UserRole))) for item in selected_items])
+
+    def _note_tooltip(self, note: Dict[str, str]) -> str:
+        body = note.get("body", "").strip()
+        if len(body) > 240:
+            body = body[:237].rstrip() + "..."
+        return body or "(No body)"
+
+    def _refresh_notes_list(self, notes: List[Dict[str, str]]) -> None:
+        self.notes_list.clear()
+        for note in notes:
+            item = QListWidgetItem(note.get("subject", "(Untitled)"))
+            item.setData(Qt.UserRole, note.get("id", ""))
+            item.setToolTip(self._note_tooltip(note))
+            self.notes_list.addItem(item)
+
+    def _set_project_notes(self, notes: List[Dict[str, str]]) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        self._save_project_config(project_dir, notes=notes)
+        self._refresh_notes_list(notes)
+
+    def _selected_note_id(self) -> str:
+        item = self.notes_list.currentItem()
+        return str(item.data(Qt.UserRole)).strip() if item else ""
+
+    def _show_note_dialog(self, note: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Note" if note else "New Note")
+        dialog.resize(640, 420)
+        layout = QVBoxLayout(dialog)
+
+        form_layout = QGridLayout()
+        subject_edit = QLineEdit(note.get("subject", "") if note else "")
+        form_layout.addWidget(QLabel("Subject:"), 0, 0)
+        form_layout.addWidget(subject_edit, 0, 1)
+        layout.addLayout(form_layout)
+
+        body_edit = QPlainTextEdit(note.get("body", "") if note else "")
+        body_edit.setPlaceholderText("Note body")
+        layout.addWidget(body_edit, stretch=1)
+
+        if note:
+            created_label = QLabel(f"Created: {note.get('created_at', '') or '-'}")
+            updated_label = QLabel(f"Last Edited: {note.get('updated_at', '') or '-'}")
+            layout.addWidget(created_label)
+            layout.addWidget(updated_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        subject = subject_edit.text().strip()
+        if not subject:
+            self._error("Note subject is required.")
+            return None
+
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        existing = note or {}
+        return {
+            "id": existing.get("id", "") or str(uuid4()),
+            "subject": subject,
+            "body": body_edit.toPlainText().strip(),
+            "created_at": existing.get("created_at", "") or timestamp,
+            "updated_at": timestamp,
+        }
+
+    def _create_note(self) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        note = self._show_note_dialog()
+        if not note:
+            return
+        notes = self._current_project_notes()
+        notes.append(note)
+        self._set_project_notes(notes)
+
+    def _edit_note_item(self, item: QListWidgetItem) -> None:
+        self.notes_list.setCurrentItem(item)
+        self._edit_selected_note()
+
+    def _edit_selected_note(self, _item: Optional[QListWidgetItem] = None) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        note_id = self._selected_note_id()
+        if not note_id:
+            self._error("Select a note to edit.")
+            return
+        notes = self._current_project_notes()
+        for idx, note in enumerate(notes):
+            if note.get("id", "") != note_id:
+                continue
+            updated = self._show_note_dialog(note)
+            if not updated:
+                return
+            notes[idx] = updated
+            self._set_project_notes(notes)
+            return
+        self._error("Selected note could not be found.")
+
+    def _remove_selected_note(self) -> None:
+        note_id = self._selected_note_id()
+        if not note_id:
+            self._error("Select a note to remove.")
+            return
+        notes = [note for note in self._current_project_notes() if note.get("id", "") != note_id]
+        self._set_project_notes(notes)
 
     def _normalize_extension_value(self, value: str) -> str:
         value = value.strip().lower()
@@ -1045,12 +1384,12 @@ class DocumentControlApp(QMainWindow):
             self._refresh_source_files()
             return
 
-        self._write_project_config(
+        self._save_project_config(
             project_dir,
-            self._current_project_name(),
-            self._source_roots_from_list(),
-            self._current_extension_filters(),
-            self.file_filter_mode_combo.currentText(),
+            name=self._current_project_name(),
+            sources=self._source_roots_from_list(),
+            extension_filters=self._current_extension_filters(),
+            filter_mode=self.file_filter_mode_combo.currentText(),
         )
         self._refresh_source_files()
 
