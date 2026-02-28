@@ -1173,8 +1173,22 @@ class DocumentControlApp(QMainWindow):
         project_checkout_dir = project_dir / "checked_out" / self._source_key(source_root)
         errors: List[str] = []
         checked_out_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        # Refresh before checkout so the UI and history reflect any recent activity by other users.
+        self._refresh_source_files()
+        history_lookup = self._history_lookup_for_directory(current_directory)
 
         for source_file in selected_files:
+            latest_row = history_lookup.get(source_file.name)
+            if latest_row and latest_row.get("action") == "CHECK_OUT":
+                original_name = latest_row.get("original_file_name", source_file.name)
+                checked_out_by = latest_row.get("user_initials", "")
+                if checked_out_by == initials:
+                    errors.append(f"Already checked out by you: {original_name}")
+                else:
+                    who = latest_row.get("user_full_name", "") or checked_out_by or "another user"
+                    errors.append(f"Already checked out by {who}: {original_name}")
+                continue
+
             locked_source_file = self._locked_name_for(source_file, initials)
             try:
                 relative_path = source_file.relative_to(source_root)
