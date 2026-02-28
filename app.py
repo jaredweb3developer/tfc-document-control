@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QRadioButton,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -121,38 +123,37 @@ class DocumentControlApp(QMainWindow):
         group = QGroupBox("Projects")
         layout = QGridLayout(group)
 
-        self.project_name_edit = QLineEdit()
-        self.project_name_edit.setPlaceholderText("Project name")
-        save_project_btn = QPushButton("Save Project")
-        save_project_btn.clicked.connect(self._save_project_from_inputs)
+        new_project_btn = QPushButton("New Project")
+        new_project_btn.clicked.connect(self._show_new_project_dialog)
         load_project_btn = QPushButton("Load Selected")
         load_project_btn.clicked.connect(self._load_selected_tracked_project)
         add_project_btn = QPushButton("Track Existing")
         add_project_btn.clicked.connect(self._add_existing_project)
         remove_project_btn = QPushButton("Untrack Selected")
         remove_project_btn.clicked.connect(self._remove_selected_project)
+        open_location_btn = QPushButton("Open Location")
+        open_location_btn.clicked.connect(self._open_current_project_location)
 
         self.tracked_projects_list = QListWidget()
         self.tracked_projects_list.itemDoubleClicked.connect(
             lambda item: self._load_project_from_dir(Path(str(item.data(Qt.UserRole))))
         )
 
-        self.project_path_label = QLabel("Config: -")
-        self.project_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.current_project_label = QLabel("Current Project: -")
+        self.current_project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         controls_bar = QHBoxLayout()
-        controls_bar.addWidget(save_project_btn)
+        controls_bar.addWidget(new_project_btn)
         controls_bar.addWidget(load_project_btn)
         controls_bar.addWidget(add_project_btn)
         controls_bar.addWidget(remove_project_btn)
+        controls_bar.addWidget(open_location_btn)
         controls_bar.addStretch()
 
-        layout.addWidget(QLabel("Project Name:"), 0, 0)
-        layout.addWidget(self.project_name_edit, 0, 1)
+        layout.addWidget(self.current_project_label, 0, 0, 1, 2)
         layout.addLayout(controls_bar, 0, 2)
         layout.addWidget(QLabel("Tracked Projects:"), 1, 0)
         layout.addWidget(self.tracked_projects_list, 1, 1, 2, 1)
-        layout.addWidget(self.project_path_label, 1, 2)
 
         return group
 
@@ -375,7 +376,10 @@ class DocumentControlApp(QMainWindow):
         return Path(self.current_project_dir) if self.current_project_dir else None
 
     def _current_project_name(self) -> str:
-        return self.project_name_edit.text().strip() or DEFAULT_PROJECT_NAME
+        project_dir = self._current_project_path()
+        if not project_dir or not project_dir.is_dir():
+            return DEFAULT_PROJECT_NAME
+        return str(self._read_project_config(project_dir).get("name", DEFAULT_PROJECT_NAME)).strip() or DEFAULT_PROJECT_NAME
 
     def _safe_project_dir_name(self, name: str) -> str:
         safe = name.strip().replace("/", "-").replace("\\", "-")
@@ -582,18 +586,9 @@ class DocumentControlApp(QMainWindow):
         if item:
             self._load_project_from_dir(Path(item.data(Qt.UserRole)))
 
-    def _save_project_from_inputs(self) -> None:
+    def _create_or_update_project(self, name: str, project_dir: Path) -> None:
         base_dir = self._ensure_base_projects_dir()
-        name = self.project_name_edit.text().strip()
-        if not name:
-            self._error("Project name is required.")
-            return
-
-        current_dir = self._current_project_path()
-        if current_dir and current_dir.is_dir() and self._read_project_config(current_dir).get("name") == name:
-            project_dir = current_dir
-        else:
-            project_dir = base_dir / self._safe_project_dir_name(name)
+        _ = base_dir
 
         sources = self._source_roots_from_list()
         self._write_project_config(
@@ -604,10 +599,47 @@ class DocumentControlApp(QMainWindow):
             self.file_filter_mode_combo.currentText(),
         )
         self.current_project_dir = str(project_dir)
-        self.project_path_label.setText(f"Config: {self._project_config_path(project_dir)}")
         self._register_tracked_project(name, project_dir)
         self._save_settings()
         self._info(f"Project '{name}' saved.")
+
+    def _show_new_project_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("New Project")
+        dialog.resize(460, 220)
+        layout = QVBoxLayout(dialog)
+
+        form_layout = QGridLayout()
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("Project name")
+        form_layout.addWidget(QLabel("Project Name:"), 0, 0)
+        form_layout.addWidget(name_edit, 0, 1)
+        layout.addLayout(form_layout)
+
+        keep_current_radio = QRadioButton("Create without changing the current directory")
+        keep_current_radio.setChecked(True)
+        root_radio = QRadioButton("Create starting from the root of the file system")
+        layout.addWidget(keep_current_radio)
+        layout.addWidget(root_radio)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        name = name_edit.text().strip()
+        if not name:
+            self._error("Project name is required.")
+            return
+
+        project_dir = self._ensure_base_projects_dir() / self._safe_project_dir_name(name)
+        self._create_or_update_project(name, project_dir)
+
+        if root_radio.isChecked():
+            self._set_directory_tree_root(None)
 
     def _source_roots_from_list(self) -> List[str]:
         roots: List[str] = []
@@ -650,6 +682,10 @@ class DocumentControlApp(QMainWindow):
             self._error("Select a tracked project to remove.")
             return
 
+        if item.text() == DEFAULT_PROJECT_NAME:
+            self._error("The Default project cannot be untracked.")
+            return
+
         project_dir = str(item.data(Qt.UserRole))
         self.tracked_projects = [
             entry for entry in self.tracked_projects if entry["project_dir"] != project_dir
@@ -676,16 +712,21 @@ class DocumentControlApp(QMainWindow):
         filter_mode = str(config.get("filter_mode", "No Filter"))
 
         self.current_project_dir = str(project_dir)
-        self.project_name_edit.setText(name)
         self.file_filter_mode_combo.blockSignals(True)
         self.file_filter_mode_combo.setCurrentText(filter_mode)
         self.file_filter_mode_combo.blockSignals(False)
         self._set_extension_filters(extension_filters)
-        self.project_path_label.setText(f"Config: {self._project_config_path(project_dir)}")
+        self.current_project_label.setText(f"Current Project: {name}")
         self._register_tracked_project(name, project_dir)
         self._refresh_source_roots(sources)
         self._save_settings()
         self._render_records_tables()
+
+    def _open_current_project_location(self) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        self._open_paths([project_dir])
 
     def _refresh_source_roots(self, sources: List[str]) -> None:
         self.source_roots_list.clear()
