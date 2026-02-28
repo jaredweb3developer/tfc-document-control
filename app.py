@@ -2102,52 +2102,57 @@ class DocumentControlApp(QMainWindow):
     def _show_pending_actions_dialog(
         self, title: str, actions: List[PendingCheckinAction], allow_modify: bool = False
     ) -> str:
-        while True:
-            dialog = QDialog(self)
-            dialog.setWindowTitle(title)
-            dialog.resize(1080, 420)
-            layout = QVBoxLayout(dialog)
-            layout.addWidget(QLabel("The following actions will be performed:"))
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(1080, 420)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("The following actions will be performed:"))
 
-            table = QTableWidget(len(actions), 4)
-            table.setHorizontalHeaderLabels(["File", "Action", "Local File", "Details"])
-            table.setEditTriggers(QTableWidget.NoEditTriggers)
-            table.setSelectionMode(QTableWidget.NoSelection)
-            header = table.horizontalHeader()
-            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(2, QHeaderView.Stretch)
-            header.setSectionResizeMode(3, QHeaderView.Stretch)
+        table = QTableWidget(len(actions), 4)
+        table.setHorizontalHeaderLabels(["File", "Action", "Local File", "Details"])
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.NoSelection)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
 
-            for row_idx, action in enumerate(actions):
-                values = [
-                    action.file_name,
-                    self._describe_checkin_action(action),
-                    action.local_file,
-                    action.reason,
-                ]
-                for col_idx, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-                    item.setToolTip(value)
-                    table.setItem(row_idx, col_idx, item)
+        for row_idx, action in enumerate(actions):
+            values = [
+                action.file_name,
+                self._describe_checkin_action(action),
+                action.local_file,
+                action.reason,
+            ]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                table.setItem(row_idx, col_idx, item)
 
-            layout.addWidget(table)
-            buttons = QDialogButtonBox()
-            commit_btn = buttons.addButton("Commit Actions", QDialogButtonBox.AcceptRole)
-            cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
-            modify_btn = None
-            if allow_modify:
-                modify_btn = buttons.addButton("Modify Actions", QDialogButtonBox.ActionRole)
-            layout.addWidget(buttons)
-            dialog.exec()
-            clicked = dialog.clickedButton()
-            if clicked == commit_btn:
-                return "commit"
-            if allow_modify and clicked == modify_btn:
-                return "modify"
-            if clicked == cancel_btn:
-                return "cancel"
-            return "cancel"
+        layout.addWidget(table)
+        buttons = QDialogButtonBox()
+        commit_btn = buttons.addButton("Commit Actions", QDialogButtonBox.AcceptRole)
+        cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+        modify_btn = None
+        selected_action = {"value": "cancel"}
+
+        def set_action(value: str) -> None:
+            selected_action["value"] = value
+
+        commit_btn.clicked.connect(lambda: (set_action("commit"), dialog.accept()))
+        cancel_btn.clicked.connect(lambda: (set_action("cancel"), dialog.reject()))
+        if allow_modify:
+            modify_btn = buttons.addButton("Modify Actions", QDialogButtonBox.ActionRole)
+            modify_btn.clicked.connect(lambda: (set_action("modify"), dialog.accept()))
+
+        layout.addWidget(buttons)
+        dialog.exec()
+        if allow_modify and selected_action["value"] == "modify" and modify_btn is not None:
+            return "modify"
+        if selected_action["value"] == "commit":
+            return "commit"
+        return "cancel"
 
     def _show_force_checkin_status_dialog(
         self, tracked_actions: List[PendingCheckinAction], untracked_actions: List[PendingCheckinAction]
@@ -2193,16 +2198,14 @@ class DocumentControlApp(QMainWindow):
         tracked_btn = buttons.addButton("Check In All Tracked", QDialogButtonBox.AcceptRole)
         per_file_btn = buttons.addButton("Continue Per File", QDialogButtonBox.ActionRole)
         cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+        selected_action = {"value": "cancel"}
+
+        tracked_btn.clicked.connect(lambda: (selected_action.__setitem__("value", "tracked"), dialog.accept()))
+        per_file_btn.clicked.connect(lambda: (selected_action.__setitem__("value", "per_file"), dialog.accept()))
+        cancel_btn.clicked.connect(lambda: (selected_action.__setitem__("value", "cancel"), dialog.reject()))
         layout.addWidget(buttons)
         dialog.exec()
-        clicked = dialog.clickedButton()
-        if clicked == tracked_btn:
-            return "tracked"
-        if clicked == per_file_btn:
-            return "per_file"
-        if clicked == cancel_btn:
-            return "cancel"
-        return "cancel"
+        return selected_action["value"]
 
     def _select_force_checkin_file_for_action(
         self, action: PendingCheckinAction
