@@ -2089,6 +2089,8 @@ class DocumentControlApp(QMainWindow):
         return errors
 
     def _describe_checkin_action(self, action: PendingCheckinAction) -> str:
+        if action.action_mode == "skip":
+            return "Skip file"
         if action.action_mode == "unchanged":
             return "Check in unchanged"
         if action.action_mode == "tracked_modified":
@@ -2302,14 +2304,11 @@ class DocumentControlApp(QMainWindow):
                     action.local_file = ""
                     action.reason = "No tracked local file; force check in unchanged."
         else:
-            updated_actions: List[PendingCheckinAction] = []
             for action in planned_actions:
                 updated = self._select_force_checkin_file_for_action(action)
                 if updated is None:
                     return None
-                if updated.action_mode != "skip":
-                    updated_actions.append(updated)
-            planned_actions = updated_actions
+            planned_actions = list(planned_actions)
 
         while True:
             review = self._show_pending_actions_dialog(
@@ -2319,14 +2318,13 @@ class DocumentControlApp(QMainWindow):
                 return planned_actions
             if review == "cancel":
                 return None
-            updated_actions = []
+            updated_plans: List[PendingCheckinAction] = []
             for action in planned_actions:
                 updated = self._select_force_checkin_file_for_action(action)
                 if updated is None:
                     return None
-                if updated.action_mode != "skip":
-                    updated_actions.append(updated)
-            planned_actions = updated_actions
+                updated_plans.append(updated)
+            planned_actions = updated_plans
 
     def _checkin_selected(self) -> None:
         if not self._validate_identity():
