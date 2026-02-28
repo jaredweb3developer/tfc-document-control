@@ -2218,7 +2218,8 @@ class DocumentControlApp(QMainWindow):
             if current_local:
                 dialog.setInformativeText(f"Current local file: {current_local}")
             browse_btn = dialog.addButton("Browse For File", QMessageBox.AcceptRole)
-            skip_btn = dialog.addButton("Skip Current File", QMessageBox.ActionRole)
+            skip_process_btn = dialog.addButton("Skip This File", QMessageBox.ActionRole)
+            skip_unmodified_btn = dialog.addButton("Check In Unmodified", QMessageBox.ActionRole)
             cancel_btn = dialog.addButton("Cancel Entire Operation", QMessageBox.RejectRole)
             tracked_btn = None
             if current_local and Path(current_local).exists():
@@ -2235,10 +2236,15 @@ class DocumentControlApp(QMainWindow):
                 action.action_mode = "tracked_modified"
                 action.reason = "Using the tracked local checked-out file."
                 return action
-            if clicked == skip_btn:
+            if clicked == skip_process_btn:
+                action.action_mode = "skip"
+                action.local_file = ""
+                action.reason = "Removed from the force check-in action list."
+                return action
+            if clicked == skip_unmodified_btn:
                 action.action_mode = "unchanged"
                 action.local_file = ""
-                action.reason = "Skipped modified source selection; force check in unchanged."
+                action.reason = "Skipping modified source selection; force check in unchanged."
                 return action
             if clicked == browse_btn:
                 start_dir = str(Path(current_local).parent) if current_local else str(Path.home())
@@ -2296,11 +2302,14 @@ class DocumentControlApp(QMainWindow):
                     action.local_file = ""
                     action.reason = "No tracked local file; force check in unchanged."
         else:
-            for idx, action in enumerate(planned_actions):
+            updated_actions: List[PendingCheckinAction] = []
+            for action in planned_actions:
                 updated = self._select_force_checkin_file_for_action(action)
                 if updated is None:
                     return None
-                planned_actions[idx] = updated
+                if updated.action_mode != "skip":
+                    updated_actions.append(updated)
+            planned_actions = updated_actions
 
         while True:
             review = self._show_pending_actions_dialog(
@@ -2310,11 +2319,14 @@ class DocumentControlApp(QMainWindow):
                 return planned_actions
             if review == "cancel":
                 return None
-            for idx, action in enumerate(planned_actions):
+            updated_actions = []
+            for action in planned_actions:
                 updated = self._select_force_checkin_file_for_action(action)
                 if updated is None:
                     return None
-                planned_actions[idx] = updated
+                if updated.action_mode != "skip":
+                    updated_actions.append(updated)
+            planned_actions = updated_actions
 
     def _checkin_selected(self) -> None:
         if not self._validate_identity():
