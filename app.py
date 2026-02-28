@@ -791,14 +791,19 @@ class DocumentControlApp(QMainWindow):
             self.controlled_files_list.clear()
             return
 
-        latest_by_file = self._latest_history_by_file(self.current_directory)
+        history_lookup = self._history_lookup_for_directory(self.current_directory)
         for item in sorted(self.current_directory.iterdir()):
             if item.is_file() and item.name != HISTORY_FILE_NAME:
                 if not self._matches_extension_filter(item):
                     continue
                 list_item = QListWidgetItem(item.name)
                 list_item.setData(Qt.UserRole, str(item))
-                self._apply_file_history_style(list_item, item, latest_by_file.get(item.name))
+                history_row = history_lookup.get(item.name)
+                original_name = (
+                    history_row.get("original_file_name", item.name) if history_row else item.name
+                )
+                list_item.setData(Qt.UserRole + 1, original_name)
+                self._apply_file_history_style(list_item, item, history_row)
                 self.files_list.addItem(list_item)
 
         self._refresh_controlled_files()
@@ -1029,6 +1034,22 @@ class DocumentControlApp(QMainWindow):
             if file_name:
                 latest_by_file[file_name] = row
         return latest_by_file
+
+    def _history_lookup_for_directory(self, source_dir: Path) -> Dict[str, Dict[str, str]]:
+        lookup: Dict[str, Dict[str, str]] = {}
+        for original_name, row in self._latest_history_by_file(source_dir).items():
+            mapped_row = dict(row)
+            mapped_row["original_file_name"] = original_name
+            lookup[original_name] = mapped_row
+
+            if row.get("action") == "CHECK_OUT":
+                initials = row.get("user_initials", "")
+                if initials:
+                    original_path = source_dir / original_name
+                    locked_name = self._locked_name_for(original_path, initials).name
+                    lookup[locked_name] = mapped_row
+
+        return lookup
 
     def _history_rows_for_file(self, source_dir: Path, file_name: str) -> List[List[str]]:
         rows: List[List[str]] = []
@@ -1370,10 +1391,11 @@ class DocumentControlApp(QMainWindow):
             return
 
         file_path = Path(selected_items[0].data(Qt.UserRole))
-        rows = self._history_rows_for_file(file_path.parent, file_path.name)
+        original_name = str(selected_items[0].data(Qt.UserRole + 1) or file_path.name)
+        rows = self._history_rows_for_file(file_path.parent, original_name)
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"Document History - {file_path.name}")
+        dialog.setWindowTitle(f"Document History - {original_name}")
         dialog.resize(720, 420)
         layout = QVBoxLayout(dialog)
 
