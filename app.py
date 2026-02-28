@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -72,6 +73,7 @@ class DocumentControlApp(QMainWindow):
         self.current_project_dir: str = ""
         self.current_directory: Optional[Path] = None
         self.directory_tree_root: Optional[Path] = None
+        self.show_configuration_tab_on_startup = True
         self.extension_filter_debounce = QTimer(self)
         self.extension_filter_debounce.setSingleShot(True)
         self.extension_filter_debounce.setInterval(2000)
@@ -88,10 +90,54 @@ class DocumentControlApp(QMainWindow):
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
 
-        layout.addWidget(self._build_configuration_group())
-        layout.addWidget(self._build_projects_group())
-        layout.addWidget(self._build_source_files_group(), stretch=1)
-        layout.addWidget(self._build_checked_out_group(), stretch=1)
+        self.main_tabs = QTabWidget()
+
+        main_tab = QWidget()
+        main_layout = QVBoxLayout(main_tab)
+        self.projects_section = self._build_collapsible_section("Projects", self._build_projects_group())
+        self.source_files_section = self._build_collapsible_section(
+            "Source Files", self._build_source_files_group()
+        )
+        main_layout.addWidget(self.projects_section)
+        main_layout.addWidget(self.source_files_section, stretch=1)
+
+        configuration_tab = QWidget()
+        configuration_layout = QVBoxLayout(configuration_tab)
+        configuration_layout.addWidget(self._build_configuration_group())
+        configuration_layout.addStretch()
+
+        checked_out_tab = QWidget()
+        checked_out_layout = QVBoxLayout(checked_out_tab)
+        checked_out_layout.addWidget(self._build_checked_out_group(), stretch=1)
+
+        self.main_tabs.addTab(main_tab, "Main")
+        self.main_tabs.addTab(configuration_tab, "Configuration")
+        self.main_tabs.addTab(checked_out_tab, "Checked Out Files")
+
+        layout.addWidget(self.main_tabs)
+
+    def _build_collapsible_section(self, title: str, content: QWidget) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        toggle = QToolButton()
+        toggle.setText(title)
+        toggle.setCheckable(True)
+        toggle.setChecked(True)
+        toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        toggle.setArrowType(Qt.DownArrow)
+
+        def _toggle_section(checked: bool) -> None:
+            content.setVisible(checked)
+            toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+
+        toggle.toggled.connect(_toggle_section)
+
+        layout.addWidget(toggle)
+        layout.addWidget(content)
+        return container
 
     def _build_configuration_group(self) -> QGroupBox:
         group = QGroupBox("Configuration")
@@ -248,9 +294,12 @@ class DocumentControlApp(QMainWindow):
         directory_button_bar = QHBoxLayout()
         browse_directory_btn = QPushButton("Browse")
         browse_directory_btn.clicked.connect(self._browse_directory_tree_root)
+        view_directory_btn = QPushButton("View Location")
+        view_directory_btn.clicked.connect(self._view_current_directory_location)
         track_current_directory_btn = QPushButton("Track Directory")
         track_current_directory_btn.clicked.connect(self._track_current_directory)
         directory_button_bar.addWidget(browse_directory_btn)
+        directory_button_bar.addWidget(view_directory_btn)
         directory_button_bar.addWidget(track_current_directory_btn)
         directory_button_bar.addStretch()
         directory_layout.addLayout(directory_button_bar)
@@ -485,14 +534,31 @@ class DocumentControlApp(QMainWindow):
             "current_project_dir": self.current_project_dir,
         }
 
+    def _has_user_configuration(self) -> bool:
+        initials = self.initials_edit.text().strip()
+        full_name = self.full_name_edit.text().strip()
+        base_dir = self.local_path_edit.text().strip()
+        return bool(
+            initials
+            or full_name
+            or (base_dir and Path(base_dir) != self._default_projects_dir())
+        )
+
+    def _apply_startup_tab(self) -> None:
+        self.main_tabs.setCurrentIndex(1 if self.show_configuration_tab_on_startup else 0)
+
     def _load_settings(self) -> None:
         self.local_path_edit.setText(str(self._default_projects_dir()))
         if not SETTINGS_FILE.exists():
+            self.show_configuration_tab_on_startup = True
+            self._apply_startup_tab()
             return
 
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
+            self.show_configuration_tab_on_startup = True
+            self._apply_startup_tab()
             return
 
         self.initials_edit.setText(str(data.get("initials", "")).strip())
@@ -501,6 +567,8 @@ class DocumentControlApp(QMainWindow):
         if base_dir:
             self.local_path_edit.setText(base_dir)
         self.current_project_dir = str(data.get("current_project_dir", "")).strip()
+        self.show_configuration_tab_on_startup = not self._has_user_configuration()
+        self._apply_startup_tab()
 
     def _save_settings(self) -> None:
         SETTINGS_FILE.write_text(
@@ -996,6 +1064,12 @@ class DocumentControlApp(QMainWindow):
         selected_path = Path(path)
         self._set_directory_tree_root(selected_path)
         self._set_current_directory(selected_path)
+
+    def _view_current_directory_location(self) -> None:
+        current_directory = self._validate_current_directory()
+        if not current_directory:
+            return
+        self._open_paths([current_directory])
 
     def _on_source_root_changed(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
         if not current:
