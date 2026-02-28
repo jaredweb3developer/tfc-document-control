@@ -11,6 +11,7 @@ from PySide6.QtCore import QDir, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -586,17 +587,23 @@ class DocumentControlApp(QMainWindow):
         if item:
             self._load_project_from_dir(Path(item.data(Qt.UserRole)))
 
-    def _create_or_update_project(self, name: str, project_dir: Path) -> None:
+    def _create_or_update_project(
+        self,
+        name: str,
+        project_dir: Path,
+        sources: Optional[List[str]] = None,
+        extension_filters: Optional[List[str]] = None,
+        filter_mode: str = "No Filter",
+    ) -> None:
         base_dir = self._ensure_base_projects_dir()
         _ = base_dir
 
-        sources = self._source_roots_from_list()
         self._write_project_config(
             project_dir,
             name,
-            sources,
-            self._current_extension_filters(),
-            self.file_filter_mode_combo.currentText(),
+            sources or [],
+            extension_filters or [],
+            filter_mode,
         )
         self.current_project_dir = str(project_dir)
         self._register_tracked_project(name, project_dir)
@@ -617,10 +624,12 @@ class DocumentControlApp(QMainWindow):
         layout.addLayout(form_layout)
 
         keep_current_radio = QRadioButton("Create without changing the current directory")
-        keep_current_radio.setChecked(True)
         root_radio = QRadioButton("Create starting from the root of the file system")
+        root_radio.setChecked(True)
+        clone_current_checkbox = QCheckBox("Copy sources and filter settings from current project")
         layout.addWidget(keep_current_radio)
         layout.addWidget(root_radio)
+        layout.addWidget(clone_current_checkbox)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
@@ -636,7 +645,21 @@ class DocumentControlApp(QMainWindow):
             return
 
         project_dir = self._ensure_base_projects_dir() / self._safe_project_dir_name(name)
-        self._create_or_update_project(name, project_dir)
+        sources: List[str] = []
+        extension_filters: List[str] = []
+        filter_mode = "No Filter"
+        if clone_current_checkbox.isChecked():
+            sources = self._source_roots_from_list()
+            extension_filters = self._current_extension_filters()
+            filter_mode = self.file_filter_mode_combo.currentText()
+
+        self._create_or_update_project(
+            name,
+            project_dir,
+            sources=sources,
+            extension_filters=extension_filters,
+            filter_mode=filter_mode,
+        )
 
         if root_radio.isChecked():
             self._set_directory_tree_root(None)
@@ -686,21 +709,49 @@ class DocumentControlApp(QMainWindow):
             self._error("The Default project cannot be untracked.")
             return
 
-        project_dir = str(item.data(Qt.UserRole))
+        project_dir = Path(str(item.data(Qt.UserRole)))
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Untrack Project")
+        prompt.setText(f"What would you like to do with '{item.text()}'?")
+        prompt.setInformativeText(
+            "You can untrack the project only, or also delete its local project files."
+        )
+        untrack_btn = prompt.addButton("Untrack Only", QMessageBox.AcceptRole)
+        delete_btn = prompt.addButton("Untrack && Delete Files", QMessageBox.DestructiveRole)
+        prompt.addButton(QMessageBox.Cancel)
+        prompt.setDefaultButton(untrack_btn)
+        prompt.exec()
+
+        clicked = prompt.clickedButton()
+        if clicked is None or clicked.text() == "Cancel":
+            return
+
+        delete_project_files = clicked == delete_btn
         self.tracked_projects = [
-            entry for entry in self.tracked_projects if entry["project_dir"] != project_dir
+            entry for entry in self.tracked_projects if entry["project_dir"] != str(project_dir)
         ]
         if not self.tracked_projects:
             self.current_project_dir = ""
             self._ensure_default_project()
             self._load_last_or_default_project()
         else:
-            if self.current_project_dir == project_dir:
+            if self.current_project_dir == str(project_dir):
                 self.current_project_dir = self.tracked_projects[0]["project_dir"]
                 self._load_project_from_dir(Path(self.current_project_dir))
             self._save_tracked_projects()
             self._refresh_tracked_projects_list()
             self._save_settings()
+
+        if delete_project_files and project_dir.exists():
+            try:
+                shutil.rmtree(project_dir)
+            except OSError as exc:
+                self._error(f"Project was untracked, but files could not be deleted:\n{exc}")
+                return
+
+        self._save_tracked_projects()
+        self._refresh_tracked_projects_list()
+        self._save_settings()
 
     def _load_project_from_dir(self, project_dir: Path) -> None:
         config = self._read_project_config(project_dir)
