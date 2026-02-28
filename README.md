@@ -1,27 +1,25 @@
-# Basic Document Control App (Python + Qt)
+# Document Control App
 
-This is a starter desktop application for checking out and checking in files from a shared source folder.
+Python + Qt desktop app for checking source documents in and out across tracked projects and tracked source directories.
 
-## Features
-- Pick a source folder (shared/network path).
-- Pick a local working folder.
-- Enter user initials and optional full name.
-- Save/load named project configurations (source/local).
-- View and load from a recent-projects list.
-- Select one or more files and **Check Out**:
-  - Copy source file to local folder.
-  - Rename source file from `name.ext` to `name-INITIALS.ext`.
-  - Persist a checkout record in `.checkout_records.json`.
-  - Append a history event in the source folder log.
-- Select checked-out rows and **Check In**:
-  - Copy local file over the locked source file.
-  - Rename locked source file back to original name (remove initials suffix).
-  - Remove checkout record.
-  - Append a history event in the source folder log.
-- Add brand new local file(s) into the source folder with **Add Local File(s) To Source**.
-- Open files from list views:
-  - Double-click source files or checked-out rows.
-  - Use **Open Selected** buttons in each section.
+## Highlights
+- Configuration section is now top-most.
+- User initials and full name are stored side-by-side.
+- Root application settings are saved to `settings.json`.
+- Tracked project registry is saved to `projects.json`.
+- Each project stores its own config in `dctl.json` inside that project's folder.
+- Default base project directory is `Projects/` under the application root.
+- Default project is created automatically if no tracked projects exist.
+- Projects can track multiple source directories.
+- Source Files view includes:
+  - tracked source directories
+  - a directory tree browser
+  - a file list bound to the selected directory
+  - per-file document history view
+- Checked Out Files view includes tabs for:
+  - all checked out files
+  - current project only
+- History files do not store the local file path.
 
 ## Setup
 ```bash
@@ -35,12 +33,14 @@ pip install -r requirements.txt
 python app.py
 ```
 
-## Data Files
-- `.checkout_records.json`: checked-out file state.
-- `.projects.json`: saved projects and recent-projects metadata.
-- `.app_settings.json`: persisted user initials and full name.
-- `.doc_control_history.csv` (inside each source folder): file activity history for that folder.
-  - Columns: `timestamp, action, file_name, user_initials, user_full_name, local_file`
+## Data Layout
+- `settings.json`: user identity, base projects directory, last loaded project
+- `projects.json`: tracked project list
+- `Projects/<ProjectName>/dctl.json`: per-project config
+- `.checkout_records.json`: checkout state
+- `.doc_control_history.csv`: per-source-folder file history
 
 ## Notes
-- If two users run separate app instances without a shared backend, collisions are still possible. A shared lock file or database is the natural next step.
+- Saving a new project creates a project directory under the configured local base folder.
+- Adding an existing project tracks a user-selected `dctl.json` file.
+- Untracking a project only removes it from `projects.json`; it does not delete project files.
