@@ -247,8 +247,8 @@ class DocumentControlApp(QMainWindow):
         filter_bar.addWidget(add_extension_btn)
         filter_bar.addWidget(remove_extension_btn)
         filter_bar.addWidget(clear_extensions_btn)
-        filter_bar.addWidget(self.file_extension_list_edit, stretch=1)
         files_layout.addLayout(filter_bar)
+        files_layout.addWidget(self.file_extension_list_edit)
 
         self.files_list = QListWidget()
         self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
