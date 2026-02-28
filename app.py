@@ -2050,7 +2050,7 @@ class DocumentControlApp(QMainWindow):
         return "cancel"
 
     def _perform_pending_checkin_actions(
-        self, actions: List[PendingCheckinAction], history_action: str
+        self, actions: List[PendingCheckinAction], workflow: str
     ) -> List[str]:
         errors: List[str] = []
         completed_indexes: List[int] = []
@@ -2077,7 +2077,11 @@ class DocumentControlApp(QMainWindow):
                 else:
                     continue
 
-                self._append_history(source_file.parent, history_action, source_file.name)
+                self._append_history(
+                    source_file.parent,
+                    self._history_action_for_checkin(action, workflow),
+                    source_file.name,
+                )
                 if action.record_idx >= 0:
                     completed_indexes.append(action.record_idx)
             except OSError as exc:
@@ -2087,6 +2091,23 @@ class DocumentControlApp(QMainWindow):
             self._remove_record_indexes(completed_indexes)
             self._save_records()
         return errors
+
+    def _history_action_for_checkin(self, action: PendingCheckinAction, workflow: str) -> str:
+        if workflow == "standard":
+            if action.action_mode in {"modified", "tracked_modified", "selected_modified"}:
+                return "CHECK_IN_MODIFIED"
+            return "CHECK_IN_UNCHANGED"
+
+        if workflow == "force":
+            if action.action_mode == "tracked_modified":
+                return "CHECK_IN_MODIFIED"
+            if action.action_mode == "selected_modified":
+                return "FORCE_CHECK_IN_MODIFIED"
+            return "FORCE_CHECK_IN_UNCHANGED"
+
+        if action.action_mode in {"modified", "tracked_modified", "selected_modified"}:
+            return "CHECK_IN_MODIFIED"
+        return "CHECK_IN_UNCHANGED"
 
     def _describe_checkin_action(self, action: PendingCheckinAction) -> str:
         if action.action_mode == "skip":
@@ -2370,7 +2391,7 @@ class DocumentControlApp(QMainWindow):
         if review != "commit":
             return
 
-        errors = self._perform_pending_checkin_actions(actions, "CHECK_IN")
+        errors = self._perform_pending_checkin_actions(actions, "standard")
         self._refresh_source_files()
         self._refresh_controlled_files()
         self._render_records_tables()
@@ -2512,7 +2533,7 @@ class DocumentControlApp(QMainWindow):
             if actions is None:
                 return
 
-        errors = self._perform_pending_checkin_actions(actions, "FORCE_CHECK_IN")
+        errors = self._perform_pending_checkin_actions(actions, "force")
         self._refresh_source_files()
         self._refresh_controlled_files()
         self._render_records_tables()
