@@ -46,6 +46,7 @@ APP_ROOT = Path(__file__).resolve().parent
 SETTINGS_FILE = APP_ROOT / "settings.json"
 PROJECTS_FILE = APP_ROOT / "projects.json"
 RECORDS_FILE = APP_ROOT / ".checkout_records.json"
+FILTER_PRESETS_FILE = APP_ROOT / "filter_presets.json"
 PROJECT_CONFIG_FILE = "dctl.json"
 HISTORY_FILE_NAME = ".doc_control_history.csv"
 DEFAULT_PROJECT_NAME = "Default"
@@ -63,6 +64,17 @@ class CheckoutRecord:
     checked_out_at: str = ""
 
 
+@dataclass
+class PendingCheckinAction:
+    file_name: str
+    source_file: str
+    locked_source_file: str
+    action_mode: str
+    local_file: str = ""
+    record_idx: int = -1
+    reason: str = ""
+
+
 class DocumentControlApp(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -75,12 +87,14 @@ class DocumentControlApp(QMainWindow):
         self.current_directory: Optional[Path] = None
         self.directory_tree_root: Optional[Path] = None
         self.show_configuration_tab_on_startup = True
+        self.filter_presets: List[Dict[str, object]] = []
         self.extension_filter_debounce = QTimer(self)
         self.extension_filter_debounce.setSingleShot(True)
         self.extension_filter_debounce.setInterval(2000)
         self.extension_filter_debounce.timeout.connect(self._apply_debounced_extension_filters)
 
         self._build_ui()
+        self._load_filter_presets()
         self._load_settings()
         self._load_tracked_projects()
         self._load_records()
@@ -322,6 +336,8 @@ class DocumentControlApp(QMainWindow):
         files_layout.addWidget(QLabel("Files"))
 
         filter_bar = QHBoxLayout()
+        presets_btn = QPushButton("Presets")
+        presets_btn.clicked.connect(self._show_filter_presets_dialog)
         self.file_filter_mode_combo = QComboBox()
         self.file_filter_mode_combo.addItems(["No Filter", "Include Only", "Exclude"])
         self.file_filter_mode_combo.currentIndexChanged.connect(self._on_filter_mode_changed)
@@ -359,13 +375,17 @@ class DocumentControlApp(QMainWindow):
         clear_extensions_btn.clicked.connect(self._clear_filter_extensions)
 
         filter_bar.addWidget(QLabel("Extension Filter"))
-        filter_bar.addWidget(self.file_filter_mode_combo)
+        filter_bar.addWidget(presets_btn)
         filter_bar.addWidget(self.file_extension_combo)
         filter_bar.addWidget(add_extension_btn)
         filter_bar.addWidget(remove_extension_btn)
         filter_bar.addWidget(clear_extensions_btn)
         files_layout.addLayout(filter_bar)
-        files_layout.addWidget(self.file_extension_list_edit)
+        extension_list_bar = QHBoxLayout()
+        extension_list_bar.addWidget(QLabel("Filter Mode"))
+        extension_list_bar.addWidget(self.file_filter_mode_combo)
+        extension_list_bar.addWidget(self.file_extension_list_edit, stretch=1)
+        files_layout.addLayout(extension_list_bar)
 
         self.files_list = QListWidget()
         self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
@@ -1426,6 +1446,220 @@ class DocumentControlApp(QMainWindow):
         notes = [note for note in self._current_project_notes() if note.get("id", "") != note_id]
         self._set_project_notes(notes)
 
+    def _normalize_filter_preset(self, preset: Dict[str, object]) -> Optional[Dict[str, object]]:
+        name = str(preset.get("name", "")).strip()
+        if not name:
+            return None
+        filter_mode = str(preset.get("filter_mode", "No Filter")).strip() or "No Filter"
+        if filter_mode not in {"No Filter", "Include Only", "Exclude"}:
+            filter_mode = "No Filter"
+        raw_extensions = preset.get("extensions", [])
+        if isinstance(raw_extensions, str):
+            raw_extensions = raw_extensions.split(",")
+        extensions: List[str] = []
+        if isinstance(raw_extensions, list):
+            for value in raw_extensions:
+                normalized = self._normalize_extension_value(str(value))
+                if normalized and normalized not in extensions:
+                    extensions.append(normalized)
+        return {"name": name, "filter_mode": filter_mode, "extensions": extensions}
+
+    def _load_filter_presets(self) -> None:
+        self.filter_presets = []
+        if not FILTER_PRESETS_FILE.exists():
+            return
+        try:
+            data = json.loads(FILTER_PRESETS_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return
+
+        raw_presets = data.get("presets", [])
+        if not isinstance(raw_presets, list):
+            return
+        for preset in raw_presets:
+            if not isinstance(preset, dict):
+                continue
+            normalized = self._normalize_filter_preset(preset)
+            if normalized:
+                self.filter_presets.append(normalized)
+        self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+
+    def _save_filter_presets(self) -> None:
+        FILTER_PRESETS_FILE.write_text(
+            json.dumps({"presets": self.filter_presets}, indent=2),
+            encoding="utf-8",
+        )
+
+    def _show_filter_preset_editor(
+        self, preset: Optional[Dict[str, object]] = None
+    ) -> Optional[Dict[str, object]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Filter Preset" if preset else "New Filter Preset")
+        dialog.resize(520, 220)
+        layout = QVBoxLayout(dialog)
+
+        form = QGridLayout()
+        name_edit = QLineEdit(str(preset.get("name", "")) if preset else "")
+        mode_combo = QComboBox()
+        mode_combo.addItems(["No Filter", "Include Only", "Exclude"])
+        mode_combo.setCurrentText(str(preset.get("filter_mode", "No Filter")) if preset else "No Filter")
+        extensions_edit = QLineEdit(
+            ", ".join(preset.get("extensions", [])) if preset else ""
+        )
+        extensions_edit.setPlaceholderText(".dwg, .pdf, .xlsx")
+        form.addWidget(QLabel("Preset Name:"), 0, 0)
+        form.addWidget(name_edit, 0, 1)
+        form.addWidget(QLabel("Filter Mode:"), 1, 0)
+        form.addWidget(mode_combo, 1, 1)
+        form.addWidget(QLabel("Extensions:"), 2, 0)
+        form.addWidget(extensions_edit, 2, 1)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        normalized = self._normalize_filter_preset(
+            {
+                "name": name_edit.text(),
+                "filter_mode": mode_combo.currentText(),
+                "extensions": extensions_edit.text(),
+            }
+        )
+        if not normalized:
+            self._error("Preset name is required.")
+            return None
+        return normalized
+
+    def _show_filter_presets_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Filter Presets")
+        dialog.resize(760, 420)
+        layout = QVBoxLayout(dialog)
+        preset_list = QListWidget()
+        detail_label = QLabel("Select a preset to inspect or apply it.")
+        detail_label.setWordWrap(True)
+
+        def refresh_list() -> None:
+            preset_list.clear()
+            for preset in self.filter_presets:
+                item = QListWidgetItem(str(preset["name"]))
+                extensions = ", ".join(str(ext) for ext in preset.get("extensions", []))
+                tooltip = f"Mode: {preset.get('filter_mode', 'No Filter')}\nExtensions: {extensions or '(none)'}"
+                item.setToolTip(tooltip)
+                item.setData(Qt.UserRole, str(preset["name"]))
+                preset_list.addItem(item)
+
+        def selected_preset() -> Optional[Dict[str, object]]:
+            item = preset_list.currentItem()
+            if not item:
+                return None
+            name = str(item.data(Qt.UserRole))
+            for preset in self.filter_presets:
+                if str(preset["name"]) == name:
+                    return preset
+            return None
+
+        def update_detail() -> None:
+            preset = selected_preset()
+            if not preset:
+                detail_label.setText("Select a preset to inspect or apply it.")
+                return
+            extensions = ", ".join(str(ext) for ext in preset.get("extensions", [])) or "(none)"
+            detail_label.setText(
+                f"Mode: {preset.get('filter_mode', 'No Filter')}\nExtensions: {extensions}"
+            )
+
+        def create_preset() -> None:
+            preset = self._show_filter_preset_editor()
+            if not preset:
+                return
+            self.filter_presets = [
+                existing for existing in self.filter_presets if str(existing["name"]).lower() != str(preset["name"]).lower()
+            ]
+            self.filter_presets.append(preset)
+            self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+            self._save_filter_presets()
+            refresh_list()
+
+        def edit_preset() -> None:
+            preset = selected_preset()
+            if not preset:
+                self._error("Select a preset to edit.")
+                return
+            updated = self._show_filter_preset_editor(preset)
+            if not updated:
+                return
+            self.filter_presets = [
+                existing
+                for existing in self.filter_presets
+                if str(existing["name"]).lower() != str(preset["name"]).lower()
+            ]
+            self.filter_presets.append(updated)
+            self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+            self._save_filter_presets()
+            refresh_list()
+
+        def delete_preset() -> None:
+            preset = selected_preset()
+            if not preset:
+                self._error("Select a preset to delete.")
+                return
+            self.filter_presets = [
+                existing
+                for existing in self.filter_presets
+                if str(existing["name"]).lower() != str(preset["name"]).lower()
+            ]
+            self._save_filter_presets()
+            refresh_list()
+            update_detail()
+
+        def apply_preset() -> None:
+            preset = selected_preset()
+            if not preset:
+                self._error("Select a preset to apply.")
+                return
+            self.file_filter_mode_combo.blockSignals(True)
+            self.file_filter_mode_combo.setCurrentText(str(preset.get("filter_mode", "No Filter")))
+            self.file_filter_mode_combo.blockSignals(False)
+            self._set_extension_filters([str(ext) for ext in preset.get("extensions", [])])
+            self._save_current_project_filters()
+            dialog.accept()
+
+        preset_list.currentItemChanged.connect(lambda _current, _previous: update_detail())
+        preset_list.itemDoubleClicked.connect(lambda _item: apply_preset())
+        layout.addWidget(preset_list, stretch=1)
+        layout.addWidget(detail_label)
+
+        controls = QHBoxLayout()
+        new_btn = QPushButton("New")
+        new_btn.clicked.connect(create_preset)
+        edit_btn = QPushButton("Edit")
+        edit_btn.clicked.connect(edit_preset)
+        delete_btn = QPushButton("Delete")
+        delete_btn.clicked.connect(delete_preset)
+        apply_btn = QPushButton("Apply Selected To Project")
+        apply_btn.clicked.connect(apply_preset)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.reject)
+        controls.addWidget(new_btn)
+        controls.addWidget(edit_btn)
+        controls.addWidget(delete_btn)
+        controls.addStretch()
+        controls.addWidget(apply_btn)
+        controls.addWidget(close_btn)
+        layout.addLayout(controls)
+
+        refresh_list()
+        if preset_list.count() > 0:
+            preset_list.setCurrentRow(0)
+        update_detail()
+        dialog.exec()
+
     def _normalize_extension_value(self, value: str) -> str:
         value = value.strip().lower()
         if not value:
@@ -1763,6 +1997,322 @@ class DocumentControlApp(QMainWindow):
                 indexes.append(record_idx)
         return indexes
 
+    def _remove_record_indexes(self, record_indexes: List[int]) -> None:
+        selected = set(record_indexes)
+        self.records = [
+            record for idx, record in enumerate(self.records) if idx not in selected
+        ]
+
+    def _record_index_for_controlled_file(self, entry: Dict[str, str]) -> int:
+        file_name = str(entry.get("file_name", ""))
+        locked_source_file = str(entry.get("locked_source_file", ""))
+        for idx, record in enumerate(self.records):
+            if Path(record.source_file).name == file_name and record.locked_source_file == locked_source_file:
+                return idx
+            if record.locked_source_file == locked_source_file:
+                return idx
+        return -1
+
+    def _show_checkin_mode_dialog(self, title: str, body: str, modified_label: str, unchanged_label: str) -> str:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(title)
+        dialog.setText(body)
+        modified_btn = dialog.addButton(modified_label, QMessageBox.AcceptRole)
+        unchanged_btn = dialog.addButton(unchanged_label, QMessageBox.ActionRole)
+        dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(modified_btn)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked == modified_btn:
+            return "modified"
+        if clicked == unchanged_btn:
+            return "unchanged"
+        return "cancel"
+
+    def _show_force_checkin_warning_dialog(self) -> str:
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setWindowTitle("Force Check In")
+        dialog.setText("Force check-in can affect another user's document control state.")
+        dialog.setInformativeText(
+            "Use force check-in only if you are absolutely sure the selected files should be released."
+        )
+        modified_btn = dialog.addButton("Attempt Modified Check In", QMessageBox.AcceptRole)
+        unchanged_btn = dialog.addButton("Force Check In Unmodified", QMessageBox.ActionRole)
+        dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(unchanged_btn)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked == modified_btn:
+            return "modified"
+        if clicked == unchanged_btn:
+            return "unchanged"
+        return "cancel"
+
+    def _perform_pending_checkin_actions(
+        self, actions: List[PendingCheckinAction], history_action: str
+    ) -> List[str]:
+        errors: List[str] = []
+        completed_indexes: List[int] = []
+        for action in actions:
+            source_file = Path(action.source_file)
+            locked_source_file = Path(action.locked_source_file)
+
+            try:
+                if action.action_mode in {"modified", "tracked_modified", "selected_modified"}:
+                    local_file = Path(action.local_file)
+                    if not local_file.exists():
+                        errors.append(f"Local file missing: {local_file}")
+                        continue
+                    if not locked_source_file.exists():
+                        errors.append(f"Locked source file missing: {locked_source_file}")
+                        continue
+                    shutil.copy2(local_file, locked_source_file)
+                    locked_source_file.replace(source_file)
+                elif action.action_mode == "unchanged":
+                    if not locked_source_file.exists():
+                        errors.append(f"Missing locked source file: {locked_source_file}")
+                        continue
+                    locked_source_file.replace(source_file)
+                else:
+                    continue
+
+                self._append_history(source_file.parent, history_action, source_file.name)
+                if action.record_idx >= 0:
+                    completed_indexes.append(action.record_idx)
+            except OSError as exc:
+                errors.append(f"{source_file.name}: {exc}")
+
+        if completed_indexes:
+            self._remove_record_indexes(completed_indexes)
+            self._save_records()
+        return errors
+
+    def _describe_checkin_action(self, action: PendingCheckinAction) -> str:
+        if action.action_mode == "unchanged":
+            return "Check in unchanged"
+        if action.action_mode == "tracked_modified":
+            return "Check in modified from tracked local file"
+        if action.action_mode == "selected_modified":
+            return "Check in modified from selected file"
+        if action.action_mode == "modified":
+            return "Check in modified"
+        return action.action_mode
+
+    def _show_pending_actions_dialog(
+        self, title: str, actions: List[PendingCheckinAction], allow_modify: bool = False
+    ) -> str:
+        while True:
+            dialog = QDialog(self)
+            dialog.setWindowTitle(title)
+            dialog.resize(1080, 420)
+            layout = QVBoxLayout(dialog)
+            layout.addWidget(QLabel("The following actions will be performed:"))
+
+            table = QTableWidget(len(actions), 4)
+            table.setHorizontalHeaderLabels(["File", "Action", "Local File", "Details"])
+            table.setEditTriggers(QTableWidget.NoEditTriggers)
+            table.setSelectionMode(QTableWidget.NoSelection)
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.Stretch)
+            header.setSectionResizeMode(3, QHeaderView.Stretch)
+
+            for row_idx, action in enumerate(actions):
+                values = [
+                    action.file_name,
+                    self._describe_checkin_action(action),
+                    action.local_file,
+                    action.reason,
+                ]
+                for col_idx, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    item.setToolTip(value)
+                    table.setItem(row_idx, col_idx, item)
+
+            layout.addWidget(table)
+            buttons = QDialogButtonBox()
+            commit_btn = buttons.addButton("Commit Actions", QDialogButtonBox.AcceptRole)
+            cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+            modify_btn = None
+            if allow_modify:
+                modify_btn = buttons.addButton("Modify Actions", QDialogButtonBox.ActionRole)
+            layout.addWidget(buttons)
+            dialog.exec()
+            clicked = dialog.clickedButton()
+            if clicked == commit_btn:
+                return "commit"
+            if allow_modify and clicked == modify_btn:
+                return "modify"
+            if clicked == cancel_btn:
+                return "cancel"
+            return "cancel"
+
+    def _show_force_checkin_status_dialog(
+        self, tracked_actions: List[PendingCheckinAction], untracked_actions: List[PendingCheckinAction]
+    ) -> str:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Force Check-In Status")
+        dialog.resize(1000, 520)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Tracked files available for modified check-in"))
+        tracked_table = QTableWidget(len(tracked_actions), 3)
+        tracked_table.setHorizontalHeaderLabels(["File", "Tracked Local File", "Details"])
+        tracked_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        tracked_table.setSelectionMode(QTableWidget.NoSelection)
+        tracked_header = tracked_table.horizontalHeader()
+        tracked_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        tracked_header.setSectionResizeMode(1, QHeaderView.Stretch)
+        tracked_header.setSectionResizeMode(2, QHeaderView.Stretch)
+        for row_idx, action in enumerate(tracked_actions):
+            values = [action.file_name, action.local_file, action.reason]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                tracked_table.setItem(row_idx, col_idx, item)
+        layout.addWidget(tracked_table)
+
+        layout.addWidget(QLabel("Files without a tracked modified local file"))
+        untracked_table = QTableWidget(len(untracked_actions), 2)
+        untracked_table.setHorizontalHeaderLabels(["File", "Details"])
+        untracked_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        untracked_table.setSelectionMode(QTableWidget.NoSelection)
+        untracked_header = untracked_table.horizontalHeader()
+        untracked_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        untracked_header.setSectionResizeMode(1, QHeaderView.Stretch)
+        for row_idx, action in enumerate(untracked_actions):
+            values = [action.file_name, action.reason]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                untracked_table.setItem(row_idx, col_idx, item)
+        layout.addWidget(untracked_table)
+
+        buttons = QDialogButtonBox()
+        tracked_btn = buttons.addButton("Check In All Tracked", QDialogButtonBox.AcceptRole)
+        per_file_btn = buttons.addButton("Continue Per File", QDialogButtonBox.ActionRole)
+        cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+        layout.addWidget(buttons)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked == tracked_btn:
+            return "tracked"
+        if clicked == per_file_btn:
+            return "per_file"
+        if clicked == cancel_btn:
+            return "cancel"
+        return "cancel"
+
+    def _select_force_checkin_file_for_action(
+        self, action: PendingCheckinAction
+    ) -> Optional[PendingCheckinAction]:
+        current_local = action.local_file
+        while True:
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle("Select Modified File")
+            dialog.setText(f"Choose how to handle '{action.file_name}'.")
+            if current_local:
+                dialog.setInformativeText(f"Current local file: {current_local}")
+            browse_btn = dialog.addButton("Browse For File", QMessageBox.AcceptRole)
+            skip_btn = dialog.addButton("Skip Current File", QMessageBox.ActionRole)
+            cancel_btn = dialog.addButton("Cancel Entire Operation", QMessageBox.RejectRole)
+            tracked_btn = None
+            if current_local and Path(current_local).exists():
+                tracked_btn = dialog.addButton("Use Current Tracked File", QMessageBox.ActionRole)
+                dialog.setDefaultButton(tracked_btn)
+            else:
+                dialog.setDefaultButton(browse_btn)
+            dialog.exec()
+            clicked = dialog.clickedButton()
+            if clicked == cancel_btn:
+                return None
+            if tracked_btn is not None and clicked == tracked_btn:
+                action.local_file = current_local
+                action.action_mode = "tracked_modified"
+                action.reason = "Using the tracked local checked-out file."
+                return action
+            if clicked == skip_btn:
+                action.action_mode = "unchanged"
+                action.local_file = ""
+                action.reason = "Skipped modified source selection; force check in unchanged."
+                return action
+            if clicked == browse_btn:
+                start_dir = str(Path(current_local).parent) if current_local else str(Path.home())
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    f"Select Modified File For {action.file_name}",
+                    start_dir,
+                    "All Files (*)",
+                )
+                if not file_path:
+                    continue
+                action.local_file = file_path
+                action.action_mode = "selected_modified"
+                action.reason = "Using a manually selected local file."
+                return action
+
+    def _plan_force_checkin_actions(
+        self, entries: List[Dict[str, str]]
+    ) -> Optional[List[PendingCheckinAction]]:
+        tracked_actions: List[PendingCheckinAction] = []
+        untracked_actions: List[PendingCheckinAction] = []
+        planned_actions: List[PendingCheckinAction] = []
+
+        for entry in entries:
+            file_name = str(entry.get("file_name", ""))
+            locked_source_file = str(entry.get("locked_source_file", ""))
+            source_file = str(self.current_directory / file_name) if self.current_directory else file_name
+            record_idx = self._record_index_for_controlled_file(entry)
+            action = PendingCheckinAction(
+                file_name=file_name,
+                source_file=source_file,
+                locked_source_file=locked_source_file,
+                action_mode="unchanged",
+                record_idx=record_idx,
+                reason="No tracked modified file found. Will release the source file unchanged.",
+            )
+            if record_idx >= 0 and 0 <= record_idx < len(self.records):
+                action.local_file = self.records[record_idx].local_file
+                action.reason = "Tracked modified local file available."
+                tracked_actions.append(action)
+            else:
+                untracked_actions.append(action)
+            planned_actions.append(action)
+
+        choice = self._show_force_checkin_status_dialog(tracked_actions, untracked_actions)
+        if choice == "cancel":
+            return None
+        if choice == "tracked":
+            for action in planned_actions:
+                if action.local_file and Path(action.local_file).exists():
+                    action.action_mode = "tracked_modified"
+                    action.reason = "Using the tracked local checked-out file."
+                else:
+                    action.action_mode = "unchanged"
+                    action.local_file = ""
+                    action.reason = "No tracked local file; force check in unchanged."
+        else:
+            for idx, action in enumerate(planned_actions):
+                updated = self._select_force_checkin_file_for_action(action)
+                if updated is None:
+                    return None
+                planned_actions[idx] = updated
+
+        while True:
+            review = self._show_pending_actions_dialog(
+                "Review Force Check-In Actions", planned_actions, allow_modify=True
+            )
+            if review == "commit":
+                return planned_actions
+            if review == "cancel":
+                return None
+            for idx, action in enumerate(planned_actions):
+                updated = self._select_force_checkin_file_for_action(action)
+                if updated is None:
+                    return None
+                planned_actions[idx] = updated
+
     def _checkin_selected(self) -> None:
         if not self._validate_identity():
             return
@@ -1772,37 +2322,42 @@ class DocumentControlApp(QMainWindow):
             self._error("Select at least one checked-out row to check in.")
             return
 
-        errors: List[str] = []
-        remaining: List[CheckoutRecord] = []
+        choice = self._show_checkin_mode_dialog(
+            "Check In Files",
+            "Choose how the selected files should be checked in.",
+            "Check In With Modifications",
+            "Check In Unchanged",
+        )
+        if choice == "cancel":
+            return
 
-        for record_idx, record in enumerate(self.records):
-            if record_idx not in selected_indexes:
-                remaining.append(record)
+        actions: List[PendingCheckinAction] = []
+        for record_idx in sorted(selected_indexes):
+            if not (0 <= record_idx < len(self.records)):
                 continue
+            record = self.records[record_idx]
+            reason = (
+                "Copy the local checked-out file back to the locked source file before releasing it."
+                if choice == "modified"
+                else "Release the locked source file without copying the local file back."
+            )
+            actions.append(
+                PendingCheckinAction(
+                    file_name=Path(record.source_file).name,
+                    source_file=record.source_file,
+                    locked_source_file=record.locked_source_file,
+                    action_mode=choice,
+                    local_file=record.local_file if choice == "modified" else "",
+                    record_idx=record_idx,
+                    reason=reason,
+                )
+            )
 
-            source_file = Path(record.source_file)
-            locked_source_file = Path(record.locked_source_file)
-            local_file = Path(record.local_file)
+        review = self._show_pending_actions_dialog("Review Check-In Actions", actions)
+        if review != "commit":
+            return
 
-            if not local_file.exists():
-                errors.append(f"Local file missing: {local_file}")
-                remaining.append(record)
-                continue
-            if not locked_source_file.exists():
-                errors.append(f"Locked source file missing: {locked_source_file}")
-                remaining.append(record)
-                continue
-
-            try:
-                shutil.copy2(local_file, locked_source_file)
-                locked_source_file.replace(source_file)
-                self._append_history(source_file.parent, "CHECK_IN", source_file.name)
-            except OSError as exc:
-                errors.append(f"{source_file.name}: {exc}")
-                remaining.append(record)
-
-        self.records = remaining
-        self._save_records()
+        errors = self._perform_pending_checkin_actions(actions, "CHECK_IN")
         self._refresh_source_files()
         self._refresh_controlled_files()
         self._render_records_tables()
@@ -1906,55 +2461,52 @@ class DocumentControlApp(QMainWindow):
             self._error("Select at least one controlled file to force check in.")
             return
 
-        errors: List[str] = []
-        released_files: List[str] = []
-        selected_locked_paths: set[str] = set()
+        choice = self._show_force_checkin_warning_dialog()
+        if choice == "cancel":
+            return
 
+        entries: List[Dict[str, str]] = []
         for item in selected_items:
             entry = item.data(Qt.UserRole)
             if not isinstance(entry, dict):
                 continue
+            entries.append(entry)
 
-            file_name = str(entry.get("file_name", ""))
-            locked_source_file = Path(str(entry.get("locked_source_file", "")))
-            source_file = current_directory / file_name
-            if not file_name:
-                continue
-
-            try:
-                if locked_source_file.exists():
-                    locked_source_file.replace(source_file)
-                elif not source_file.exists():
-                    errors.append(f"Missing locked or source file: {file_name}")
+        actions: Optional[List[PendingCheckinAction]]
+        if choice == "unchanged":
+            actions = []
+            for entry in entries:
+                file_name = str(entry.get("file_name", ""))
+                if not file_name:
                     continue
-
-                self._append_history(current_directory, "FORCE_CHECK_IN", file_name)
-                released_files.append(file_name)
-                selected_locked_paths.add(str(locked_source_file))
-            except OSError as exc:
-                errors.append(f"{file_name}: {exc}")
-
-        if released_files:
-            self.records = [
-                record
-                for record in self.records
-                if not (
-                    Path(record.source_file).parent == current_directory
-                    and (
-                        Path(record.source_file).name in released_files
-                        or Path(record.locked_source_file).name in released_files
-                        or str(Path(record.locked_source_file)) in selected_locked_paths
+                actions.append(
+                    PendingCheckinAction(
+                        file_name=file_name,
+                        source_file=str(current_directory / file_name),
+                        locked_source_file=str(entry.get("locked_source_file", "")),
+                        action_mode="unchanged",
+                        record_idx=self._record_index_for_controlled_file(entry),
+                        reason="Force release the locked source file without copying a local file.",
                     )
                 )
-            ]
-            self._save_records()
+            review = self._show_pending_actions_dialog(
+                "Review Force Check-In Actions", actions, allow_modify=False
+            )
+            if review != "commit":
+                return
+        else:
+            actions = self._plan_force_checkin_actions(entries)
+            if actions is None:
+                return
 
+        errors = self._perform_pending_checkin_actions(actions, "FORCE_CHECK_IN")
         self._refresh_source_files()
+        self._refresh_controlled_files()
         self._render_records_tables()
 
         if errors:
             self._error("Some files failed to force check in:\n" + "\n".join(errors))
-        elif released_files:
+        elif actions:
             self._info("Force check-in complete.")
 
     def _show_selected_file_history(self) -> None:
