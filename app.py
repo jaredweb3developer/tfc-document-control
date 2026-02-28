@@ -1413,19 +1413,26 @@ class DocumentControlApp(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Document History - {original_name}")
-        dialog.resize(720, 420)
+        dialog.resize(980, 420)
         layout = QVBoxLayout(dialog)
 
         table = QTableWidget(len(rows), 4)
         table.setHorizontalHeaderLabels(["Timestamp", "Action", "Initials", "Full Name"])
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.setSelectionMode(QTableWidget.NoSelection)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
 
         for row_idx, row_values in enumerate(rows):
             for col_idx, value in enumerate(row_values):
                 table.setItem(row_idx, col_idx, QTableWidgetItem(value))
 
+        table.resizeColumnsToContents()
+        table.setColumnWidth(0, max(table.columnWidth(0), 320))
+        table.setColumnWidth(3, max(table.columnWidth(3), 220))
         layout.addWidget(table)
         dialog.exec()
 
