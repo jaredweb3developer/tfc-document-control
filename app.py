@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QDir, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -256,7 +257,6 @@ class DocumentControlApp(QMainWindow):
 
         self.files_list = QListWidget()
         self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.files_list.itemSelectionChanged.connect(self._refresh_selected_file_history)
         self.files_list.itemDoubleClicked.connect(self._open_source_item)
         files_layout.addWidget(self.files_list, stretch=1)
 
@@ -267,11 +267,14 @@ class DocumentControlApp(QMainWindow):
         checkout_btn.clicked.connect(self._checkout_selected)
         open_btn = QPushButton("Open Selected")
         open_btn.clicked.connect(self._open_selected_source_files)
+        view_history_btn = QPushButton("View History")
+        view_history_btn.clicked.connect(self._show_selected_file_history)
         add_new_btn = QPushButton("Add Local File(s) To Here")
         add_new_btn.clicked.connect(self._add_new_files_to_source)
         file_button_bar.addWidget(refresh_btn)
         file_button_bar.addWidget(checkout_btn)
         file_button_bar.addWidget(open_btn)
+        file_button_bar.addWidget(view_history_btn)
         file_button_bar.addWidget(add_new_btn)
         file_button_bar.addStretch()
         files_layout.addLayout(file_button_bar)
@@ -293,24 +296,11 @@ class DocumentControlApp(QMainWindow):
         controlled_button_bar.addStretch()
         controlled_layout.addLayout(controlled_button_bar)
 
-        history_panel = QWidget()
-        history_layout = QVBoxLayout(history_panel)
-        history_layout.addWidget(QLabel("Document History"))
-        self.history_table = QTableWidget(0, 4)
-        self.history_table.setHorizontalHeaderLabels(
-            ["Timestamp", "Action", "Initials", "Full Name"]
-        )
-        self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.history_table.setSelectionMode(QTableWidget.NoSelection)
-        self.history_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        history_layout.addWidget(self.history_table, stretch=1)
-
         splitter.addWidget(tracked_panel)
         splitter.addWidget(directory_panel)
         splitter.addWidget(files_panel)
         splitter.addWidget(controlled_panel)
-        splitter.addWidget(history_panel)
-        splitter.setSizes([220, 280, 300, 280, 300])
+        splitter.setSizes([220, 320, 420, 300])
 
         layout.addWidget(splitter, stretch=1)
         return group
@@ -703,7 +693,6 @@ class DocumentControlApp(QMainWindow):
             self.current_directory = None
             self.current_folder_label.setText("Current folder: -")
             self.files_list.clear()
-            self.history_table.setRowCount(0)
             self._set_directory_tree_root(None)
 
     def _create_directory_item(self, path: Path) -> QTreeWidgetItem:
@@ -802,17 +791,17 @@ class DocumentControlApp(QMainWindow):
             self.controlled_files_list.clear()
             return
 
+        latest_by_file = self._latest_history_by_file(self.current_directory)
         for item in sorted(self.current_directory.iterdir()):
             if item.is_file() and item.name != HISTORY_FILE_NAME:
                 if not self._matches_extension_filter(item):
                     continue
                 list_item = QListWidgetItem(item.name)
                 list_item.setData(Qt.UserRole, str(item))
-                list_item.setToolTip(str(item))
+                self._apply_file_history_style(list_item, item, latest_by_file.get(item.name))
                 self.files_list.addItem(list_item)
 
         self._refresh_controlled_files()
-        self._refresh_selected_file_history()
 
     def _refresh_controlled_files(self) -> None:
         self.controlled_files_list.clear()
@@ -1033,13 +1022,56 @@ class DocumentControlApp(QMainWindow):
         except OSError:
             return []
 
-    def _checked_out_files_for_directory(self, source_dir: Path) -> List[Dict[str, str]]:
+    def _latest_history_by_file(self, source_dir: Path) -> Dict[str, Dict[str, str]]:
         latest_by_file: Dict[str, Dict[str, str]] = {}
         for row in self._read_history_rows(source_dir):
             file_name = row.get("file_name", "")
             if file_name:
                 latest_by_file[file_name] = row
+        return latest_by_file
 
+    def _history_rows_for_file(self, source_dir: Path, file_name: str) -> List[List[str]]:
+        rows: List[List[str]] = []
+        for row in self._read_history_rows(source_dir):
+            if row.get("file_name") == file_name:
+                rows.append(
+                    [
+                        row.get("timestamp", ""),
+                        row.get("action", ""),
+                        row.get("user_initials", ""),
+                        row.get("user_full_name", ""),
+                    ]
+                )
+        rows.reverse()
+        return rows
+
+    def _apply_file_history_style(
+        self, item: QListWidgetItem, source_file: Path, latest_row: Optional[Dict[str, str]]
+    ) -> None:
+        if not latest_row:
+            return
+
+        action = latest_row.get("action", "")
+        initials = latest_row.get("user_initials", "")
+        full_name = latest_row.get("user_full_name", "")
+        tooltip_lines = [str(source_file)]
+
+        if action == "CHECK_OUT":
+            if initials == self._normalize_initials():
+                item.setBackground(QColor("#dcfce7"))
+                tooltip_lines.append(f"Checked out by you ({initials})")
+            else:
+                item.setBackground(QColor("#fef3c7"))
+                who = full_name or initials or "another user"
+                tooltip_lines.append(f"Checked out by {who}")
+        else:
+            item.setBackground(QColor("#dbeafe"))
+            tooltip_lines.append("Has document history")
+
+        item.setToolTip("\n".join(tooltip_lines))
+
+    def _checked_out_files_for_directory(self, source_dir: Path) -> List[Dict[str, str]]:
+        latest_by_file = self._latest_history_by_file(source_dir)
         active_entries: List[Dict[str, str]] = []
         for file_name, row in latest_by_file.items():
             if row.get("action") != "CHECK_OUT":
@@ -1331,37 +1363,32 @@ class DocumentControlApp(QMainWindow):
         elif released_files:
             self._info("Force check-in complete.")
 
-    def _refresh_selected_file_history(self) -> None:
+    def _show_selected_file_history(self) -> None:
         selected_items = self.files_list.selectedItems()
         if not selected_items:
-            self.history_table.setRowCount(0)
+            self._error("Select a file to view history.")
             return
 
         file_path = Path(selected_items[0].data(Qt.UserRole))
-        history_file = file_path.parent / HISTORY_FILE_NAME
-        rows: List[List[str]] = []
-        if history_file.exists():
-            try:
-                with history_file.open("r", encoding="utf-8", newline="") as handle:
-                    reader = csv.DictReader(handle)
-                    for row in reader:
-                        if row.get("file_name") == file_path.name:
-                            rows.append(
-                                [
-                                    row.get("timestamp", ""),
-                                    row.get("action", ""),
-                                    row.get("user_initials", ""),
-                                    row.get("user_full_name", ""),
-                                ]
-                            )
-            except OSError:
-                rows = []
+        rows = self._history_rows_for_file(file_path.parent, file_path.name)
 
-        rows.reverse()
-        self.history_table.setRowCount(len(rows))
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Document History - {file_path.name}")
+        dialog.resize(720, 420)
+        layout = QVBoxLayout(dialog)
+
+        table = QTableWidget(len(rows), 4)
+        table.setHorizontalHeaderLabels(["Timestamp", "Action", "Initials", "Full Name"])
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.NoSelection)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
         for row_idx, row_values in enumerate(rows):
             for col_idx, value in enumerate(row_values):
-                self.history_table.setItem(row_idx, col_idx, QTableWidgetItem(value))
+                table.setItem(row_idx, col_idx, QTableWidgetItem(value))
+
+        layout.addWidget(table)
+        dialog.exec()
 
     def _short_path(self, raw_path: str) -> str:
         path = Path(raw_path)
