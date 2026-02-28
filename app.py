@@ -209,6 +209,10 @@ class DocumentControlApp(QMainWindow):
         self.file_filter_mode_combo.addItems(["No Filter", "Include Only", "Exclude"])
         self.file_filter_mode_combo.currentIndexChanged.connect(self._refresh_source_files)
 
+        self.file_extension_list_edit = QLineEdit()
+        self.file_extension_list_edit.setPlaceholderText(".dwg, .pdf, .xlsx")
+        self.file_extension_list_edit.editingFinished.connect(self._save_current_project_filters)
+
         self.file_extension_combo = QComboBox()
         self.file_extension_combo.setEditable(True)
         self.file_extension_combo.addItems(
@@ -230,9 +234,20 @@ class DocumentControlApp(QMainWindow):
         )
         self.file_extension_combo.currentTextChanged.connect(self._refresh_source_files)
 
+        add_extension_btn = QPushButton("Add")
+        add_extension_btn.clicked.connect(self._add_filter_extension)
+        remove_extension_btn = QPushButton("Remove")
+        remove_extension_btn.clicked.connect(self._remove_filter_extension)
+        clear_extensions_btn = QPushButton("Clear")
+        clear_extensions_btn.clicked.connect(self._clear_filter_extensions)
+
         filter_bar.addWidget(QLabel("Extension Filter"))
         filter_bar.addWidget(self.file_filter_mode_combo)
-        filter_bar.addWidget(self.file_extension_combo, stretch=1)
+        filter_bar.addWidget(self.file_extension_combo)
+        filter_bar.addWidget(add_extension_btn)
+        filter_bar.addWidget(remove_extension_btn)
+        filter_bar.addWidget(clear_extensions_btn)
+        filter_bar.addWidget(self.file_extension_list_edit, stretch=1)
         files_layout.addLayout(filter_bar)
 
         self.files_list = QListWidget()
@@ -462,35 +477,53 @@ class DocumentControlApp(QMainWindow):
         payload = {"tracked_projects": self.tracked_projects}
         PROJECTS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    def _project_payload(self, name: str, sources: List[str]) -> Dict[str, object]:
-        return {"name": name, "sources": sources}
+    def _project_payload(
+        self, name: str, sources: List[str], extension_filters: Optional[List[str]] = None
+    ) -> Dict[str, object]:
+        return {
+            "name": name,
+            "sources": sources,
+            "extension_filters": extension_filters or [],
+        }
 
     def _read_project_config(self, project_dir: Path) -> Dict[str, object]:
         config_path = self._project_config_path(project_dir)
         if not config_path.exists():
-            return self._project_payload(project_dir.name, [])
+            return self._project_payload(project_dir.name, [], [])
 
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            return self._project_payload(project_dir.name, [])
+            return self._project_payload(project_dir.name, [], [])
 
         name = str(data.get("name", project_dir.name)).strip() or project_dir.name
         raw_sources = data.get("sources", [])
+        raw_extension_filters = data.get("extension_filters", [])
         sources = [str(item) for item in raw_sources if str(item).strip()] if isinstance(raw_sources, list) else []
-        return self._project_payload(name, sources)
+        extension_filters = (
+            [str(item) for item in raw_extension_filters if str(item).strip()]
+            if isinstance(raw_extension_filters, list)
+            else []
+        )
+        return self._project_payload(name, sources, extension_filters)
 
-    def _write_project_config(self, project_dir: Path, name: str, sources: List[str]) -> None:
+    def _write_project_config(
+        self,
+        project_dir: Path,
+        name: str,
+        sources: List[str],
+        extension_filters: Optional[List[str]] = None,
+    ) -> None:
         project_dir.mkdir(parents=True, exist_ok=True)
         config_path = self._project_config_path(project_dir)
-        payload = self._project_payload(name, sources)
+        payload = self._project_payload(name, sources, extension_filters)
         config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _ensure_default_project(self) -> None:
         base_dir = self._ensure_base_projects_dir()
         default_dir = base_dir / DEFAULT_PROJECT_NAME
         if not self._project_config_path(default_dir).exists():
-            self._write_project_config(default_dir, DEFAULT_PROJECT_NAME, [])
+            self._write_project_config(default_dir, DEFAULT_PROJECT_NAME, [], [])
         self._register_tracked_project(DEFAULT_PROJECT_NAME, default_dir)
         self._refresh_tracked_projects_list()
 
@@ -551,7 +584,9 @@ class DocumentControlApp(QMainWindow):
             project_dir = base_dir / self._safe_project_dir_name(name)
 
         sources = self._source_roots_from_list()
-        self._write_project_config(project_dir, name, sources)
+        self._write_project_config(
+            project_dir, name, sources, self._current_extension_filters()
+        )
         self.current_project_dir = str(project_dir)
         self.project_path_label.setText(f"Config: {self._project_config_path(project_dir)}")
         self._register_tracked_project(name, project_dir)
@@ -619,9 +654,13 @@ class DocumentControlApp(QMainWindow):
         config = self._read_project_config(project_dir)
         name = str(config.get("name", project_dir.name))
         sources = [str(item) for item in config.get("sources", [])]  # type: ignore[arg-type]
+        extension_filters = [
+            str(item) for item in config.get("extension_filters", [])
+        ]  # type: ignore[arg-type]
 
         self.current_project_dir = str(project_dir)
         self.project_name_edit.setText(name)
+        self._set_extension_filters(extension_filters)
         self.project_path_label.setText(f"Config: {self._project_config_path(project_dir)}")
         self._register_tracked_project(name, project_dir)
         self._refresh_source_roots(sources)
@@ -785,7 +824,12 @@ class DocumentControlApp(QMainWindow):
         sources = self._source_roots_from_list()
         if str(source_path) not in sources:
             sources.append(str(source_path))
-            self._write_project_config(project_dir, self._current_project_name(), sources)
+            self._write_project_config(
+                project_dir,
+                self._current_project_name(),
+                sources,
+                self._current_extension_filters(),
+            )
             self._refresh_source_roots(sources)
             self._save_settings()
 
@@ -798,7 +842,12 @@ class DocumentControlApp(QMainWindow):
 
         source_path = str(item.data(Qt.UserRole))
         sources = [source for source in self._source_roots_from_list() if source != source_path]
-        self._write_project_config(project_dir, self._current_project_name(), sources)
+        self._write_project_config(
+            project_dir,
+            self._current_project_name(),
+            sources,
+            self._current_extension_filters(),
+        )
         self._refresh_source_roots(sources)
         self._save_settings()
 
@@ -815,7 +864,12 @@ class DocumentControlApp(QMainWindow):
             return
 
         sources.append(current_dir_str)
-        self._write_project_config(project_dir, self._current_project_name(), sources)
+        self._write_project_config(
+            project_dir,
+            self._current_project_name(),
+            sources,
+            self._current_extension_filters(),
+        )
         self._refresh_source_roots(sources)
         for row in range(self.source_roots_list.count()):
             item = self.source_roots_list.item(row)
@@ -827,25 +881,77 @@ class DocumentControlApp(QMainWindow):
     def _selected_source_file_paths(self) -> List[Path]:
         return [Path(item.data(Qt.UserRole)) for item in self.files_list.selectedItems()]
 
-    def _normalized_extension_filter(self) -> str:
-        value = self.file_extension_combo.currentText().strip().lower()
+    def _normalize_extension_value(self, value: str) -> str:
+        value = value.strip().lower()
         if not value:
             return ""
         if not value.startswith("."):
             value = f".{value}"
         return value
 
+    def _current_extension_filters(self) -> List[str]:
+        raw = self.file_extension_list_edit.text().strip()
+        if not raw:
+            return []
+
+        values: List[str] = []
+        for part in raw.split(","):
+            normalized = self._normalize_extension_value(part)
+            if normalized and normalized not in values:
+                values.append(normalized)
+        return values
+
+    def _set_extension_filters(self, filters: List[str]) -> None:
+        normalized_filters: List[str] = []
+        for value in filters:
+            normalized = self._normalize_extension_value(value)
+            if normalized and normalized not in normalized_filters:
+                normalized_filters.append(normalized)
+        self.file_extension_list_edit.setText(", ".join(normalized_filters))
+
+    def _save_current_project_filters(self) -> None:
+        project_dir = self._current_project_path()
+        if not project_dir or not project_dir.is_dir():
+            self._refresh_source_files()
+            return
+
+        self._write_project_config(
+            project_dir,
+            self._current_project_name(),
+            self._source_roots_from_list(),
+            self._current_extension_filters(),
+        )
+        self._refresh_source_files()
+
+    def _add_filter_extension(self) -> None:
+        filters = self._current_extension_filters()
+        normalized = self._normalize_extension_value(self.file_extension_combo.currentText())
+        if normalized and normalized not in filters:
+            filters.append(normalized)
+            self._set_extension_filters(filters)
+        self._save_current_project_filters()
+
+    def _remove_filter_extension(self) -> None:
+        normalized = self._normalize_extension_value(self.file_extension_combo.currentText())
+        filters = [value for value in self._current_extension_filters() if value != normalized]
+        self._set_extension_filters(filters)
+        self._save_current_project_filters()
+
+    def _clear_filter_extensions(self) -> None:
+        self._set_extension_filters([])
+        self._save_current_project_filters()
+
     def _matches_extension_filter(self, file_path: Path) -> bool:
         mode = self.file_filter_mode_combo.currentText()
-        extension = self._normalized_extension_filter()
-        if mode == "No Filter" or not extension:
+        extensions = self._current_extension_filters()
+        if mode == "No Filter" or not extensions:
             return True
 
         suffix = file_path.suffix.lower()
         if mode == "Include Only":
-            return suffix == extension
+            return suffix in extensions
         if mode == "Exclude":
-            return suffix != extension
+            return suffix not in extensions
         return True
 
     def _source_key(self, source_root: Path) -> str:
