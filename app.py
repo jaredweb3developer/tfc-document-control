@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QDir, Qt, QUrl
+from PySide6.QtCore import QDir, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -65,6 +65,10 @@ class DocumentControlApp(QMainWindow):
         self.current_project_dir: str = ""
         self.current_directory: Optional[Path] = None
         self.directory_tree_root: Optional[Path] = None
+        self.extension_filter_debounce = QTimer(self)
+        self.extension_filter_debounce.setSingleShot(True)
+        self.extension_filter_debounce.setInterval(1000)
+        self.extension_filter_debounce.timeout.connect(self._save_current_project_filters)
 
         self._build_ui()
         self._load_settings()
@@ -207,11 +211,11 @@ class DocumentControlApp(QMainWindow):
         filter_bar = QHBoxLayout()
         self.file_filter_mode_combo = QComboBox()
         self.file_filter_mode_combo.addItems(["No Filter", "Include Only", "Exclude"])
-        self.file_filter_mode_combo.currentIndexChanged.connect(self._refresh_source_files)
+        self.file_filter_mode_combo.currentIndexChanged.connect(self._on_filter_mode_changed)
 
         self.file_extension_list_edit = QLineEdit()
         self.file_extension_list_edit.setPlaceholderText(".dwg, .pdf, .xlsx")
-        self.file_extension_list_edit.editingFinished.connect(self._save_current_project_filters)
+        self.file_extension_list_edit.textChanged.connect(self._on_extension_list_changed)
 
         self.file_extension_combo = QComboBox()
         self.file_extension_combo.setEditable(True)
@@ -478,34 +482,42 @@ class DocumentControlApp(QMainWindow):
         PROJECTS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _project_payload(
-        self, name: str, sources: List[str], extension_filters: Optional[List[str]] = None
+        self,
+        name: str,
+        sources: List[str],
+        extension_filters: Optional[List[str]] = None,
+        filter_mode: str = "No Filter",
     ) -> Dict[str, object]:
         return {
             "name": name,
             "sources": sources,
             "extension_filters": extension_filters or [],
+            "filter_mode": filter_mode,
         }
 
     def _read_project_config(self, project_dir: Path) -> Dict[str, object]:
         config_path = self._project_config_path(project_dir)
         if not config_path.exists():
-            return self._project_payload(project_dir.name, [], [])
+            return self._project_payload(project_dir.name, [], [], "No Filter")
 
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            return self._project_payload(project_dir.name, [], [])
+            return self._project_payload(project_dir.name, [], [], "No Filter")
 
         name = str(data.get("name", project_dir.name)).strip() or project_dir.name
         raw_sources = data.get("sources", [])
         raw_extension_filters = data.get("extension_filters", [])
+        filter_mode = str(data.get("filter_mode", "No Filter")).strip() or "No Filter"
         sources = [str(item) for item in raw_sources if str(item).strip()] if isinstance(raw_sources, list) else []
         extension_filters = (
             [str(item) for item in raw_extension_filters if str(item).strip()]
             if isinstance(raw_extension_filters, list)
             else []
         )
-        return self._project_payload(name, sources, extension_filters)
+        if filter_mode not in {"No Filter", "Include Only", "Exclude"}:
+            filter_mode = "No Filter"
+        return self._project_payload(name, sources, extension_filters, filter_mode)
 
     def _write_project_config(
         self,
@@ -513,17 +525,18 @@ class DocumentControlApp(QMainWindow):
         name: str,
         sources: List[str],
         extension_filters: Optional[List[str]] = None,
+        filter_mode: str = "No Filter",
     ) -> None:
         project_dir.mkdir(parents=True, exist_ok=True)
         config_path = self._project_config_path(project_dir)
-        payload = self._project_payload(name, sources, extension_filters)
+        payload = self._project_payload(name, sources, extension_filters, filter_mode)
         config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _ensure_default_project(self) -> None:
         base_dir = self._ensure_base_projects_dir()
         default_dir = base_dir / DEFAULT_PROJECT_NAME
         if not self._project_config_path(default_dir).exists():
-            self._write_project_config(default_dir, DEFAULT_PROJECT_NAME, [], [])
+            self._write_project_config(default_dir, DEFAULT_PROJECT_NAME, [], [], "No Filter")
         self._register_tracked_project(DEFAULT_PROJECT_NAME, default_dir)
         self._refresh_tracked_projects_list()
 
@@ -585,7 +598,11 @@ class DocumentControlApp(QMainWindow):
 
         sources = self._source_roots_from_list()
         self._write_project_config(
-            project_dir, name, sources, self._current_extension_filters()
+            project_dir,
+            name,
+            sources,
+            self._current_extension_filters(),
+            self.file_filter_mode_combo.currentText(),
         )
         self.current_project_dir = str(project_dir)
         self.project_path_label.setText(f"Config: {self._project_config_path(project_dir)}")
@@ -657,9 +674,13 @@ class DocumentControlApp(QMainWindow):
         extension_filters = [
             str(item) for item in config.get("extension_filters", [])
         ]  # type: ignore[arg-type]
+        filter_mode = str(config.get("filter_mode", "No Filter"))
 
         self.current_project_dir = str(project_dir)
         self.project_name_edit.setText(name)
+        self.file_filter_mode_combo.blockSignals(True)
+        self.file_filter_mode_combo.setCurrentText(filter_mode)
+        self.file_filter_mode_combo.blockSignals(False)
         self._set_extension_filters(extension_filters)
         self.project_path_label.setText(f"Config: {self._project_config_path(project_dir)}")
         self._register_tracked_project(name, project_dir)
@@ -829,6 +850,7 @@ class DocumentControlApp(QMainWindow):
                 self._current_project_name(),
                 sources,
                 self._current_extension_filters(),
+                self.file_filter_mode_combo.currentText(),
             )
             self._refresh_source_roots(sources)
             self._save_settings()
@@ -847,6 +869,7 @@ class DocumentControlApp(QMainWindow):
             self._current_project_name(),
             sources,
             self._current_extension_filters(),
+            self.file_filter_mode_combo.currentText(),
         )
         self._refresh_source_roots(sources)
         self._save_settings()
@@ -869,6 +892,7 @@ class DocumentControlApp(QMainWindow):
             self._current_project_name(),
             sources,
             self._current_extension_filters(),
+            self.file_filter_mode_combo.currentText(),
         )
         self._refresh_source_roots(sources)
         for row in range(self.source_roots_list.count()):
@@ -907,7 +931,16 @@ class DocumentControlApp(QMainWindow):
             normalized = self._normalize_extension_value(value)
             if normalized and normalized not in normalized_filters:
                 normalized_filters.append(normalized)
+        self.file_extension_list_edit.blockSignals(True)
         self.file_extension_list_edit.setText(", ".join(normalized_filters))
+        self.file_extension_list_edit.blockSignals(False)
+
+    def _on_filter_mode_changed(self) -> None:
+        self._save_current_project_filters()
+
+    def _on_extension_list_changed(self) -> None:
+        self.extension_filter_debounce.start()
+        self._refresh_source_files()
 
     def _save_current_project_filters(self) -> None:
         project_dir = self._current_project_path()
@@ -920,6 +953,7 @@ class DocumentControlApp(QMainWindow):
             self._current_project_name(),
             self._source_roots_from_list(),
             self._current_extension_filters(),
+            self.file_filter_mode_combo.currentText(),
         )
         self._refresh_source_files()
 
