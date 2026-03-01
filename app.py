@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
-    QProgressDialog,
+    QProgressBar,
     QRadioButton,
     QPushButton,
     QSplitter,
@@ -671,16 +671,19 @@ class DocumentControlApp(QMainWindow):
 
     @contextmanager
     def _busy_action(self, message: str):
-        dialog = QProgressDialog(self)
+        dialog = QDialog(self)
         dialog.setWindowTitle(APP_NAME)
-        dialog.setLabelText(message)
-        dialog.setRange(0, 0)
         dialog.setWindowModality(Qt.ApplicationModal)
-        dialog.setCancelButton(None)
-        dialog.setMinimumDuration(0)
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
         dialog.setMinimumWidth(360)
+        dialog.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        layout = QVBoxLayout(dialog)
+        label = QLabel(message)
+        label.setWordWrap(True)
+        progress = QProgressBar()
+        progress.setRange(0, 0)
+        progress.setTextVisible(False)
+        layout.addWidget(label)
+        layout.addWidget(progress)
         dialog.show()
         QApplication.processEvents()
         try:
@@ -2750,10 +2753,6 @@ class DocumentControlApp(QMainWindow):
                     reason=reason,
                 )
             )
-
-        review = self._show_pending_actions_dialog("Review Check-In Actions", actions)
-        if review != "commit":
-            return
 
         with self._busy_action("Checking in file(s)..."):
             errors = self._perform_pending_checkin_actions(actions, "standard")
