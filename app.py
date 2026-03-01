@@ -98,6 +98,7 @@ class DocumentControlApp(QMainWindow):
         self.directory_tree_root: Optional[Path] = None
         self.show_configuration_tab_on_startup = True
         self.filter_presets: List[Dict[str, object]] = []
+        self.main_section_toggles: List[QToolButton] = []
         self.extension_filter_debounce = QTimer(self)
         self.extension_filter_debounce.setSingleShot(True)
         self.extension_filter_debounce.setInterval(2000)
@@ -157,6 +158,7 @@ class DocumentControlApp(QMainWindow):
 
         content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.main_section_toggles.append(toggle)
 
         def _toggle_section(checked: bool) -> None:
             content.setVisible(checked)
@@ -169,12 +171,26 @@ class DocumentControlApp(QMainWindow):
                 container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             content.updateGeometry()
             container.updateGeometry()
+            if not checked and self.main_section_toggles and not any(
+                section_toggle.isChecked() for section_toggle in self.main_section_toggles
+            ):
+                self._restore_main_sections_default_state()
 
         toggle.toggled.connect(_toggle_section)
 
         layout.addWidget(toggle)
         layout.addWidget(content, stretch=1)
         return container
+
+    def _restore_main_sections_default_state(self) -> None:
+        for toggle in self.main_section_toggles:
+            toggle.blockSignals(True)
+            toggle.setChecked(True)
+            toggle.setArrowType(Qt.DownArrow)
+            toggle.blockSignals(False)
+
+        for toggle in self.main_section_toggles:
+            toggle.toggled.emit(True)
 
     def _build_configuration_group(self) -> QGroupBox:
         group = QGroupBox("Configuration")
