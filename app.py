@@ -238,6 +238,8 @@ class DocumentControlApp(QMainWindow):
         load_project_btn.clicked.connect(self._load_selected_tracked_project)
         add_project_btn = QPushButton("Track Existing")
         add_project_btn.clicked.connect(self._add_existing_project)
+        edit_project_btn = QPushButton("Edit Selected")
+        edit_project_btn.clicked.connect(self._edit_selected_project)
         remove_project_btn = QPushButton("Untrack Selected")
         remove_project_btn.clicked.connect(self._remove_selected_project)
         open_location_btn = QPushButton("Open Location")
@@ -260,8 +262,9 @@ class DocumentControlApp(QMainWindow):
         tracked_controls.addWidget(new_project_btn, 0, 0)
         tracked_controls.addWidget(load_project_btn, 0, 1)
         tracked_controls.addWidget(add_project_btn, 1, 0)
-        tracked_controls.addWidget(remove_project_btn, 1, 1)
-        tracked_controls.addWidget(open_location_btn, 2, 0, 1, 2)
+        tracked_controls.addWidget(edit_project_btn, 1, 1)
+        tracked_controls.addWidget(remove_project_btn, 2, 0)
+        tracked_controls.addWidget(open_location_btn, 2, 1)
         tracked_layout.addLayout(tracked_controls)
 
         favorites_panel = QWidget()
@@ -1142,6 +1145,150 @@ class DocumentControlApp(QMainWindow):
         if not item:
             return None
         return Path(str(item.data(Qt.UserRole)))
+
+    def _update_project_record_paths(
+        self, old_project_dir: Path, new_project_dir: Path, new_project_name: str
+    ) -> None:
+        old_project_dir_str = str(old_project_dir)
+        for record in self.records:
+            if record.project_dir != old_project_dir_str:
+                continue
+            record.project_dir = str(new_project_dir)
+            record.project_name = new_project_name
+            try:
+                relative_local = Path(record.local_file).relative_to(old_project_dir)
+                record.local_file = str(new_project_dir / relative_local)
+            except ValueError:
+                pass
+        self._save_records()
+
+    def _apply_project_edit(
+        self, old_project_dir: Path, new_project_name: str, destination_parent: Optional[Path]
+    ) -> Optional[Path]:
+        config = self._read_project_config(old_project_dir)
+        target_parent = destination_parent or old_project_dir.parent
+        target_parent = target_parent.resolve()
+        target_project_dir = target_parent / self._safe_project_dir_name(new_project_name)
+        old_project_dir_resolved = old_project_dir.resolve()
+
+        if target_project_dir == old_project_dir_resolved:
+            self._save_project_config(old_project_dir, name=new_project_name)
+            self._register_tracked_project(new_project_name, old_project_dir)
+            self._update_project_record_paths(old_project_dir, old_project_dir, new_project_name)
+            return old_project_dir
+
+        if target_project_dir.exists():
+            self._error(f"Destination already exists:\n{target_project_dir}")
+            return None
+
+        try:
+            target_parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_project_dir_resolved), str(target_project_dir))
+        except OSError as exc:
+            self._error(f"Could not migrate project directory:\n{exc}")
+            return None
+
+        self.tracked_projects = [
+            entry
+            for entry in self.tracked_projects
+            if entry["project_dir"] != str(old_project_dir_resolved)
+        ]
+        self._save_project_config(
+            target_project_dir,
+            name=new_project_name,
+            sources=[str(item) for item in config.get("sources", [])],  # type: ignore[arg-type]
+            extension_filters=[
+                str(item) for item in config.get("extension_filters", [])
+            ],  # type: ignore[arg-type]
+            filter_mode=str(config.get("filter_mode", "No Filter")),
+            favorites=[str(item) for item in config.get("favorites", [])],  # type: ignore[arg-type]
+            notes=[dict(item) for item in config.get("notes", [])],  # type: ignore[arg-type]
+        )
+        self._register_tracked_project(new_project_name, target_project_dir)
+        self._update_project_record_paths(old_project_dir_resolved, target_project_dir, new_project_name)
+        return target_project_dir
+
+    def _edit_selected_project(self) -> None:
+        project_dir = self._selected_tracked_project_dir()
+        if not project_dir or not project_dir.is_dir():
+            self._error("Select a tracked project to edit.")
+            return
+
+        config = self._read_project_config(project_dir)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Project")
+        dialog.resize(720, 320)
+        layout = QVBoxLayout(dialog)
+
+        form = QGridLayout()
+        name_edit = QLineEdit(str(config.get("name", project_dir.name)))
+        current_dir_label = QLineEdit(str(project_dir))
+        current_dir_label.setReadOnly(True)
+        config_path_label = QLineEdit(str(self._project_config_path(project_dir)))
+        config_path_label.setReadOnly(True)
+        sources = [str(item) for item in config.get("sources", [])]  # type: ignore[arg-type]
+        source_count_label = QLineEdit(str(len(sources)))
+        source_count_label.setReadOnly(True)
+        destination_edit = QLineEdit(str(project_dir.parent))
+        browse_destination_btn = QPushButton("Browse")
+
+        def choose_destination() -> None:
+            selected = QFileDialog.getExistingDirectory(
+                dialog,
+                "Select Project Destination Directory",
+                destination_edit.text().strip() or str(project_dir.parent),
+            )
+            if selected:
+                destination_edit.setText(selected)
+
+        browse_destination_btn.clicked.connect(choose_destination)
+
+        form.addWidget(QLabel("Project Name:"), 0, 0)
+        form.addWidget(name_edit, 0, 1, 1, 2)
+        form.addWidget(QLabel("Current Directory:"), 1, 0)
+        form.addWidget(current_dir_label, 1, 1, 1, 2)
+        form.addWidget(QLabel("Project Config:"), 2, 0)
+        form.addWidget(config_path_label, 2, 1, 1, 2)
+        form.addWidget(QLabel("Tracked Sources:"), 3, 0)
+        form.addWidget(source_count_label, 3, 1, 1, 2)
+        form.addWidget(QLabel("Destination Parent:"), 4, 0)
+        form.addWidget(destination_edit, 4, 1)
+        form.addWidget(browse_destination_btn, 4, 2)
+        layout.addLayout(form)
+
+        layout.addWidget(
+            QLabel(
+                "Changing the project name or destination will migrate the project directory "
+                "and update tracked-project entries and checkout records."
+            )
+        )
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        new_project_name = name_edit.text().strip()
+        if not new_project_name:
+            self._error("Project name is required.")
+            return
+
+        destination_parent = Path(destination_edit.text().strip() or str(project_dir.parent))
+        updated_project_dir = self._apply_project_edit(project_dir, new_project_name, destination_parent)
+        if not updated_project_dir:
+            return
+
+        if self.current_project_dir == str(project_dir):
+            self.current_project_dir = str(updated_project_dir)
+            self._load_project_from_dir(updated_project_dir)
+        else:
+            self._refresh_tracked_projects_list()
+            self._render_records_tables()
+        self._save_settings()
+        self._info(f"Project '{new_project_name}' updated.")
 
     def _open_selected_project_location(self) -> None:
         project_dir = self._selected_tracked_project_dir()
