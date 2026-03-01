@@ -671,13 +671,16 @@ class DocumentControlApp(QMainWindow):
 
     @contextmanager
     def _busy_action(self, message: str):
-        dialog = QProgressDialog(message, None, 0, 0, self)
+        dialog = QProgressDialog(self)
         dialog.setWindowTitle(APP_NAME)
+        dialog.setLabelText(message)
+        dialog.setRange(0, 0)
         dialog.setWindowModality(Qt.ApplicationModal)
         dialog.setCancelButton(None)
         dialog.setMinimumDuration(0)
         dialog.setAutoClose(False)
         dialog.setAutoReset(False)
+        dialog.setMinimumWidth(360)
         dialog.show()
         QApplication.processEvents()
         try:
