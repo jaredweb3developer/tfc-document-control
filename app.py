@@ -623,6 +623,10 @@ class DocumentControlApp(QMainWindow):
             return None
         return Path(item.data(Qt.UserRole))
 
+    def _current_source_root_value(self) -> str:
+        source_root = self._current_source_root()
+        return str(source_root) if source_root else ""
+
     def _active_records_table(self) -> QTableWidget:
         return self.records_tabs.currentWidget()  # type: ignore[return-value]
 
@@ -832,12 +836,14 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        selected_source: str = "",
     ) -> Dict[str, object]:
         return {
             "schema_version": PROJECT_CONFIG_SCHEMA_VERSION,
             "app_version": APP_VERSION,
             "name": name,
             "sources": sources,
+            "selected_source": selected_source,
             "extension_filters": extension_filters or [],
             "filter_mode": filter_mode,
             "favorites": favorites or [],
@@ -860,6 +866,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode = str(data.get("filter_mode", "No Filter")).strip() or "No Filter"
         raw_favorites = data.get("favorites", [])
         raw_notes = data.get("notes", [])
+        selected_source = str(data.get("selected_source", "")).strip()
         sources = [str(item) for item in raw_sources if str(item).strip()] if isinstance(raw_sources, list) else []
         extension_filters = (
             [str(item) for item in raw_extension_filters if str(item).strip()]
@@ -898,6 +905,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites,
             notes,
+            selected_source,
         )
 
     def _write_project_config(
@@ -909,6 +917,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        selected_source: str = "",
     ) -> None:
         project_dir.mkdir(parents=True, exist_ok=True)
         config_path = self._project_config_path(project_dir)
@@ -919,6 +928,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites,
             notes,
+            selected_source,
         )
         config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -932,6 +942,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: Optional[str] = None,
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        selected_source: Optional[str] = None,
     ) -> None:
         current = self._read_project_config(project_dir)
         self._write_project_config(
@@ -944,6 +955,9 @@ class DocumentControlApp(QMainWindow):
             filter_mode or str(current.get("filter_mode", "No Filter")),
             favorites if favorites is not None else list(current.get("favorites", [])),  # type: ignore[arg-type]
             notes if notes is not None else list(current.get("notes", [])),  # type: ignore[arg-type]
+            selected_source
+            if selected_source is not None
+            else str(current.get("selected_source", "")),
         )
 
     def _ensure_default_project(self) -> None:
@@ -1018,6 +1032,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites or [],
             notes or [],
+            (sources or [""])[0] if sources else "",
         )
         self.current_project_dir = str(project_dir)
         self._register_tracked_project(name, project_dir)
@@ -1183,6 +1198,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode = str(config.get("filter_mode", "No Filter"))
         favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
         notes = [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
+        selected_source = str(config.get("selected_source", "")).strip()
 
         self.current_project_dir = str(project_dir)
         self.file_filter_mode_combo.blockSignals(True)
@@ -1191,7 +1207,7 @@ class DocumentControlApp(QMainWindow):
         self._set_extension_filters(extension_filters)
         self.current_project_label.setText(f"Current Project: {name}")
         self._register_tracked_project(name, project_dir)
-        self._refresh_source_roots(sources)
+        self._refresh_source_roots(sources, selected_source)
         self._refresh_favorites_list(favorites)
         self._refresh_notes_list(notes)
         self._save_settings()
@@ -1356,16 +1372,21 @@ class DocumentControlApp(QMainWindow):
             return
         self._open_paths([project_dir])
 
-    def _refresh_source_roots(self, sources: List[str]) -> None:
+    def _refresh_source_roots(self, sources: List[str], selected_source: str = "") -> None:
         self.source_roots_list.clear()
         valid_sources = [Path(source) for source in sources if Path(source).is_dir()]
+        selected_item: Optional[QListWidgetItem] = None
         for source in valid_sources:
             item = QListWidgetItem(source.name or str(source))
             item.setData(Qt.UserRole, str(source))
             item.setToolTip(str(source))
             self.source_roots_list.addItem(item)
+            if str(source) == selected_source:
+                selected_item = item
 
-        if self.source_roots_list.count() > 0:
+        if selected_item:
+            self.source_roots_list.setCurrentItem(selected_item)
+        elif self.source_roots_list.count() > 0:
             self.source_roots_list.setCurrentRow(0)
         else:
             self.current_directory = None
@@ -1449,6 +1470,9 @@ class DocumentControlApp(QMainWindow):
     def _on_source_root_changed(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
         if not current:
             return
+        project_dir = self._current_project_path()
+        if project_dir and project_dir.is_dir():
+            self._save_project_config(project_dir, selected_source=str(current.data(Qt.UserRole)))
         root_path = Path(str(current.data(Qt.UserRole)))
         self._set_directory_tree_root(root_path)
         self._set_current_directory(root_path)
@@ -1529,8 +1553,9 @@ class DocumentControlApp(QMainWindow):
                 sources=sources,
                 extension_filters=self._current_extension_filters(),
                 filter_mode=self.file_filter_mode_combo.currentText(),
+                selected_source=str(source_path),
             )
-            self._refresh_source_roots(sources)
+            self._refresh_source_roots(sources, str(source_path))
             self._save_settings()
 
     def _remove_source_directory(self) -> None:
@@ -1542,14 +1567,18 @@ class DocumentControlApp(QMainWindow):
 
         source_path = str(item.data(Qt.UserRole))
         sources = [source for source in self._source_roots_from_list() if source != source_path]
+        selected_source = self._current_source_root_value()
+        if selected_source == source_path:
+            selected_source = sources[0] if sources else ""
         self._save_project_config(
             project_dir,
             name=self._current_project_name(),
             sources=sources,
             extension_filters=self._current_extension_filters(),
             filter_mode=self.file_filter_mode_combo.currentText(),
+            selected_source=selected_source,
         )
-        self._refresh_source_roots(sources)
+        self._refresh_source_roots(sources, selected_source)
         self._save_settings()
 
     def _track_current_directory(self) -> None:
@@ -1571,8 +1600,9 @@ class DocumentControlApp(QMainWindow):
             sources=sources,
             extension_filters=self._current_extension_filters(),
             filter_mode=self.file_filter_mode_combo.currentText(),
+            selected_source=current_dir_str,
         )
-        self._refresh_source_roots(sources)
+        self._refresh_source_roots(sources, current_dir_str)
         for row in range(self.source_roots_list.count()):
             item = self.source_roots_list.item(row)
             if item.data(Qt.UserRole) == current_dir_str:
