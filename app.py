@@ -2,6 +2,7 @@ import csv
 import json
 import shutil
 import sys
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressDialog,
     QRadioButton,
     QPushButton,
     QSplitter,
@@ -262,9 +264,7 @@ class DocumentControlApp(QMainWindow):
         open_location_btn.clicked.connect(self._open_selected_project_location)
 
         self.tracked_projects_list = QListWidget()
-        self.tracked_projects_list.itemDoubleClicked.connect(
-            lambda item: self._load_project_from_dir(Path(str(item.data(Qt.UserRole))))
-        )
+        self.tracked_projects_list.itemDoubleClicked.connect(self._load_tracked_project_item)
 
         self.current_project_label = QLabel("Current Project: -")
         self.current_project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -666,6 +666,24 @@ class DocumentControlApp(QMainWindow):
         self._save_settings()
         self._load_records()
 
+    @contextmanager
+    def _busy_action(self, message: str):
+        dialog = QProgressDialog(message, None, 0, 0, self)
+        dialog.setWindowTitle(APP_NAME)
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.setCancelButton(None)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.show()
+        QApplication.processEvents()
+        try:
+            yield
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            QApplication.processEvents()
+
     def _validate_identity(self) -> bool:
         if not self._normalize_initials():
             self._error("Enter user initials.")
@@ -1055,7 +1073,12 @@ class DocumentControlApp(QMainWindow):
         if not item:
             self._error("Select a tracked project to load.")
             return
-        self._load_project_from_dir(Path(item.data(Qt.UserRole)))
+        with self._busy_action("Loading project..."):
+            self._load_project_from_dir(Path(item.data(Qt.UserRole)))
+
+    def _load_tracked_project_item(self, item: QListWidgetItem) -> None:
+        with self._busy_action("Loading project..."):
+            self._load_project_from_dir(Path(str(item.data(Qt.UserRole))))
 
     def _add_existing_project(self) -> None:
         start_dir = str(self._base_projects_dir())
@@ -1076,7 +1099,8 @@ class DocumentControlApp(QMainWindow):
         project_dir = config_path.parent
         config = self._read_project_config(project_dir)
         self._register_tracked_project(str(config.get("name", project_dir.name)), project_dir)
-        self._load_project_from_dir(project_dir)
+        with self._busy_action("Loading project..."):
+            self._load_project_from_dir(project_dir)
 
     def _remove_selected_project(self) -> None:
         item = self.tracked_projects_list.currentItem()
@@ -1293,13 +1317,15 @@ class DocumentControlApp(QMainWindow):
             return
 
         destination_parent = Path(destination_edit.text().strip() or str(project_dir.parent))
-        updated_project_dir = self._apply_project_edit(project_dir, new_project_name, destination_parent)
+        with self._busy_action("Updating project..."):
+            updated_project_dir = self._apply_project_edit(project_dir, new_project_name, destination_parent)
         if not updated_project_dir:
             return
 
         if self.current_project_dir == str(project_dir):
             self.current_project_dir = str(updated_project_dir)
-            self._load_project_from_dir(updated_project_dir)
+            with self._busy_action("Loading project..."):
+                self._load_project_from_dir(updated_project_dir)
         else:
             self._refresh_tracked_projects_list()
             self._render_records_tables()
@@ -2261,56 +2287,57 @@ class DocumentControlApp(QMainWindow):
         self._refresh_source_files()
         history_lookup = self._history_lookup_for_directory(current_directory)
 
-        for source_file in selected_files:
-            latest_row = history_lookup.get(source_file.name)
-            if latest_row and latest_row.get("action") == "CHECK_OUT":
-                original_name = latest_row.get("original_file_name", source_file.name)
-                checked_out_by = latest_row.get("user_initials", "")
-                if checked_out_by == initials:
-                    errors.append(f"Already checked out by you: {original_name}")
-                else:
-                    who = latest_row.get("user_full_name", "") or checked_out_by or "another user"
-                    errors.append(f"Already checked out by {who}: {original_name}")
-                continue
+        with self._busy_action("Checking out file(s)..."):
+            for source_file in selected_files:
+                latest_row = history_lookup.get(source_file.name)
+                if latest_row and latest_row.get("action") == "CHECK_OUT":
+                    original_name = latest_row.get("original_file_name", source_file.name)
+                    checked_out_by = latest_row.get("user_initials", "")
+                    if checked_out_by == initials:
+                        errors.append(f"Already checked out by you: {original_name}")
+                    else:
+                        who = latest_row.get("user_full_name", "") or checked_out_by or "another user"
+                        errors.append(f"Already checked out by {who}: {original_name}")
+                    continue
 
-            locked_source_file = self._locked_name_for(source_file, initials)
-            try:
-                relative_path = source_file.relative_to(source_root)
-            except ValueError:
-                relative_path = Path(source_file.name)
-            local_file = project_checkout_dir / relative_path
+                locked_source_file = self._locked_name_for(source_file, initials)
+                try:
+                    relative_path = source_file.relative_to(source_root)
+                except ValueError:
+                    relative_path = Path(source_file.name)
+                local_file = project_checkout_dir / relative_path
 
-            if not source_file.exists():
-                errors.append(f"Missing source file: {source_file.name}")
-                continue
-            if locked_source_file.exists():
-                errors.append(f"Already checked out: {locked_source_file.name}")
-                continue
+                if not source_file.exists():
+                    errors.append(f"Missing source file: {source_file.name}")
+                    continue
+                if locked_source_file.exists():
+                    errors.append(f"Already checked out: {locked_source_file.name}")
+                    continue
 
-            try:
-                local_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_file, local_file)
-                source_file.rename(locked_source_file)
-                self.records.append(
-                    CheckoutRecord(
-                        source_file=str(source_file),
-                        locked_source_file=str(locked_source_file),
-                        local_file=str(local_file),
-                        initials=initials,
-                        project_name=self._current_project_name(),
-                        project_dir=str(project_dir),
-                        source_root=str(source_root),
-                        checked_out_at=checked_out_at,
+                try:
+                    local_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_file, local_file)
+                    source_file.rename(locked_source_file)
+                    self.records.append(
+                        CheckoutRecord(
+                            source_file=str(source_file),
+                            locked_source_file=str(locked_source_file),
+                            local_file=str(local_file),
+                            initials=initials,
+                            project_name=self._current_project_name(),
+                            project_dir=str(project_dir),
+                            source_root=str(source_root),
+                            checked_out_at=checked_out_at,
+                        )
                     )
-                )
-                self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
-            except OSError as exc:
-                errors.append(f"{source_file.name}: {exc}")
+                    self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
+                except OSError as exc:
+                    errors.append(f"{source_file.name}: {exc}")
 
-        self._save_records()
-        self._refresh_source_files()
-        self._refresh_controlled_files()
-        self._render_records_tables()
+            self._save_records()
+            self._refresh_source_files()
+            self._refresh_controlled_files()
+            self._render_records_tables()
 
         if errors:
             self._error("Some files failed:\n" + "\n".join(errors))
@@ -2723,10 +2750,11 @@ class DocumentControlApp(QMainWindow):
         if review != "commit":
             return
 
-        errors = self._perform_pending_checkin_actions(actions, "standard")
-        self._refresh_source_files()
-        self._refresh_controlled_files()
-        self._render_records_tables()
+        with self._busy_action("Checking in file(s)..."):
+            errors = self._perform_pending_checkin_actions(actions, "standard")
+            self._refresh_source_files()
+            self._refresh_controlled_files()
+            self._render_records_tables()
 
         if errors:
             self._error("Some files failed to check in:\n" + "\n".join(errors))
@@ -2753,21 +2781,22 @@ class DocumentControlApp(QMainWindow):
             return
 
         errors: List[str] = []
-        for file_path in file_paths:
-            local_file = Path(file_path)
-            target_file = current_directory / local_file.name
-            if target_file.exists():
-                errors.append(f"Already exists in source: {target_file.name}")
-                continue
+        with self._busy_action("Adding file(s) to source..."):
+            for file_path in file_paths:
+                local_file = Path(file_path)
+                target_file = current_directory / local_file.name
+                if target_file.exists():
+                    errors.append(f"Already exists in source: {target_file.name}")
+                    continue
 
-            try:
-                shutil.copy2(local_file, target_file)
-                self._append_history(current_directory, "ADD_FILE", target_file.name)
-            except OSError as exc:
-                errors.append(f"{local_file.name}: {exc}")
+                try:
+                    shutil.copy2(local_file, target_file)
+                    self._append_history(current_directory, "ADD_FILE", target_file.name)
+                except OSError as exc:
+                    errors.append(f"{local_file.name}: {exc}")
 
-        self._refresh_source_files()
-        self._refresh_controlled_files()
+            self._refresh_source_files()
+            self._refresh_controlled_files()
 
         if errors:
             self._error("Some files failed to add:\n" + "\n".join(errors))
@@ -2805,12 +2834,13 @@ class DocumentControlApp(QMainWindow):
 
     def _open_paths(self, paths: List[Path]) -> None:
         errors: List[str] = []
-        for path in paths:
-            if not path.exists():
-                errors.append(f"Missing file: {path}")
-                continue
-            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
-                errors.append(f"Could not open: {path}")
+        with self._busy_action("Opening file(s)..."):
+            for path in paths:
+                if not path.exists():
+                    errors.append(f"Missing file: {path}")
+                    continue
+                if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+                    errors.append(f"Could not open: {path}")
         if errors:
             self._error("Some files could not be opened:\n" + "\n".join(errors))
 
@@ -2865,10 +2895,11 @@ class DocumentControlApp(QMainWindow):
             if actions is None:
                 return
 
-        errors = self._perform_pending_checkin_actions(actions, "force")
-        self._refresh_source_files()
-        self._refresh_controlled_files()
-        self._render_records_tables()
+        with self._busy_action("Force checking in file(s)..."):
+            errors = self._perform_pending_checkin_actions(actions, "force")
+            self._refresh_source_files()
+            self._refresh_controlled_files()
+            self._render_records_tables()
 
         if errors:
             self._error("Some files failed to force check in:\n" + "\n".join(errors))
