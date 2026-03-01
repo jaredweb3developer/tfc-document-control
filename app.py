@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -215,8 +216,6 @@ class DocumentControlApp(QMainWindow):
         self.full_name_edit.setPlaceholderText("Optional full name")
         identity_bar.addWidget(self.full_name_edit, stretch=1)
 
-        self.settings_path_edit = QLineEdit(str(SETTINGS_FILE))
-        self.settings_path_edit.setReadOnly(True)
         self.projects_file_edit = QLineEdit(str(self._default_projects_registry_file()))
         browse_projects_file_btn = QPushButton("Browse")
         browse_projects_file_btn.clicked.connect(self._choose_projects_registry_file)
@@ -226,23 +225,27 @@ class DocumentControlApp(QMainWindow):
         self.records_file_edit = QLineEdit(str(self._default_records_file()))
         browse_records_file_btn = QPushButton("Browse")
         browse_records_file_btn.clicked.connect(self._choose_records_file)
+        config_divider = QFrame()
+        config_divider.setFrameShape(QFrame.HLine)
+        config_divider.setFrameShadow(QFrame.Sunken)
+        config_divider_label = QLabel("Application Data File Locations")
 
         layout.addWidget(QLabel("User:"), 0, 0)
         layout.addLayout(identity_bar, 0, 1, 1, 2)
         layout.addWidget(QLabel("Local Projects Folder:"), 1, 0)
         layout.addWidget(self.local_path_edit, 1, 1)
         layout.addWidget(browse_local_btn, 1, 2)
-        layout.addWidget(QLabel("Settings File:"), 2, 0)
-        layout.addWidget(self.settings_path_edit, 2, 1, 1, 2)
-        layout.addWidget(QLabel("Tracked Projects File:"), 3, 0)
-        layout.addWidget(self.projects_file_edit, 3, 1)
-        layout.addWidget(browse_projects_file_btn, 3, 2)
-        layout.addWidget(QLabel("Filter Presets File:"), 4, 0)
-        layout.addWidget(self.filter_presets_file_edit, 4, 1)
-        layout.addWidget(browse_filter_presets_btn, 4, 2)
-        layout.addWidget(QLabel("Checkout Records File:"), 5, 0)
-        layout.addWidget(self.records_file_edit, 5, 1)
-        layout.addWidget(browse_records_file_btn, 5, 2)
+        layout.addWidget(config_divider, 2, 0, 1, 3)
+        layout.addWidget(config_divider_label, 3, 0, 1, 3)
+        layout.addWidget(QLabel("Tracked Projects File:"), 4, 0)
+        layout.addWidget(self.projects_file_edit, 4, 1)
+        layout.addWidget(browse_projects_file_btn, 4, 2)
+        layout.addWidget(QLabel("Filter Presets File:"), 5, 0)
+        layout.addWidget(self.filter_presets_file_edit, 5, 1)
+        layout.addWidget(browse_filter_presets_btn, 5, 2)
+        layout.addWidget(QLabel("Checkout Records File:"), 6, 0)
+        layout.addWidget(self.records_file_edit, 6, 1)
+        layout.addWidget(browse_records_file_btn, 6, 2)
 
         return group
 
@@ -738,7 +741,6 @@ class DocumentControlApp(QMainWindow):
 
     def _load_settings(self) -> None:
         self.local_path_edit.setText(str(self._default_projects_dir()))
-        self.settings_path_edit.setText(str(SETTINGS_FILE))
         self.projects_file_edit.setText(str(self._default_projects_registry_file()))
         self.filter_presets_file_edit.setText(str(self._default_filter_presets_file()))
         self.records_file_edit.setText(str(self._default_records_file()))
