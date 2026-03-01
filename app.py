@@ -43,10 +43,20 @@ from PySide6.QtWidgets import (
 )
 
 APP_ROOT = Path(__file__).resolve().parent
-SETTINGS_FILE = APP_ROOT / "settings.json"
-PROJECTS_FILE = APP_ROOT / "projects.json"
-RECORDS_FILE = APP_ROOT / ".checkout_records.json"
-FILTER_PRESETS_FILE = APP_ROOT / "filter_presets.json"
+APP_NAME = "TFC Document Control"
+APP_VERSION = "0.0.4"
+USER_DATA_DIR_NAME = "TFC Project Control"
+SETTINGS_SCHEMA_VERSION = 1
+TRACKED_PROJECTS_SCHEMA_VERSION = 1
+PROJECT_CONFIG_SCHEMA_VERSION = 1
+FILTER_PRESETS_SCHEMA_VERSION = 1
+RECORDS_SCHEMA_VERSION = 1
+USER_DATA_ROOT = Path.home() / "Documents" / USER_DATA_DIR_NAME
+SETTINGS_FILE = USER_DATA_ROOT / "settings.json"
+LEGACY_SETTINGS_FILE = APP_ROOT / "settings.json"
+LEGACY_PROJECTS_FILE = APP_ROOT / "projects.json"
+LEGACY_RECORDS_FILE = APP_ROOT / ".checkout_records.json"
+LEGACY_FILTER_PRESETS_FILE = APP_ROOT / "filter_presets.json"
 PROJECT_CONFIG_FILE = "dctl.json"
 HISTORY_FILE_NAME = ".doc_control_history.csv"
 DEFAULT_PROJECT_NAME = "Default"
@@ -78,7 +88,7 @@ class PendingCheckinAction:
 class DocumentControlApp(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Document Control")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.resize(1500, 980)
 
         self.records: List[CheckoutRecord] = []
@@ -94,8 +104,8 @@ class DocumentControlApp(QMainWindow):
         self.extension_filter_debounce.timeout.connect(self._apply_debounced_extension_filters)
 
         self._build_ui()
-        self._load_filter_presets()
         self._load_settings()
+        self._load_filter_presets()
         self._load_tracked_projects()
         self._load_records()
         self._load_last_or_default_project()
@@ -187,11 +197,34 @@ class DocumentControlApp(QMainWindow):
         self.full_name_edit.setPlaceholderText("Optional full name")
         identity_bar.addWidget(self.full_name_edit, stretch=1)
 
+        self.settings_path_edit = QLineEdit(str(SETTINGS_FILE))
+        self.settings_path_edit.setReadOnly(True)
+        self.projects_file_edit = QLineEdit(str(self._default_projects_registry_file()))
+        browse_projects_file_btn = QPushButton("Browse")
+        browse_projects_file_btn.clicked.connect(self._choose_projects_registry_file)
+        self.filter_presets_file_edit = QLineEdit(str(self._default_filter_presets_file()))
+        browse_filter_presets_btn = QPushButton("Browse")
+        browse_filter_presets_btn.clicked.connect(self._choose_filter_presets_file)
+        self.records_file_edit = QLineEdit(str(self._default_records_file()))
+        browse_records_file_btn = QPushButton("Browse")
+        browse_records_file_btn.clicked.connect(self._choose_records_file)
+
         layout.addWidget(QLabel("Local Folder:"), 0, 0)
         layout.addWidget(self.local_path_edit, 0, 1)
         layout.addWidget(browse_local_btn, 0, 2)
         layout.addWidget(QLabel("User:"), 1, 0)
         layout.addLayout(identity_bar, 1, 1, 1, 2)
+        layout.addWidget(QLabel("Settings File:"), 2, 0)
+        layout.addWidget(self.settings_path_edit, 2, 1, 1, 2)
+        layout.addWidget(QLabel("Tracked Projects File:"), 3, 0)
+        layout.addWidget(self.projects_file_edit, 3, 1)
+        layout.addWidget(browse_projects_file_btn, 3, 2)
+        layout.addWidget(QLabel("Filter Presets File:"), 4, 0)
+        layout.addWidget(self.filter_presets_file_edit, 4, 1)
+        layout.addWidget(browse_filter_presets_btn, 4, 2)
+        layout.addWidget(QLabel("Checkout Records File:"), 5, 0)
+        layout.addWidget(self.records_file_edit, 5, 1)
+        layout.addWidget(browse_records_file_btn, 5, 2)
 
         return group
 
@@ -482,10 +515,54 @@ class DocumentControlApp(QMainWindow):
         return table
 
     def _default_projects_dir(self) -> Path:
-        return APP_ROOT / "Projects"
+        return Path.home() / "Documents" / APP_NAME / "Projects"
+
+    def _default_projects_registry_file(self) -> Path:
+        return USER_DATA_ROOT / "projects.json"
+
+    def _default_filter_presets_file(self) -> Path:
+        return USER_DATA_ROOT / "filter_presets.json"
+
+    def _default_records_file(self) -> Path:
+        return USER_DATA_ROOT / "checkout_records.json"
 
     def _base_projects_dir(self) -> Path:
         return Path(self.local_path_edit.text().strip() or self._default_projects_dir())
+
+    def _projects_registry_path(self) -> Path:
+        return Path(self.projects_file_edit.text().strip() or self._default_projects_registry_file())
+
+    def _filter_presets_path(self) -> Path:
+        return Path(
+            self.filter_presets_file_edit.text().strip() or self._default_filter_presets_file()
+        )
+
+    def _records_file_path(self) -> Path:
+        return Path(self.records_file_edit.text().strip() or self._default_records_file())
+
+    def _ensure_parent_dir(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _read_json_candidates(self, candidates: List[Path]) -> Optional[object]:
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            try:
+                return json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+        return None
+
+    def _choose_json_file_path(self, title: str, current_path: Path) -> Optional[Path]:
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            title,
+            str(current_path if current_path.name else current_path.parent),
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not file_path:
+            return None
+        return Path(file_path)
 
     def _normalize_initials(self) -> str:
         initials = "".join(ch for ch in self.initials_edit.text().strip().upper() if ch.isalnum())
@@ -539,6 +616,37 @@ class DocumentControlApp(QMainWindow):
             if not self.tracked_projects:
                 self._ensure_default_project()
 
+    def _choose_projects_registry_file(self) -> None:
+        path = self._choose_json_file_path(
+            "Select Tracked Projects File", self._projects_registry_path()
+        )
+        if not path:
+            return
+        self.projects_file_edit.setText(str(path))
+        self._save_settings()
+        self._load_tracked_projects()
+        self._load_last_or_default_project()
+
+    def _choose_filter_presets_file(self) -> None:
+        path = self._choose_json_file_path(
+            "Select Filter Presets File", self._filter_presets_path()
+        )
+        if not path:
+            return
+        self.filter_presets_file_edit.setText(str(path))
+        self._save_settings()
+        self._load_filter_presets()
+
+    def _choose_records_file(self) -> None:
+        path = self._choose_json_file_path(
+            "Select Checkout Records File", self._records_file_path()
+        )
+        if not path:
+            return
+        self.records_file_edit.setText(str(path))
+        self._save_settings()
+        self._load_records()
+
     def _validate_identity(self) -> bool:
         if not self._normalize_initials():
             self._error("Enter user initials.")
@@ -559,22 +667,33 @@ class DocumentControlApp(QMainWindow):
             return None
         return self.current_directory
 
-    def _settings_payload(self) -> Dict[str, str]:
+    def _settings_payload(self) -> Dict[str, object]:
         return {
+            "schema_version": SETTINGS_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
             "initials": self._normalize_initials(),
             "full_name": self._current_full_name(),
             "base_projects_dir": str(self._base_projects_dir()),
             "current_project_dir": self.current_project_dir,
+            "tracked_projects_file": str(self._projects_registry_path()),
+            "filter_presets_file": str(self._filter_presets_path()),
+            "records_file": str(self._records_file_path()),
         }
 
     def _has_user_configuration(self) -> bool:
         initials = self.initials_edit.text().strip()
         full_name = self.full_name_edit.text().strip()
         base_dir = self.local_path_edit.text().strip()
+        projects_file = self.projects_file_edit.text().strip()
+        filter_presets_file = self.filter_presets_file_edit.text().strip()
+        records_file = self.records_file_edit.text().strip()
         return bool(
             initials
             or full_name
             or (base_dir and Path(base_dir) != self._default_projects_dir())
+            or (projects_file and Path(projects_file) != self._default_projects_registry_file())
+            or (filter_presets_file and Path(filter_presets_file) != self._default_filter_presets_file())
+            or (records_file and Path(records_file) != self._default_records_file())
         )
 
     def _apply_startup_tab(self) -> None:
@@ -582,14 +701,12 @@ class DocumentControlApp(QMainWindow):
 
     def _load_settings(self) -> None:
         self.local_path_edit.setText(str(self._default_projects_dir()))
-        if not SETTINGS_FILE.exists():
-            self.show_configuration_tab_on_startup = True
-            self._apply_startup_tab()
-            return
-
-        try:
-            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        self.settings_path_edit.setText(str(SETTINGS_FILE))
+        self.projects_file_edit.setText(str(self._default_projects_registry_file()))
+        self.filter_presets_file_edit.setText(str(self._default_filter_presets_file()))
+        self.records_file_edit.setText(str(self._default_records_file()))
+        data = self._read_json_candidates([SETTINGS_FILE, LEGACY_SETTINGS_FILE])
+        if data is None or not isinstance(data, dict):
             self.show_configuration_tab_on_startup = True
             self._apply_startup_tab()
             return
@@ -599,33 +716,44 @@ class DocumentControlApp(QMainWindow):
         base_dir = str(data.get("base_projects_dir", "")).strip()
         if base_dir:
             self.local_path_edit.setText(base_dir)
+        tracked_projects_file = str(data.get("tracked_projects_file", "")).strip()
+        if tracked_projects_file:
+            self.projects_file_edit.setText(tracked_projects_file)
+        filter_presets_file = str(data.get("filter_presets_file", "")).strip()
+        if filter_presets_file:
+            self.filter_presets_file_edit.setText(filter_presets_file)
+        records_file = str(data.get("records_file", "")).strip()
+        if records_file:
+            self.records_file_edit.setText(records_file)
         self.current_project_dir = str(data.get("current_project_dir", "")).strip()
         self.show_configuration_tab_on_startup = not self._has_user_configuration()
         self._apply_startup_tab()
 
     def _save_settings(self) -> None:
+        self._ensure_parent_dir(SETTINGS_FILE)
         SETTINGS_FILE.write_text(
             json.dumps(self._settings_payload(), indent=2), encoding="utf-8"
         )
 
     def _load_tracked_projects(self) -> None:
         self.tracked_projects = []
-        if PROJECTS_FILE.exists():
-            try:
-                data = json.loads(PROJECTS_FILE.read_text(encoding="utf-8"))
-                tracked = data.get("tracked_projects", [])
-                if isinstance(tracked, list):
-                    for entry in tracked:
-                        if not isinstance(entry, dict):
-                            continue
-                        name = str(entry.get("name", "")).strip()
-                        project_dir = str(entry.get("project_dir", "")).strip()
-                        if name and project_dir:
-                            self.tracked_projects.append(
-                                {"name": name, "project_dir": project_dir}
-                            )
-            except (OSError, ValueError, TypeError):
-                self.tracked_projects = []
+        data = self._read_json_candidates(
+            [self._projects_registry_path(), LEGACY_PROJECTS_FILE]
+        )
+        if isinstance(data, dict):
+            tracked = data.get("tracked_projects", [])
+        else:
+            tracked = data
+        if isinstance(tracked, list):
+            for entry in tracked:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name", "")).strip()
+                project_dir = str(entry.get("project_dir", "")).strip()
+                if name and project_dir:
+                    self.tracked_projects.append(
+                        {"name": name, "project_dir": project_dir}
+                    )
 
         if not self.tracked_projects:
             self._ensure_default_project()
@@ -633,8 +761,14 @@ class DocumentControlApp(QMainWindow):
             self._refresh_tracked_projects_list()
 
     def _save_tracked_projects(self) -> None:
-        payload = {"tracked_projects": self.tracked_projects}
-        PROJECTS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        payload = {
+            "schema_version": TRACKED_PROJECTS_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
+            "tracked_projects": self.tracked_projects,
+        }
+        projects_path = self._projects_registry_path()
+        self._ensure_parent_dir(projects_path)
+        projects_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _project_payload(
         self,
@@ -646,6 +780,8 @@ class DocumentControlApp(QMainWindow):
         notes: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, object]:
         return {
+            "schema_version": PROJECT_CONFIG_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
             "name": name,
             "sources": sources,
             "extension_filters": extension_filters or [],
@@ -1466,14 +1602,15 @@ class DocumentControlApp(QMainWindow):
 
     def _load_filter_presets(self) -> None:
         self.filter_presets = []
-        if not FILTER_PRESETS_FILE.exists():
-            return
-        try:
-            data = json.loads(FILTER_PRESETS_FILE.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        data = self._read_json_candidates(
+            [self._filter_presets_path(), LEGACY_FILTER_PRESETS_FILE]
+        )
+        if data is None:
             return
 
-        raw_presets = data.get("presets", [])
+        raw_presets = data
+        if isinstance(data, dict):
+            raw_presets = data.get("presets", [])
         if not isinstance(raw_presets, list):
             return
         for preset in raw_presets:
@@ -1485,8 +1622,17 @@ class DocumentControlApp(QMainWindow):
         self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
 
     def _save_filter_presets(self) -> None:
-        FILTER_PRESETS_FILE.write_text(
-            json.dumps({"presets": self.filter_presets}, indent=2),
+        presets_path = self._filter_presets_path()
+        self._ensure_parent_dir(presets_path)
+        presets_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": FILTER_PRESETS_SCHEMA_VERSION,
+                    "app_version": APP_VERSION,
+                    "presets": self.filter_presets,
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
@@ -1586,6 +1732,26 @@ class DocumentControlApp(QMainWindow):
             self._save_filter_presets()
             refresh_list()
 
+        def create_preset_from_current() -> None:
+            preset = self._show_filter_preset_editor(
+                {
+                    "name": "",
+                    "filter_mode": self.file_filter_mode_combo.currentText(),
+                    "extensions": self._current_extension_filters(),
+                }
+            )
+            if not preset:
+                return
+            self.filter_presets = [
+                existing
+                for existing in self.filter_presets
+                if str(existing["name"]).lower() != str(preset["name"]).lower()
+            ]
+            self.filter_presets.append(preset)
+            self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+            self._save_filter_presets()
+            refresh_list()
+
         def edit_preset() -> None:
             preset = selected_preset()
             if not preset:
@@ -1638,6 +1804,8 @@ class DocumentControlApp(QMainWindow):
         controls = QHBoxLayout()
         new_btn = QPushButton("New")
         new_btn.clicked.connect(create_preset)
+        from_current_btn = QPushButton("New From Current")
+        from_current_btn.clicked.connect(create_preset_from_current)
         edit_btn = QPushButton("Edit")
         edit_btn.clicked.connect(edit_preset)
         delete_btn = QPushButton("Delete")
@@ -1647,6 +1815,7 @@ class DocumentControlApp(QMainWindow):
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dialog.reject)
         controls.addWidget(new_btn)
+        controls.addWidget(from_current_btn)
         controls.addWidget(edit_btn)
         controls.addWidget(delete_btn)
         controls.addStretch()
@@ -2641,14 +2810,19 @@ class DocumentControlApp(QMainWindow):
         table.setColumnWidth(5, max(table.columnWidth(5), 150))
 
     def _load_records(self) -> None:
-        if not RECORDS_FILE.exists():
+        data = self._read_json_candidates(
+            [self._records_file_path(), LEGACY_RECORDS_FILE]
+        )
+        raw_records = data
+        if isinstance(data, dict):
+            raw_records = data.get("records", [])
+        if not isinstance(raw_records, list):
             self._render_records_tables()
             return
 
         try:
-            data = json.loads(RECORDS_FILE.read_text(encoding="utf-8"))
             self.records = []
-            for entry in data:
+            for entry in raw_records:
                 if not isinstance(entry, dict):
                     continue
                 self.records.append(
@@ -2669,8 +2843,17 @@ class DocumentControlApp(QMainWindow):
         self._render_records_tables()
 
     def _save_records(self) -> None:
-        RECORDS_FILE.write_text(
-            json.dumps([asdict(record) for record in self.records], indent=2),
+        records_path = self._records_file_path()
+        self._ensure_parent_dir(records_path)
+        records_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": RECORDS_SCHEMA_VERSION,
+                    "app_version": APP_VERSION,
+                    "records": [asdict(record) for record in self.records],
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
