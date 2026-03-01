@@ -2,6 +2,7 @@ import csv
 import json
 import shutil
 import sys
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -28,22 +30,36 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QRadioButton,
     QPushButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 APP_ROOT = Path(__file__).resolve().parent
-SETTINGS_FILE = APP_ROOT / "settings.json"
-PROJECTS_FILE = APP_ROOT / "projects.json"
-RECORDS_FILE = APP_ROOT / ".checkout_records.json"
+APP_NAME = "TFC Document Control"
+APP_VERSION = "0.0.4"
+USER_DATA_DIR_NAME = "TFC Project Control"
+SETTINGS_SCHEMA_VERSION = 1
+TRACKED_PROJECTS_SCHEMA_VERSION = 1
+PROJECT_CONFIG_SCHEMA_VERSION = 1
+FILTER_PRESETS_SCHEMA_VERSION = 1
+RECORDS_SCHEMA_VERSION = 1
+USER_DATA_ROOT = Path.home() / "Documents" / USER_DATA_DIR_NAME
+SETTINGS_FILE = USER_DATA_ROOT / "settings.json"
+LEGACY_SETTINGS_FILE = APP_ROOT / "settings.json"
+LEGACY_PROJECTS_FILE = APP_ROOT / "projects.json"
+LEGACY_RECORDS_FILE = APP_ROOT / ".checkout_records.json"
+LEGACY_FILTER_PRESETS_FILE = APP_ROOT / "filter_presets.json"
 PROJECT_CONFIG_FILE = "dctl.json"
 HISTORY_FILE_NAME = ".doc_control_history.csv"
 DEFAULT_PROJECT_NAME = "Default"
@@ -61,10 +77,21 @@ class CheckoutRecord:
     checked_out_at: str = ""
 
 
+@dataclass
+class PendingCheckinAction:
+    file_name: str
+    source_file: str
+    locked_source_file: str
+    action_mode: str
+    local_file: str = ""
+    record_idx: int = -1
+    reason: str = ""
+
+
 class DocumentControlApp(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Document Control")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.resize(1500, 980)
 
         self.records: List[CheckoutRecord] = []
@@ -72,6 +99,9 @@ class DocumentControlApp(QMainWindow):
         self.current_project_dir: str = ""
         self.current_directory: Optional[Path] = None
         self.directory_tree_root: Optional[Path] = None
+        self.show_configuration_tab_on_startup = True
+        self.filter_presets: List[Dict[str, object]] = []
+        self.main_section_toggles: List[QToolButton] = []
         self.extension_filter_debounce = QTimer(self)
         self.extension_filter_debounce.setSingleShot(True)
         self.extension_filter_debounce.setInterval(2000)
@@ -79,6 +109,7 @@ class DocumentControlApp(QMainWindow):
 
         self._build_ui()
         self._load_settings()
+        self._load_filter_presets()
         self._load_tracked_projects()
         self._load_records()
         self._load_last_or_default_project()
@@ -88,10 +119,81 @@ class DocumentControlApp(QMainWindow):
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
 
-        layout.addWidget(self._build_configuration_group())
-        layout.addWidget(self._build_projects_group())
-        layout.addWidget(self._build_source_files_group(), stretch=1)
-        layout.addWidget(self._build_checked_out_group(), stretch=1)
+        self.main_tabs = QTabWidget()
+
+        main_tab = QWidget()
+        main_layout = QVBoxLayout(main_tab)
+        self.projects_section = self._build_collapsible_section("Projects", self._build_projects_group())
+        self.source_files_section = self._build_collapsible_section(
+            "Source Files", self._build_source_files_group()
+        )
+        main_layout.addWidget(self.projects_section, stretch=1)
+        main_layout.addWidget(self.source_files_section, stretch=1)
+
+        configuration_tab = QWidget()
+        configuration_layout = QVBoxLayout(configuration_tab)
+        configuration_layout.addWidget(self._build_configuration_group())
+        configuration_layout.addStretch()
+
+        checked_out_tab = QWidget()
+        checked_out_layout = QVBoxLayout(checked_out_tab)
+        checked_out_layout.addWidget(self._build_checked_out_group(), stretch=1)
+
+        self.main_tabs.addTab(main_tab, "Main")
+        self.main_tabs.addTab(checked_out_tab, "Checked Out Files")
+        self.main_tabs.addTab(configuration_tab, "Configuration")
+
+        layout.addWidget(self.main_tabs)
+
+    def _build_collapsible_section(self, title: str, content: QWidget) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        toggle = QToolButton()
+        toggle.setText(title)
+        toggle.setCheckable(True)
+        toggle.setChecked(True)
+        toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        toggle.setArrowType(Qt.DownArrow)
+        toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.main_section_toggles.append(toggle)
+
+        def _toggle_section(checked: bool) -> None:
+            content.setVisible(checked)
+            toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+            if checked:
+                content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            else:
+                content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            content.updateGeometry()
+            container.updateGeometry()
+            if not checked and self.main_section_toggles and not any(
+                section_toggle.isChecked() for section_toggle in self.main_section_toggles
+            ):
+                self._restore_main_sections_default_state()
+
+        toggle.toggled.connect(_toggle_section)
+
+        layout.addWidget(toggle)
+        layout.addWidget(content, stretch=1)
+        return container
+
+    def _restore_main_sections_default_state(self) -> None:
+        for toggle in self.main_section_toggles:
+            toggle.blockSignals(True)
+            toggle.setChecked(True)
+            toggle.setArrowType(Qt.DownArrow)
+            toggle.blockSignals(False)
+
+        for toggle in self.main_section_toggles:
+            toggle.toggled.emit(True)
 
     def _build_configuration_group(self) -> QGroupBox:
         group = QGroupBox("Configuration")
@@ -114,11 +216,36 @@ class DocumentControlApp(QMainWindow):
         self.full_name_edit.setPlaceholderText("Optional full name")
         identity_bar.addWidget(self.full_name_edit, stretch=1)
 
-        layout.addWidget(QLabel("Local Folder:"), 0, 0)
-        layout.addWidget(self.local_path_edit, 0, 1)
-        layout.addWidget(browse_local_btn, 0, 2)
-        layout.addWidget(QLabel("User:"), 1, 0)
-        layout.addLayout(identity_bar, 1, 1, 1, 2)
+        self.projects_file_edit = QLineEdit(str(self._default_projects_registry_file()))
+        browse_projects_file_btn = QPushButton("Browse")
+        browse_projects_file_btn.clicked.connect(self._choose_projects_registry_file)
+        self.filter_presets_file_edit = QLineEdit(str(self._default_filter_presets_file()))
+        browse_filter_presets_btn = QPushButton("Browse")
+        browse_filter_presets_btn.clicked.connect(self._choose_filter_presets_file)
+        self.records_file_edit = QLineEdit(str(self._default_records_file()))
+        browse_records_file_btn = QPushButton("Browse")
+        browse_records_file_btn.clicked.connect(self._choose_records_file)
+        config_divider = QFrame()
+        config_divider.setFrameShape(QFrame.HLine)
+        config_divider.setFrameShadow(QFrame.Sunken)
+        config_divider_label = QLabel("Application Data File Locations")
+
+        layout.addWidget(QLabel("User:"), 0, 0)
+        layout.addLayout(identity_bar, 0, 1, 1, 2)
+        layout.addWidget(QLabel("Local Projects Folder:"), 1, 0)
+        layout.addWidget(self.local_path_edit, 1, 1)
+        layout.addWidget(browse_local_btn, 1, 2)
+        layout.addWidget(config_divider, 2, 0, 1, 3)
+        layout.addWidget(config_divider_label, 3, 0, 1, 3)
+        layout.addWidget(QLabel("Tracked Projects File:"), 4, 0)
+        layout.addWidget(self.projects_file_edit, 4, 1)
+        layout.addWidget(browse_projects_file_btn, 4, 2)
+        layout.addWidget(QLabel("Filter Presets File:"), 5, 0)
+        layout.addWidget(self.filter_presets_file_edit, 5, 1)
+        layout.addWidget(browse_filter_presets_btn, 5, 2)
+        layout.addWidget(QLabel("Checkout Records File:"), 6, 0)
+        layout.addWidget(self.records_file_edit, 6, 1)
+        layout.addWidget(browse_records_file_btn, 6, 2)
 
         return group
 
@@ -132,15 +259,15 @@ class DocumentControlApp(QMainWindow):
         load_project_btn.clicked.connect(self._load_selected_tracked_project)
         add_project_btn = QPushButton("Track Existing")
         add_project_btn.clicked.connect(self._add_existing_project)
+        edit_project_btn = QPushButton("Edit Selected")
+        edit_project_btn.clicked.connect(self._edit_selected_project)
         remove_project_btn = QPushButton("Untrack Selected")
         remove_project_btn.clicked.connect(self._remove_selected_project)
         open_location_btn = QPushButton("Open Location")
         open_location_btn.clicked.connect(self._open_selected_project_location)
 
         self.tracked_projects_list = QListWidget()
-        self.tracked_projects_list.itemDoubleClicked.connect(
-            lambda item: self._load_project_from_dir(Path(str(item.data(Qt.UserRole))))
-        )
+        self.tracked_projects_list.itemDoubleClicked.connect(self._load_tracked_project_item)
 
         self.current_project_label = QLabel("Current Project: -")
         self.current_project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -154,8 +281,9 @@ class DocumentControlApp(QMainWindow):
         tracked_controls.addWidget(new_project_btn, 0, 0)
         tracked_controls.addWidget(load_project_btn, 0, 1)
         tracked_controls.addWidget(add_project_btn, 1, 0)
-        tracked_controls.addWidget(remove_project_btn, 1, 1)
-        tracked_controls.addWidget(open_location_btn, 2, 0, 1, 2)
+        tracked_controls.addWidget(edit_project_btn, 1, 1)
+        tracked_controls.addWidget(remove_project_btn, 2, 0)
+        tracked_controls.addWidget(open_location_btn, 2, 1)
         tracked_layout.addLayout(tracked_controls)
 
         favorites_panel = QWidget()
@@ -248,9 +376,12 @@ class DocumentControlApp(QMainWindow):
         directory_button_bar = QHBoxLayout()
         browse_directory_btn = QPushButton("Browse")
         browse_directory_btn.clicked.connect(self._browse_directory_tree_root)
+        view_directory_btn = QPushButton("View Location")
+        view_directory_btn.clicked.connect(self._view_current_directory_location)
         track_current_directory_btn = QPushButton("Track Directory")
         track_current_directory_btn.clicked.connect(self._track_current_directory)
         directory_button_bar.addWidget(browse_directory_btn)
+        directory_button_bar.addWidget(view_directory_btn)
         directory_button_bar.addWidget(track_current_directory_btn)
         directory_button_bar.addStretch()
         directory_layout.addLayout(directory_button_bar)
@@ -260,6 +391,8 @@ class DocumentControlApp(QMainWindow):
         files_layout.addWidget(QLabel("Files"))
 
         filter_bar = QHBoxLayout()
+        presets_btn = QPushButton("Presets")
+        presets_btn.clicked.connect(self._show_filter_presets_dialog)
         self.file_filter_mode_combo = QComboBox()
         self.file_filter_mode_combo.addItems(["No Filter", "Include Only", "Exclude"])
         self.file_filter_mode_combo.currentIndexChanged.connect(self._on_filter_mode_changed)
@@ -297,13 +430,17 @@ class DocumentControlApp(QMainWindow):
         clear_extensions_btn.clicked.connect(self._clear_filter_extensions)
 
         filter_bar.addWidget(QLabel("Extension Filter"))
-        filter_bar.addWidget(self.file_filter_mode_combo)
+        filter_bar.addWidget(presets_btn)
         filter_bar.addWidget(self.file_extension_combo)
         filter_bar.addWidget(add_extension_btn)
         filter_bar.addWidget(remove_extension_btn)
         filter_bar.addWidget(clear_extensions_btn)
         files_layout.addLayout(filter_bar)
-        files_layout.addWidget(self.file_extension_list_edit)
+        extension_list_bar = QHBoxLayout()
+        extension_list_bar.addWidget(QLabel("Filter Mode"))
+        extension_list_bar.addWidget(self.file_filter_mode_combo)
+        extension_list_bar.addWidget(self.file_extension_list_edit, stretch=1)
+        files_layout.addLayout(extension_list_bar)
 
         self.files_list = QListWidget()
         self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
@@ -400,10 +537,54 @@ class DocumentControlApp(QMainWindow):
         return table
 
     def _default_projects_dir(self) -> Path:
-        return APP_ROOT / "Projects"
+        return Path.home() / "Documents" / APP_NAME / "Projects"
+
+    def _default_projects_registry_file(self) -> Path:
+        return USER_DATA_ROOT / "projects.json"
+
+    def _default_filter_presets_file(self) -> Path:
+        return USER_DATA_ROOT / "filter_presets.json"
+
+    def _default_records_file(self) -> Path:
+        return USER_DATA_ROOT / "checkout_records.json"
 
     def _base_projects_dir(self) -> Path:
         return Path(self.local_path_edit.text().strip() or self._default_projects_dir())
+
+    def _projects_registry_path(self) -> Path:
+        return Path(self.projects_file_edit.text().strip() or self._default_projects_registry_file())
+
+    def _filter_presets_path(self) -> Path:
+        return Path(
+            self.filter_presets_file_edit.text().strip() or self._default_filter_presets_file()
+        )
+
+    def _records_file_path(self) -> Path:
+        return Path(self.records_file_edit.text().strip() or self._default_records_file())
+
+    def _ensure_parent_dir(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _read_json_candidates(self, candidates: List[Path]) -> Optional[object]:
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            try:
+                return json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+        return None
+
+    def _choose_json_file_path(self, title: str, current_path: Path) -> Optional[Path]:
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            title,
+            str(current_path if current_path.name else current_path.parent),
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not file_path:
+            return None
+        return Path(file_path)
 
     def _normalize_initials(self) -> str:
         initials = "".join(ch for ch in self.initials_edit.text().strip().upper() if ch.isalnum())
@@ -442,6 +623,10 @@ class DocumentControlApp(QMainWindow):
             return None
         return Path(item.data(Qt.UserRole))
 
+    def _current_source_root_value(self) -> str:
+        source_root = self._current_source_root()
+        return str(source_root) if source_root else ""
+
     def _active_records_table(self) -> QTableWidget:
         return self.records_tabs.currentWidget()  # type: ignore[return-value]
 
@@ -456,6 +641,70 @@ class DocumentControlApp(QMainWindow):
             self._save_settings()
             if not self.tracked_projects:
                 self._ensure_default_project()
+
+    def _choose_projects_registry_file(self) -> None:
+        path = self._choose_json_file_path(
+            "Select Tracked Projects File", self._projects_registry_path()
+        )
+        if not path:
+            return
+        self.projects_file_edit.setText(str(path))
+        self._save_settings()
+        self._load_tracked_projects()
+        self._load_last_or_default_project()
+
+    def _choose_filter_presets_file(self) -> None:
+        path = self._choose_json_file_path(
+            "Select Filter Presets File", self._filter_presets_path()
+        )
+        if not path:
+            return
+        self.filter_presets_file_edit.setText(str(path))
+        self._save_settings()
+        self._load_filter_presets()
+
+    def _choose_records_file(self) -> None:
+        path = self._choose_json_file_path(
+            "Select Checkout Records File", self._records_file_path()
+        )
+        if not path:
+            return
+        self.records_file_edit.setText(str(path))
+        self._save_settings()
+        self._load_records()
+
+    @contextmanager
+    def _busy_action(self, message: str):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(APP_NAME)
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.setMinimumWidth(420)
+        dialog.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        label = QLabel(message)
+        label.setWordWrap(True)
+        label.setMinimumWidth(360)
+        progress = QProgressBar()
+        progress.setRange(0, 0)
+        progress.setTextVisible(False)
+        layout.addWidget(label)
+        layout.addWidget(progress)
+        dialog.adjustSize()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        dialog.repaint()
+        label.repaint()
+        progress.repaint()
+        QApplication.processEvents()
+        try:
+            yield
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            QApplication.processEvents()
 
     def _validate_identity(self) -> bool:
         if not self._normalize_initials():
@@ -477,22 +726,47 @@ class DocumentControlApp(QMainWindow):
             return None
         return self.current_directory
 
-    def _settings_payload(self) -> Dict[str, str]:
+    def _settings_payload(self) -> Dict[str, object]:
         return {
+            "schema_version": SETTINGS_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
             "initials": self._normalize_initials(),
             "full_name": self._current_full_name(),
             "base_projects_dir": str(self._base_projects_dir()),
             "current_project_dir": self.current_project_dir,
+            "tracked_projects_file": str(self._projects_registry_path()),
+            "filter_presets_file": str(self._filter_presets_path()),
+            "records_file": str(self._records_file_path()),
         }
+
+    def _has_user_configuration(self) -> bool:
+        initials = self.initials_edit.text().strip()
+        full_name = self.full_name_edit.text().strip()
+        base_dir = self.local_path_edit.text().strip()
+        projects_file = self.projects_file_edit.text().strip()
+        filter_presets_file = self.filter_presets_file_edit.text().strip()
+        records_file = self.records_file_edit.text().strip()
+        return bool(
+            initials
+            or full_name
+            or (base_dir and Path(base_dir) != self._default_projects_dir())
+            or (projects_file and Path(projects_file) != self._default_projects_registry_file())
+            or (filter_presets_file and Path(filter_presets_file) != self._default_filter_presets_file())
+            or (records_file and Path(records_file) != self._default_records_file())
+        )
+
+    def _apply_startup_tab(self) -> None:
+        self.main_tabs.setCurrentIndex(1 if self.show_configuration_tab_on_startup else 0)
 
     def _load_settings(self) -> None:
         self.local_path_edit.setText(str(self._default_projects_dir()))
-        if not SETTINGS_FILE.exists():
-            return
-
-        try:
-            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        self.projects_file_edit.setText(str(self._default_projects_registry_file()))
+        self.filter_presets_file_edit.setText(str(self._default_filter_presets_file()))
+        self.records_file_edit.setText(str(self._default_records_file()))
+        data = self._read_json_candidates([SETTINGS_FILE, LEGACY_SETTINGS_FILE])
+        if data is None or not isinstance(data, dict):
+            self.show_configuration_tab_on_startup = True
+            self._apply_startup_tab()
             return
 
         self.initials_edit.setText(str(data.get("initials", "")).strip())
@@ -500,31 +774,44 @@ class DocumentControlApp(QMainWindow):
         base_dir = str(data.get("base_projects_dir", "")).strip()
         if base_dir:
             self.local_path_edit.setText(base_dir)
+        tracked_projects_file = str(data.get("tracked_projects_file", "")).strip()
+        if tracked_projects_file:
+            self.projects_file_edit.setText(tracked_projects_file)
+        filter_presets_file = str(data.get("filter_presets_file", "")).strip()
+        if filter_presets_file:
+            self.filter_presets_file_edit.setText(filter_presets_file)
+        records_file = str(data.get("records_file", "")).strip()
+        if records_file:
+            self.records_file_edit.setText(records_file)
         self.current_project_dir = str(data.get("current_project_dir", "")).strip()
+        self.show_configuration_tab_on_startup = not self._has_user_configuration()
+        self._apply_startup_tab()
 
     def _save_settings(self) -> None:
+        self._ensure_parent_dir(SETTINGS_FILE)
         SETTINGS_FILE.write_text(
             json.dumps(self._settings_payload(), indent=2), encoding="utf-8"
         )
 
     def _load_tracked_projects(self) -> None:
         self.tracked_projects = []
-        if PROJECTS_FILE.exists():
-            try:
-                data = json.loads(PROJECTS_FILE.read_text(encoding="utf-8"))
-                tracked = data.get("tracked_projects", [])
-                if isinstance(tracked, list):
-                    for entry in tracked:
-                        if not isinstance(entry, dict):
-                            continue
-                        name = str(entry.get("name", "")).strip()
-                        project_dir = str(entry.get("project_dir", "")).strip()
-                        if name and project_dir:
-                            self.tracked_projects.append(
-                                {"name": name, "project_dir": project_dir}
-                            )
-            except (OSError, ValueError, TypeError):
-                self.tracked_projects = []
+        data = self._read_json_candidates(
+            [self._projects_registry_path(), LEGACY_PROJECTS_FILE]
+        )
+        if isinstance(data, dict):
+            tracked = data.get("tracked_projects", [])
+        else:
+            tracked = data
+        if isinstance(tracked, list):
+            for entry in tracked:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name", "")).strip()
+                project_dir = str(entry.get("project_dir", "")).strip()
+                if name and project_dir:
+                    self.tracked_projects.append(
+                        {"name": name, "project_dir": project_dir}
+                    )
 
         if not self.tracked_projects:
             self._ensure_default_project()
@@ -532,8 +819,14 @@ class DocumentControlApp(QMainWindow):
             self._refresh_tracked_projects_list()
 
     def _save_tracked_projects(self) -> None:
-        payload = {"tracked_projects": self.tracked_projects}
-        PROJECTS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        payload = {
+            "schema_version": TRACKED_PROJECTS_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
+            "tracked_projects": self.tracked_projects,
+        }
+        projects_path = self._projects_registry_path()
+        self._ensure_parent_dir(projects_path)
+        projects_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _project_payload(
         self,
@@ -543,10 +836,14 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        selected_source: str = "",
     ) -> Dict[str, object]:
         return {
+            "schema_version": PROJECT_CONFIG_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
             "name": name,
             "sources": sources,
+            "selected_source": selected_source,
             "extension_filters": extension_filters or [],
             "filter_mode": filter_mode,
             "favorites": favorites or [],
@@ -569,6 +866,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode = str(data.get("filter_mode", "No Filter")).strip() or "No Filter"
         raw_favorites = data.get("favorites", [])
         raw_notes = data.get("notes", [])
+        selected_source = str(data.get("selected_source", "")).strip()
         sources = [str(item) for item in raw_sources if str(item).strip()] if isinstance(raw_sources, list) else []
         extension_filters = (
             [str(item) for item in raw_extension_filters if str(item).strip()]
@@ -607,6 +905,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites,
             notes,
+            selected_source,
         )
 
     def _write_project_config(
@@ -618,6 +917,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        selected_source: str = "",
     ) -> None:
         project_dir.mkdir(parents=True, exist_ok=True)
         config_path = self._project_config_path(project_dir)
@@ -628,6 +928,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites,
             notes,
+            selected_source,
         )
         config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -641,6 +942,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: Optional[str] = None,
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        selected_source: Optional[str] = None,
     ) -> None:
         current = self._read_project_config(project_dir)
         self._write_project_config(
@@ -653,6 +955,9 @@ class DocumentControlApp(QMainWindow):
             filter_mode or str(current.get("filter_mode", "No Filter")),
             favorites if favorites is not None else list(current.get("favorites", [])),  # type: ignore[arg-type]
             notes if notes is not None else list(current.get("notes", [])),  # type: ignore[arg-type]
+            selected_source
+            if selected_source is not None
+            else str(current.get("selected_source", "")),
         )
 
     def _ensure_default_project(self) -> None:
@@ -727,6 +1032,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites or [],
             notes or [],
+            (sources or [""])[0] if sources else "",
         )
         self.current_project_dir = str(project_dir)
         self._register_tracked_project(name, project_dir)
@@ -799,7 +1105,12 @@ class DocumentControlApp(QMainWindow):
         if not item:
             self._error("Select a tracked project to load.")
             return
-        self._load_project_from_dir(Path(item.data(Qt.UserRole)))
+        with self._busy_action("Loading project..."):
+            self._load_project_from_dir(Path(item.data(Qt.UserRole)))
+
+    def _load_tracked_project_item(self, item: QListWidgetItem) -> None:
+        with self._busy_action("Loading project..."):
+            self._load_project_from_dir(Path(str(item.data(Qt.UserRole))))
 
     def _add_existing_project(self) -> None:
         start_dir = str(self._base_projects_dir())
@@ -820,7 +1131,8 @@ class DocumentControlApp(QMainWindow):
         project_dir = config_path.parent
         config = self._read_project_config(project_dir)
         self._register_tracked_project(str(config.get("name", project_dir.name)), project_dir)
-        self._load_project_from_dir(project_dir)
+        with self._busy_action("Loading project..."):
+            self._load_project_from_dir(project_dir)
 
     def _remove_selected_project(self) -> None:
         item = self.tracked_projects_list.currentItem()
@@ -886,6 +1198,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode = str(config.get("filter_mode", "No Filter"))
         favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
         notes = [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
+        selected_source = str(config.get("selected_source", "")).strip()
 
         self.current_project_dir = str(project_dir)
         self.file_filter_mode_combo.blockSignals(True)
@@ -894,7 +1207,7 @@ class DocumentControlApp(QMainWindow):
         self._set_extension_filters(extension_filters)
         self.current_project_label.setText(f"Current Project: {name}")
         self._register_tracked_project(name, project_dir)
-        self._refresh_source_roots(sources)
+        self._refresh_source_roots(sources, selected_source)
         self._refresh_favorites_list(favorites)
         self._refresh_notes_list(notes)
         self._save_settings()
@@ -906,6 +1219,152 @@ class DocumentControlApp(QMainWindow):
             return None
         return Path(str(item.data(Qt.UserRole)))
 
+    def _update_project_record_paths(
+        self, old_project_dir: Path, new_project_dir: Path, new_project_name: str
+    ) -> None:
+        old_project_dir_str = str(old_project_dir)
+        for record in self.records:
+            if record.project_dir != old_project_dir_str:
+                continue
+            record.project_dir = str(new_project_dir)
+            record.project_name = new_project_name
+            try:
+                relative_local = Path(record.local_file).relative_to(old_project_dir)
+                record.local_file = str(new_project_dir / relative_local)
+            except ValueError:
+                pass
+        self._save_records()
+
+    def _apply_project_edit(
+        self, old_project_dir: Path, new_project_name: str, destination_parent: Optional[Path]
+    ) -> Optional[Path]:
+        config = self._read_project_config(old_project_dir)
+        target_parent = destination_parent or old_project_dir.parent
+        target_parent = target_parent.resolve()
+        target_project_dir = target_parent / self._safe_project_dir_name(new_project_name)
+        old_project_dir_resolved = old_project_dir.resolve()
+
+        if target_project_dir == old_project_dir_resolved:
+            self._save_project_config(old_project_dir, name=new_project_name)
+            self._register_tracked_project(new_project_name, old_project_dir)
+            self._update_project_record_paths(old_project_dir, old_project_dir, new_project_name)
+            return old_project_dir
+
+        if target_project_dir.exists():
+            self._error(f"Destination already exists:\n{target_project_dir}")
+            return None
+
+        try:
+            target_parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_project_dir_resolved), str(target_project_dir))
+        except OSError as exc:
+            self._error(f"Could not migrate project directory:\n{exc}")
+            return None
+
+        self.tracked_projects = [
+            entry
+            for entry in self.tracked_projects
+            if entry["project_dir"] != str(old_project_dir_resolved)
+        ]
+        self._save_project_config(
+            target_project_dir,
+            name=new_project_name,
+            sources=[str(item) for item in config.get("sources", [])],  # type: ignore[arg-type]
+            extension_filters=[
+                str(item) for item in config.get("extension_filters", [])
+            ],  # type: ignore[arg-type]
+            filter_mode=str(config.get("filter_mode", "No Filter")),
+            favorites=[str(item) for item in config.get("favorites", [])],  # type: ignore[arg-type]
+            notes=[dict(item) for item in config.get("notes", [])],  # type: ignore[arg-type]
+        )
+        self._register_tracked_project(new_project_name, target_project_dir)
+        self._update_project_record_paths(old_project_dir_resolved, target_project_dir, new_project_name)
+        return target_project_dir
+
+    def _edit_selected_project(self) -> None:
+        project_dir = self._selected_tracked_project_dir()
+        if not project_dir or not project_dir.is_dir():
+            self._error("Select a tracked project to edit.")
+            return
+
+        config = self._read_project_config(project_dir)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Project")
+        dialog.resize(720, 320)
+        layout = QVBoxLayout(dialog)
+
+        form = QGridLayout()
+        name_edit = QLineEdit(str(config.get("name", project_dir.name)))
+        current_dir_label = QLineEdit(str(project_dir))
+        current_dir_label.setReadOnly(True)
+        config_path_label = QLineEdit(str(self._project_config_path(project_dir)))
+        config_path_label.setReadOnly(True)
+        sources = [str(item) for item in config.get("sources", [])]  # type: ignore[arg-type]
+        source_count_label = QLineEdit(str(len(sources)))
+        source_count_label.setReadOnly(True)
+        destination_edit = QLineEdit(str(project_dir.parent))
+        browse_destination_btn = QPushButton("Browse")
+
+        def choose_destination() -> None:
+            selected = QFileDialog.getExistingDirectory(
+                dialog,
+                "Select Project Destination Directory",
+                destination_edit.text().strip() or str(project_dir.parent),
+            )
+            if selected:
+                destination_edit.setText(selected)
+
+        browse_destination_btn.clicked.connect(choose_destination)
+
+        form.addWidget(QLabel("Project Name:"), 0, 0)
+        form.addWidget(name_edit, 0, 1, 1, 2)
+        form.addWidget(QLabel("Current Directory:"), 1, 0)
+        form.addWidget(current_dir_label, 1, 1, 1, 2)
+        form.addWidget(QLabel("Project Config:"), 2, 0)
+        form.addWidget(config_path_label, 2, 1, 1, 2)
+        form.addWidget(QLabel("Tracked Sources:"), 3, 0)
+        form.addWidget(source_count_label, 3, 1, 1, 2)
+        form.addWidget(QLabel("Destination Parent:"), 4, 0)
+        form.addWidget(destination_edit, 4, 1)
+        form.addWidget(browse_destination_btn, 4, 2)
+        layout.addLayout(form)
+
+        layout.addWidget(
+            QLabel(
+                "Changing the project name or destination will migrate the project directory "
+                "and update tracked-project entries and checkout records."
+            )
+        )
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        new_project_name = name_edit.text().strip()
+        if not new_project_name:
+            self._error("Project name is required.")
+            return
+
+        destination_parent = Path(destination_edit.text().strip() or str(project_dir.parent))
+        with self._busy_action("Updating project..."):
+            updated_project_dir = self._apply_project_edit(project_dir, new_project_name, destination_parent)
+        if not updated_project_dir:
+            return
+
+        if self.current_project_dir == str(project_dir):
+            self.current_project_dir = str(updated_project_dir)
+            with self._busy_action("Loading project..."):
+                self._load_project_from_dir(updated_project_dir)
+        else:
+            self._refresh_tracked_projects_list()
+            self._render_records_tables()
+        self._save_settings()
+        self._info(f"Project '{new_project_name}' updated.")
+
     def _open_selected_project_location(self) -> None:
         project_dir = self._selected_tracked_project_dir()
         if not project_dir or not project_dir.is_dir():
@@ -913,16 +1372,21 @@ class DocumentControlApp(QMainWindow):
             return
         self._open_paths([project_dir])
 
-    def _refresh_source_roots(self, sources: List[str]) -> None:
+    def _refresh_source_roots(self, sources: List[str], selected_source: str = "") -> None:
         self.source_roots_list.clear()
         valid_sources = [Path(source) for source in sources if Path(source).is_dir()]
+        selected_item: Optional[QListWidgetItem] = None
         for source in valid_sources:
             item = QListWidgetItem(source.name or str(source))
             item.setData(Qt.UserRole, str(source))
             item.setToolTip(str(source))
             self.source_roots_list.addItem(item)
+            if str(source) == selected_source:
+                selected_item = item
 
-        if self.source_roots_list.count() > 0:
+        if selected_item:
+            self.source_roots_list.setCurrentItem(selected_item)
+        elif self.source_roots_list.count() > 0:
             self.source_roots_list.setCurrentRow(0)
         else:
             self.current_directory = None
@@ -997,9 +1461,18 @@ class DocumentControlApp(QMainWindow):
         self._set_directory_tree_root(selected_path)
         self._set_current_directory(selected_path)
 
+    def _view_current_directory_location(self) -> None:
+        current_directory = self._validate_current_directory()
+        if not current_directory:
+            return
+        self._open_paths([current_directory])
+
     def _on_source_root_changed(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
         if not current:
             return
+        project_dir = self._current_project_path()
+        if project_dir and project_dir.is_dir():
+            self._save_project_config(project_dir, selected_source=str(current.data(Qt.UserRole)))
         root_path = Path(str(current.data(Qt.UserRole)))
         self._set_directory_tree_root(root_path)
         self._set_current_directory(root_path)
@@ -1080,8 +1553,9 @@ class DocumentControlApp(QMainWindow):
                 sources=sources,
                 extension_filters=self._current_extension_filters(),
                 filter_mode=self.file_filter_mode_combo.currentText(),
+                selected_source=str(source_path),
             )
-            self._refresh_source_roots(sources)
+            self._refresh_source_roots(sources, str(source_path))
             self._save_settings()
 
     def _remove_source_directory(self) -> None:
@@ -1093,14 +1567,18 @@ class DocumentControlApp(QMainWindow):
 
         source_path = str(item.data(Qt.UserRole))
         sources = [source for source in self._source_roots_from_list() if source != source_path]
+        selected_source = self._current_source_root_value()
+        if selected_source == source_path:
+            selected_source = sources[0] if sources else ""
         self._save_project_config(
             project_dir,
             name=self._current_project_name(),
             sources=sources,
             extension_filters=self._current_extension_filters(),
             filter_mode=self.file_filter_mode_combo.currentText(),
+            selected_source=selected_source,
         )
-        self._refresh_source_roots(sources)
+        self._refresh_source_roots(sources, selected_source)
         self._save_settings()
 
     def _track_current_directory(self) -> None:
@@ -1122,8 +1600,9 @@ class DocumentControlApp(QMainWindow):
             sources=sources,
             extension_filters=self._current_extension_filters(),
             filter_mode=self.file_filter_mode_combo.currentText(),
+            selected_source=current_dir_str,
         )
-        self._refresh_source_roots(sources)
+        self._refresh_source_roots(sources, current_dir_str)
         for row in range(self.source_roots_list.count()):
             item = self.source_roots_list.item(row)
             if item.data(Qt.UserRole) == current_dir_str:
@@ -1338,6 +1817,253 @@ class DocumentControlApp(QMainWindow):
             return
         notes = [note for note in self._current_project_notes() if note.get("id", "") != note_id]
         self._set_project_notes(notes)
+
+    def _normalize_filter_preset(self, preset: Dict[str, object]) -> Optional[Dict[str, object]]:
+        name = str(preset.get("name", "")).strip()
+        if not name:
+            return None
+        filter_mode = str(preset.get("filter_mode", "No Filter")).strip() or "No Filter"
+        if filter_mode not in {"No Filter", "Include Only", "Exclude"}:
+            filter_mode = "No Filter"
+        raw_extensions = preset.get("extensions", [])
+        if isinstance(raw_extensions, str):
+            raw_extensions = raw_extensions.split(",")
+        extensions: List[str] = []
+        if isinstance(raw_extensions, list):
+            for value in raw_extensions:
+                normalized = self._normalize_extension_value(str(value))
+                if normalized and normalized not in extensions:
+                    extensions.append(normalized)
+        return {"name": name, "filter_mode": filter_mode, "extensions": extensions}
+
+    def _load_filter_presets(self) -> None:
+        self.filter_presets = []
+        data = self._read_json_candidates(
+            [self._filter_presets_path(), LEGACY_FILTER_PRESETS_FILE]
+        )
+        if data is None:
+            return
+
+        raw_presets = data
+        if isinstance(data, dict):
+            raw_presets = data.get("presets", [])
+        if not isinstance(raw_presets, list):
+            return
+        for preset in raw_presets:
+            if not isinstance(preset, dict):
+                continue
+            normalized = self._normalize_filter_preset(preset)
+            if normalized:
+                self.filter_presets.append(normalized)
+        self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+
+    def _save_filter_presets(self) -> None:
+        presets_path = self._filter_presets_path()
+        self._ensure_parent_dir(presets_path)
+        presets_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": FILTER_PRESETS_SCHEMA_VERSION,
+                    "app_version": APP_VERSION,
+                    "presets": self.filter_presets,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    def _show_filter_preset_editor(
+        self, preset: Optional[Dict[str, object]] = None
+    ) -> Optional[Dict[str, object]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Filter Preset" if preset else "New Filter Preset")
+        dialog.resize(520, 220)
+        layout = QVBoxLayout(dialog)
+
+        form = QGridLayout()
+        name_edit = QLineEdit(str(preset.get("name", "")) if preset else "")
+        mode_combo = QComboBox()
+        mode_combo.addItems(["No Filter", "Include Only", "Exclude"])
+        mode_combo.setCurrentText(str(preset.get("filter_mode", "No Filter")) if preset else "No Filter")
+        extensions_edit = QLineEdit(
+            ", ".join(preset.get("extensions", [])) if preset else ""
+        )
+        extensions_edit.setPlaceholderText(".dwg, .pdf, .xlsx")
+        form.addWidget(QLabel("Preset Name:"), 0, 0)
+        form.addWidget(name_edit, 0, 1)
+        form.addWidget(QLabel("Filter Mode:"), 1, 0)
+        form.addWidget(mode_combo, 1, 1)
+        form.addWidget(QLabel("Extensions:"), 2, 0)
+        form.addWidget(extensions_edit, 2, 1)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        normalized = self._normalize_filter_preset(
+            {
+                "name": name_edit.text(),
+                "filter_mode": mode_combo.currentText(),
+                "extensions": extensions_edit.text(),
+            }
+        )
+        if not normalized:
+            self._error("Preset name is required.")
+            return None
+        return normalized
+
+    def _show_filter_presets_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Filter Presets")
+        dialog.resize(760, 420)
+        layout = QVBoxLayout(dialog)
+        preset_list = QListWidget()
+        detail_label = QLabel("Select a preset to inspect or apply it.")
+        detail_label.setWordWrap(True)
+
+        def refresh_list() -> None:
+            preset_list.clear()
+            for preset in self.filter_presets:
+                item = QListWidgetItem(str(preset["name"]))
+                extensions = ", ".join(str(ext) for ext in preset.get("extensions", []))
+                tooltip = f"Mode: {preset.get('filter_mode', 'No Filter')}\nExtensions: {extensions or '(none)'}"
+                item.setToolTip(tooltip)
+                item.setData(Qt.UserRole, str(preset["name"]))
+                preset_list.addItem(item)
+
+        def selected_preset() -> Optional[Dict[str, object]]:
+            item = preset_list.currentItem()
+            if not item:
+                return None
+            name = str(item.data(Qt.UserRole))
+            for preset in self.filter_presets:
+                if str(preset["name"]) == name:
+                    return preset
+            return None
+
+        def update_detail() -> None:
+            preset = selected_preset()
+            if not preset:
+                detail_label.setText("Select a preset to inspect or apply it.")
+                return
+            extensions = ", ".join(str(ext) for ext in preset.get("extensions", [])) or "(none)"
+            detail_label.setText(
+                f"Mode: {preset.get('filter_mode', 'No Filter')}\nExtensions: {extensions}"
+            )
+
+        def create_preset() -> None:
+            preset = self._show_filter_preset_editor()
+            if not preset:
+                return
+            self.filter_presets = [
+                existing for existing in self.filter_presets if str(existing["name"]).lower() != str(preset["name"]).lower()
+            ]
+            self.filter_presets.append(preset)
+            self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+            self._save_filter_presets()
+            refresh_list()
+
+        def create_preset_from_current() -> None:
+            preset = self._show_filter_preset_editor(
+                {
+                    "name": "",
+                    "filter_mode": self.file_filter_mode_combo.currentText(),
+                    "extensions": self._current_extension_filters(),
+                }
+            )
+            if not preset:
+                return
+            self.filter_presets = [
+                existing
+                for existing in self.filter_presets
+                if str(existing["name"]).lower() != str(preset["name"]).lower()
+            ]
+            self.filter_presets.append(preset)
+            self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+            self._save_filter_presets()
+            refresh_list()
+
+        def edit_preset() -> None:
+            preset = selected_preset()
+            if not preset:
+                self._error("Select a preset to edit.")
+                return
+            updated = self._show_filter_preset_editor(preset)
+            if not updated:
+                return
+            self.filter_presets = [
+                existing
+                for existing in self.filter_presets
+                if str(existing["name"]).lower() != str(preset["name"]).lower()
+            ]
+            self.filter_presets.append(updated)
+            self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+            self._save_filter_presets()
+            refresh_list()
+
+        def delete_preset() -> None:
+            preset = selected_preset()
+            if not preset:
+                self._error("Select a preset to delete.")
+                return
+            self.filter_presets = [
+                existing
+                for existing in self.filter_presets
+                if str(existing["name"]).lower() != str(preset["name"]).lower()
+            ]
+            self._save_filter_presets()
+            refresh_list()
+            update_detail()
+
+        def apply_preset() -> None:
+            preset = selected_preset()
+            if not preset:
+                self._error("Select a preset to apply.")
+                return
+            self.file_filter_mode_combo.blockSignals(True)
+            self.file_filter_mode_combo.setCurrentText(str(preset.get("filter_mode", "No Filter")))
+            self.file_filter_mode_combo.blockSignals(False)
+            self._set_extension_filters([str(ext) for ext in preset.get("extensions", [])])
+            self._save_current_project_filters()
+            dialog.accept()
+
+        preset_list.currentItemChanged.connect(lambda _current, _previous: update_detail())
+        preset_list.itemDoubleClicked.connect(lambda _item: apply_preset())
+        layout.addWidget(preset_list, stretch=1)
+        layout.addWidget(detail_label)
+
+        controls = QHBoxLayout()
+        new_btn = QPushButton("New")
+        new_btn.clicked.connect(create_preset)
+        from_current_btn = QPushButton("New From Current")
+        from_current_btn.clicked.connect(create_preset_from_current)
+        edit_btn = QPushButton("Edit")
+        edit_btn.clicked.connect(edit_preset)
+        delete_btn = QPushButton("Delete")
+        delete_btn.clicked.connect(delete_preset)
+        apply_btn = QPushButton("Apply Selected To Project")
+        apply_btn.clicked.connect(apply_preset)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.reject)
+        controls.addWidget(new_btn)
+        controls.addWidget(from_current_btn)
+        controls.addWidget(edit_btn)
+        controls.addWidget(delete_btn)
+        controls.addStretch()
+        controls.addWidget(apply_btn)
+        controls.addWidget(close_btn)
+        layout.addLayout(controls)
+
+        refresh_list()
+        if preset_list.count() > 0:
+            preset_list.setCurrentRow(0)
+        update_detail()
+        dialog.exec()
 
     def _normalize_extension_value(self, value: str) -> str:
         value = value.strip().lower()
@@ -1608,56 +2334,57 @@ class DocumentControlApp(QMainWindow):
         self._refresh_source_files()
         history_lookup = self._history_lookup_for_directory(current_directory)
 
-        for source_file in selected_files:
-            latest_row = history_lookup.get(source_file.name)
-            if latest_row and latest_row.get("action") == "CHECK_OUT":
-                original_name = latest_row.get("original_file_name", source_file.name)
-                checked_out_by = latest_row.get("user_initials", "")
-                if checked_out_by == initials:
-                    errors.append(f"Already checked out by you: {original_name}")
-                else:
-                    who = latest_row.get("user_full_name", "") or checked_out_by or "another user"
-                    errors.append(f"Already checked out by {who}: {original_name}")
-                continue
+        with self._busy_action("Checking out file(s)..."):
+            for source_file in selected_files:
+                latest_row = history_lookup.get(source_file.name)
+                if latest_row and latest_row.get("action") == "CHECK_OUT":
+                    original_name = latest_row.get("original_file_name", source_file.name)
+                    checked_out_by = latest_row.get("user_initials", "")
+                    if checked_out_by == initials:
+                        errors.append(f"Already checked out by you: {original_name}")
+                    else:
+                        who = latest_row.get("user_full_name", "") or checked_out_by or "another user"
+                        errors.append(f"Already checked out by {who}: {original_name}")
+                    continue
 
-            locked_source_file = self._locked_name_for(source_file, initials)
-            try:
-                relative_path = source_file.relative_to(source_root)
-            except ValueError:
-                relative_path = Path(source_file.name)
-            local_file = project_checkout_dir / relative_path
+                locked_source_file = self._locked_name_for(source_file, initials)
+                try:
+                    relative_path = source_file.relative_to(source_root)
+                except ValueError:
+                    relative_path = Path(source_file.name)
+                local_file = project_checkout_dir / relative_path
 
-            if not source_file.exists():
-                errors.append(f"Missing source file: {source_file.name}")
-                continue
-            if locked_source_file.exists():
-                errors.append(f"Already checked out: {locked_source_file.name}")
-                continue
+                if not source_file.exists():
+                    errors.append(f"Missing source file: {source_file.name}")
+                    continue
+                if locked_source_file.exists():
+                    errors.append(f"Already checked out: {locked_source_file.name}")
+                    continue
 
-            try:
-                local_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_file, local_file)
-                source_file.rename(locked_source_file)
-                self.records.append(
-                    CheckoutRecord(
-                        source_file=str(source_file),
-                        locked_source_file=str(locked_source_file),
-                        local_file=str(local_file),
-                        initials=initials,
-                        project_name=self._current_project_name(),
-                        project_dir=str(project_dir),
-                        source_root=str(source_root),
-                        checked_out_at=checked_out_at,
+                try:
+                    local_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_file, local_file)
+                    source_file.rename(locked_source_file)
+                    self.records.append(
+                        CheckoutRecord(
+                            source_file=str(source_file),
+                            locked_source_file=str(locked_source_file),
+                            local_file=str(local_file),
+                            initials=initials,
+                            project_name=self._current_project_name(),
+                            project_dir=str(project_dir),
+                            source_root=str(source_root),
+                            checked_out_at=checked_out_at,
+                        )
                     )
-                )
-                self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
-            except OSError as exc:
-                errors.append(f"{source_file.name}: {exc}")
+                    self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
+                except OSError as exc:
+                    errors.append(f"{source_file.name}: {exc}")
 
-        self._save_records()
-        self._refresh_source_files()
-        self._refresh_controlled_files()
-        self._render_records_tables()
+            self._save_records()
+            self._refresh_source_files()
+            self._refresh_controlled_files()
+            self._render_records_tables()
 
         if errors:
             self._error("Some files failed:\n" + "\n".join(errors))
@@ -1676,6 +2403,356 @@ class DocumentControlApp(QMainWindow):
                 indexes.append(record_idx)
         return indexes
 
+    def _remove_record_indexes(self, record_indexes: List[int]) -> None:
+        selected = set(record_indexes)
+        self.records = [
+            record for idx, record in enumerate(self.records) if idx not in selected
+        ]
+
+    def _record_index_for_controlled_file(self, entry: Dict[str, str]) -> int:
+        file_name = str(entry.get("file_name", ""))
+        locked_source_file = str(entry.get("locked_source_file", ""))
+        for idx, record in enumerate(self.records):
+            if Path(record.source_file).name == file_name and record.locked_source_file == locked_source_file:
+                return idx
+            if record.locked_source_file == locked_source_file:
+                return idx
+        return -1
+
+    def _show_checkin_mode_dialog(self, title: str, body: str, modified_label: str, unchanged_label: str) -> str:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(title)
+        dialog.setText(body)
+        modified_btn = dialog.addButton(modified_label, QMessageBox.AcceptRole)
+        unchanged_btn = dialog.addButton(unchanged_label, QMessageBox.ActionRole)
+        dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(modified_btn)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked == modified_btn:
+            return "modified"
+        if clicked == unchanged_btn:
+            return "unchanged"
+        return "cancel"
+
+    def _show_force_checkin_warning_dialog(self) -> str:
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setWindowTitle("Force Check In")
+        dialog.setText("Force check-in can affect another user's document control state.")
+        dialog.setInformativeText(
+            "Use force check-in only if you are absolutely sure the selected files should be released."
+        )
+        modified_btn = dialog.addButton("Attempt Modified Check In", QMessageBox.AcceptRole)
+        unchanged_btn = dialog.addButton("Force Check In Unmodified", QMessageBox.ActionRole)
+        dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(unchanged_btn)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked == modified_btn:
+            return "modified"
+        if clicked == unchanged_btn:
+            return "unchanged"
+        return "cancel"
+
+    def _perform_pending_checkin_actions(
+        self, actions: List[PendingCheckinAction], workflow: str
+    ) -> List[str]:
+        errors: List[str] = []
+        completed_indexes: List[int] = []
+        for action in actions:
+            source_file = Path(action.source_file)
+            locked_source_file = Path(action.locked_source_file)
+
+            try:
+                if action.action_mode in {"modified", "tracked_modified", "selected_modified"}:
+                    local_file = Path(action.local_file)
+                    if not local_file.exists():
+                        errors.append(f"Local file missing: {local_file}")
+                        continue
+                    if not locked_source_file.exists():
+                        errors.append(f"Locked source file missing: {locked_source_file}")
+                        continue
+                    shutil.copy2(local_file, locked_source_file)
+                    locked_source_file.replace(source_file)
+                elif action.action_mode == "unchanged":
+                    if not locked_source_file.exists():
+                        errors.append(f"Missing locked source file: {locked_source_file}")
+                        continue
+                    locked_source_file.replace(source_file)
+                else:
+                    continue
+
+                self._append_history(
+                    source_file.parent,
+                    self._history_action_for_checkin(action, workflow),
+                    source_file.name,
+                )
+                if action.record_idx >= 0:
+                    completed_indexes.append(action.record_idx)
+            except OSError as exc:
+                errors.append(f"{source_file.name}: {exc}")
+
+        if completed_indexes:
+            self._remove_record_indexes(completed_indexes)
+            self._save_records()
+        return errors
+
+    def _history_action_for_checkin(self, action: PendingCheckinAction, workflow: str) -> str:
+        if workflow == "standard":
+            if action.action_mode in {"modified", "tracked_modified", "selected_modified"}:
+                return "CHECK_IN_MODIFIED"
+            return "CHECK_IN_UNCHANGED"
+
+        if workflow == "force":
+            if action.action_mode == "tracked_modified":
+                return "CHECK_IN_MODIFIED"
+            if action.action_mode == "selected_modified":
+                return "FORCE_CHECK_IN_MODIFIED"
+            return "FORCE_CHECK_IN_UNCHANGED"
+
+        if action.action_mode in {"modified", "tracked_modified", "selected_modified"}:
+            return "CHECK_IN_MODIFIED"
+        return "CHECK_IN_UNCHANGED"
+
+    def _describe_checkin_action(self, action: PendingCheckinAction) -> str:
+        if action.action_mode == "skip":
+            return "Skip file"
+        if action.action_mode == "unchanged":
+            return "Check in unchanged"
+        if action.action_mode == "tracked_modified":
+            return "Check in modified from tracked local file"
+        if action.action_mode == "selected_modified":
+            return "Check in modified from selected file"
+        if action.action_mode == "modified":
+            return "Check in modified"
+        return action.action_mode
+
+    def _show_pending_actions_dialog(
+        self, title: str, actions: List[PendingCheckinAction], allow_modify: bool = False
+    ) -> str:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(1080, 420)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("The following actions will be performed:"))
+
+        table = QTableWidget(len(actions), 4)
+        table.setHorizontalHeaderLabels(["File", "Action", "Local File", "Details"])
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.NoSelection)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+
+        for row_idx, action in enumerate(actions):
+            values = [
+                action.file_name,
+                self._describe_checkin_action(action),
+                action.local_file,
+                action.reason,
+            ]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                table.setItem(row_idx, col_idx, item)
+
+        layout.addWidget(table)
+        buttons = QDialogButtonBox()
+        commit_btn = buttons.addButton("Commit Actions", QDialogButtonBox.AcceptRole)
+        cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+        modify_btn = None
+        selected_action = {"value": "cancel"}
+
+        def set_action(value: str) -> None:
+            selected_action["value"] = value
+
+        commit_btn.clicked.connect(lambda: (set_action("commit"), dialog.accept()))
+        cancel_btn.clicked.connect(lambda: (set_action("cancel"), dialog.reject()))
+        if allow_modify:
+            modify_btn = buttons.addButton("Modify Actions", QDialogButtonBox.ActionRole)
+            modify_btn.clicked.connect(lambda: (set_action("modify"), dialog.accept()))
+
+        layout.addWidget(buttons)
+        dialog.exec()
+        if allow_modify and selected_action["value"] == "modify" and modify_btn is not None:
+            return "modify"
+        if selected_action["value"] == "commit":
+            return "commit"
+        return "cancel"
+
+    def _show_force_checkin_status_dialog(
+        self, tracked_actions: List[PendingCheckinAction], untracked_actions: List[PendingCheckinAction]
+    ) -> str:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Force Check-In Status")
+        dialog.resize(1000, 520)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Tracked files available for modified check-in"))
+        tracked_table = QTableWidget(len(tracked_actions), 3)
+        tracked_table.setHorizontalHeaderLabels(["File", "Tracked Local File", "Details"])
+        tracked_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        tracked_table.setSelectionMode(QTableWidget.NoSelection)
+        tracked_header = tracked_table.horizontalHeader()
+        tracked_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        tracked_header.setSectionResizeMode(1, QHeaderView.Stretch)
+        tracked_header.setSectionResizeMode(2, QHeaderView.Stretch)
+        for row_idx, action in enumerate(tracked_actions):
+            values = [action.file_name, action.local_file, action.reason]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                tracked_table.setItem(row_idx, col_idx, item)
+        layout.addWidget(tracked_table)
+
+        layout.addWidget(QLabel("Files without a tracked modified local file"))
+        untracked_table = QTableWidget(len(untracked_actions), 2)
+        untracked_table.setHorizontalHeaderLabels(["File", "Details"])
+        untracked_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        untracked_table.setSelectionMode(QTableWidget.NoSelection)
+        untracked_header = untracked_table.horizontalHeader()
+        untracked_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        untracked_header.setSectionResizeMode(1, QHeaderView.Stretch)
+        for row_idx, action in enumerate(untracked_actions):
+            values = [action.file_name, action.reason]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                untracked_table.setItem(row_idx, col_idx, item)
+        layout.addWidget(untracked_table)
+
+        buttons = QDialogButtonBox()
+        tracked_btn = buttons.addButton("Check In All Tracked", QDialogButtonBox.AcceptRole)
+        per_file_btn = buttons.addButton("Continue Per File", QDialogButtonBox.ActionRole)
+        cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+        selected_action = {"value": "cancel"}
+
+        tracked_btn.clicked.connect(lambda: (selected_action.__setitem__("value", "tracked"), dialog.accept()))
+        per_file_btn.clicked.connect(lambda: (selected_action.__setitem__("value", "per_file"), dialog.accept()))
+        cancel_btn.clicked.connect(lambda: (selected_action.__setitem__("value", "cancel"), dialog.reject()))
+        layout.addWidget(buttons)
+        dialog.exec()
+        return selected_action["value"]
+
+    def _select_force_checkin_file_for_action(
+        self, action: PendingCheckinAction
+    ) -> Optional[PendingCheckinAction]:
+        current_local = action.local_file
+        while True:
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle("Select Modified File")
+            dialog.setText(f"Choose how to handle '{action.file_name}'.")
+            if current_local:
+                dialog.setInformativeText(f"Current local file: {current_local}")
+            browse_btn = dialog.addButton("Browse For File", QMessageBox.AcceptRole)
+            skip_process_btn = dialog.addButton("Skip This File", QMessageBox.ActionRole)
+            skip_unmodified_btn = dialog.addButton("Check In Unmodified", QMessageBox.ActionRole)
+            cancel_btn = dialog.addButton("Cancel Entire Operation", QMessageBox.RejectRole)
+            tracked_btn = None
+            if current_local and Path(current_local).exists():
+                tracked_btn = dialog.addButton("Use Current Tracked File", QMessageBox.ActionRole)
+                dialog.setDefaultButton(tracked_btn)
+            else:
+                dialog.setDefaultButton(browse_btn)
+            dialog.exec()
+            clicked = dialog.clickedButton()
+            if clicked == cancel_btn:
+                return None
+            if tracked_btn is not None and clicked == tracked_btn:
+                action.local_file = current_local
+                action.action_mode = "tracked_modified"
+                action.reason = "Using the tracked local checked-out file."
+                return action
+            if clicked == skip_process_btn:
+                action.action_mode = "skip"
+                action.local_file = ""
+                action.reason = "Removed from the force check-in action list."
+                return action
+            if clicked == skip_unmodified_btn:
+                action.action_mode = "unchanged"
+                action.local_file = ""
+                action.reason = "Skipping modified source selection; force check in unchanged."
+                return action
+            if clicked == browse_btn:
+                start_dir = str(Path(current_local).parent) if current_local else str(Path.home())
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    f"Select Modified File For {action.file_name}",
+                    start_dir,
+                    "All Files (*)",
+                )
+                if not file_path:
+                    continue
+                action.local_file = file_path
+                action.action_mode = "selected_modified"
+                action.reason = "Using a manually selected local file."
+                return action
+
+    def _plan_force_checkin_actions(
+        self, entries: List[Dict[str, str]]
+    ) -> Optional[List[PendingCheckinAction]]:
+        tracked_actions: List[PendingCheckinAction] = []
+        untracked_actions: List[PendingCheckinAction] = []
+        planned_actions: List[PendingCheckinAction] = []
+
+        for entry in entries:
+            file_name = str(entry.get("file_name", ""))
+            locked_source_file = str(entry.get("locked_source_file", ""))
+            source_file = str(self.current_directory / file_name) if self.current_directory else file_name
+            record_idx = self._record_index_for_controlled_file(entry)
+            action = PendingCheckinAction(
+                file_name=file_name,
+                source_file=source_file,
+                locked_source_file=locked_source_file,
+                action_mode="unchanged",
+                record_idx=record_idx,
+                reason="No tracked modified file found. Will release the source file unchanged.",
+            )
+            if record_idx >= 0 and 0 <= record_idx < len(self.records):
+                action.local_file = self.records[record_idx].local_file
+                action.reason = "Tracked modified local file available."
+                tracked_actions.append(action)
+            else:
+                untracked_actions.append(action)
+            planned_actions.append(action)
+
+        choice = self._show_force_checkin_status_dialog(tracked_actions, untracked_actions)
+        if choice == "cancel":
+            return None
+        if choice == "tracked":
+            for action in planned_actions:
+                if action.local_file and Path(action.local_file).exists():
+                    action.action_mode = "tracked_modified"
+                    action.reason = "Using the tracked local checked-out file."
+                else:
+                    action.action_mode = "unchanged"
+                    action.local_file = ""
+                    action.reason = "No tracked local file; force check in unchanged."
+        else:
+            for action in planned_actions:
+                updated = self._select_force_checkin_file_for_action(action)
+                if updated is None:
+                    return None
+            planned_actions = list(planned_actions)
+
+        while True:
+            review = self._show_pending_actions_dialog(
+                "Review Force Check-In Actions", planned_actions, allow_modify=True
+            )
+            if review == "commit":
+                return planned_actions
+            if review == "cancel":
+                return None
+            updated_plans: List[PendingCheckinAction] = []
+            for action in planned_actions:
+                updated = self._select_force_checkin_file_for_action(action)
+                if updated is None:
+                    return None
+                updated_plans.append(updated)
+            planned_actions = updated_plans
+
     def _checkin_selected(self) -> None:
         if not self._validate_identity():
             return
@@ -1685,40 +2762,42 @@ class DocumentControlApp(QMainWindow):
             self._error("Select at least one checked-out row to check in.")
             return
 
-        errors: List[str] = []
-        remaining: List[CheckoutRecord] = []
+        choice = self._show_checkin_mode_dialog(
+            "Check In Files",
+            "Choose how the selected files should be checked in.",
+            "Check In With Modifications",
+            "Check In Unchanged",
+        )
+        if choice == "cancel":
+            return
 
-        for record_idx, record in enumerate(self.records):
-            if record_idx not in selected_indexes:
-                remaining.append(record)
+        actions: List[PendingCheckinAction] = []
+        for record_idx in sorted(selected_indexes):
+            if not (0 <= record_idx < len(self.records)):
                 continue
+            record = self.records[record_idx]
+            reason = (
+                "Copy the local checked-out file back to the locked source file before releasing it."
+                if choice == "modified"
+                else "Release the locked source file without copying the local file back."
+            )
+            actions.append(
+                PendingCheckinAction(
+                    file_name=Path(record.source_file).name,
+                    source_file=record.source_file,
+                    locked_source_file=record.locked_source_file,
+                    action_mode=choice,
+                    local_file=record.local_file if choice == "modified" else "",
+                    record_idx=record_idx,
+                    reason=reason,
+                )
+            )
 
-            source_file = Path(record.source_file)
-            locked_source_file = Path(record.locked_source_file)
-            local_file = Path(record.local_file)
-
-            if not local_file.exists():
-                errors.append(f"Local file missing: {local_file}")
-                remaining.append(record)
-                continue
-            if not locked_source_file.exists():
-                errors.append(f"Locked source file missing: {locked_source_file}")
-                remaining.append(record)
-                continue
-
-            try:
-                shutil.copy2(local_file, locked_source_file)
-                locked_source_file.replace(source_file)
-                self._append_history(source_file.parent, "CHECK_IN", source_file.name)
-            except OSError as exc:
-                errors.append(f"{source_file.name}: {exc}")
-                remaining.append(record)
-
-        self.records = remaining
-        self._save_records()
-        self._refresh_source_files()
-        self._refresh_controlled_files()
-        self._render_records_tables()
+        with self._busy_action("Checking in file(s)..."):
+            errors = self._perform_pending_checkin_actions(actions, "standard")
+            self._refresh_source_files()
+            self._refresh_controlled_files()
+            self._render_records_tables()
 
         if errors:
             self._error("Some files failed to check in:\n" + "\n".join(errors))
@@ -1745,21 +2824,22 @@ class DocumentControlApp(QMainWindow):
             return
 
         errors: List[str] = []
-        for file_path in file_paths:
-            local_file = Path(file_path)
-            target_file = current_directory / local_file.name
-            if target_file.exists():
-                errors.append(f"Already exists in source: {target_file.name}")
-                continue
+        with self._busy_action("Adding file(s) to source..."):
+            for file_path in file_paths:
+                local_file = Path(file_path)
+                target_file = current_directory / local_file.name
+                if target_file.exists():
+                    errors.append(f"Already exists in source: {target_file.name}")
+                    continue
 
-            try:
-                shutil.copy2(local_file, target_file)
-                self._append_history(current_directory, "ADD_FILE", target_file.name)
-            except OSError as exc:
-                errors.append(f"{local_file.name}: {exc}")
+                try:
+                    shutil.copy2(local_file, target_file)
+                    self._append_history(current_directory, "ADD_FILE", target_file.name)
+                except OSError as exc:
+                    errors.append(f"{local_file.name}: {exc}")
 
-        self._refresh_source_files()
-        self._refresh_controlled_files()
+            self._refresh_source_files()
+            self._refresh_controlled_files()
 
         if errors:
             self._error("Some files failed to add:\n" + "\n".join(errors))
@@ -1797,12 +2877,13 @@ class DocumentControlApp(QMainWindow):
 
     def _open_paths(self, paths: List[Path]) -> None:
         errors: List[str] = []
-        for path in paths:
-            if not path.exists():
-                errors.append(f"Missing file: {path}")
-                continue
-            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
-                errors.append(f"Could not open: {path}")
+        with self._busy_action("Opening file(s)..."):
+            for path in paths:
+                if not path.exists():
+                    errors.append(f"Missing file: {path}")
+                    continue
+                if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+                    errors.append(f"Could not open: {path}")
         if errors:
             self._error("Some files could not be opened:\n" + "\n".join(errors))
 
@@ -1819,55 +2900,53 @@ class DocumentControlApp(QMainWindow):
             self._error("Select at least one controlled file to force check in.")
             return
 
-        errors: List[str] = []
-        released_files: List[str] = []
-        selected_locked_paths: set[str] = set()
+        choice = self._show_force_checkin_warning_dialog()
+        if choice == "cancel":
+            return
 
+        entries: List[Dict[str, str]] = []
         for item in selected_items:
             entry = item.data(Qt.UserRole)
             if not isinstance(entry, dict):
                 continue
+            entries.append(entry)
 
-            file_name = str(entry.get("file_name", ""))
-            locked_source_file = Path(str(entry.get("locked_source_file", "")))
-            source_file = current_directory / file_name
-            if not file_name:
-                continue
-
-            try:
-                if locked_source_file.exists():
-                    locked_source_file.replace(source_file)
-                elif not source_file.exists():
-                    errors.append(f"Missing locked or source file: {file_name}")
+        actions: Optional[List[PendingCheckinAction]]
+        if choice == "unchanged":
+            actions = []
+            for entry in entries:
+                file_name = str(entry.get("file_name", ""))
+                if not file_name:
                     continue
-
-                self._append_history(current_directory, "FORCE_CHECK_IN", file_name)
-                released_files.append(file_name)
-                selected_locked_paths.add(str(locked_source_file))
-            except OSError as exc:
-                errors.append(f"{file_name}: {exc}")
-
-        if released_files:
-            self.records = [
-                record
-                for record in self.records
-                if not (
-                    Path(record.source_file).parent == current_directory
-                    and (
-                        Path(record.source_file).name in released_files
-                        or Path(record.locked_source_file).name in released_files
-                        or str(Path(record.locked_source_file)) in selected_locked_paths
+                actions.append(
+                    PendingCheckinAction(
+                        file_name=file_name,
+                        source_file=str(current_directory / file_name),
+                        locked_source_file=str(entry.get("locked_source_file", "")),
+                        action_mode="unchanged",
+                        record_idx=self._record_index_for_controlled_file(entry),
+                        reason="Force release the locked source file without copying a local file.",
                     )
                 )
-            ]
-            self._save_records()
+            review = self._show_pending_actions_dialog(
+                "Review Force Check-In Actions", actions, allow_modify=False
+            )
+            if review != "commit":
+                return
+        else:
+            actions = self._plan_force_checkin_actions(entries)
+            if actions is None:
+                return
 
-        self._refresh_source_files()
-        self._render_records_tables()
+        with self._busy_action("Force checking in file(s)..."):
+            errors = self._perform_pending_checkin_actions(actions, "force")
+            self._refresh_source_files()
+            self._refresh_controlled_files()
+            self._render_records_tables()
 
         if errors:
             self._error("Some files failed to force check in:\n" + "\n".join(errors))
-        elif released_files:
+        elif actions:
             self._info("Force check-in complete.")
 
     def _show_selected_file_history(self) -> None:
@@ -1968,14 +3047,19 @@ class DocumentControlApp(QMainWindow):
         table.setColumnWidth(5, max(table.columnWidth(5), 150))
 
     def _load_records(self) -> None:
-        if not RECORDS_FILE.exists():
+        data = self._read_json_candidates(
+            [self._records_file_path(), LEGACY_RECORDS_FILE]
+        )
+        raw_records = data
+        if isinstance(data, dict):
+            raw_records = data.get("records", [])
+        if not isinstance(raw_records, list):
             self._render_records_tables()
             return
 
         try:
-            data = json.loads(RECORDS_FILE.read_text(encoding="utf-8"))
             self.records = []
-            for entry in data:
+            for entry in raw_records:
                 if not isinstance(entry, dict):
                     continue
                 self.records.append(
@@ -1996,8 +3080,17 @@ class DocumentControlApp(QMainWindow):
         self._render_records_tables()
 
     def _save_records(self) -> None:
-        RECORDS_FILE.write_text(
-            json.dumps([asdict(record) for record in self.records], indent=2),
+        records_path = self._records_file_path()
+        self._ensure_parent_dir(records_path)
+        records_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": RECORDS_SCHEMA_VERSION,
+                    "app_version": APP_VERSION,
+                    "records": [asdict(record) for record in self.records],
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
