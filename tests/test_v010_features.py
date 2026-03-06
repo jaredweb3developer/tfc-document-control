@@ -155,3 +155,23 @@ def test_untrack_project_with_checked_out_files_stays_tracked(app_env, monkeypat
 
     assert len(app.tracked_projects) == 1
     assert app.tracked_projects[0]["project_dir"] == str(project_dir)
+
+
+def test_resolve_new_project_name_uses_source_when_name_blank(app_env, monkeypatch):
+    # Blank name should allow using selected source folder name via prompt.
+    app = app_env["app"]
+    source_dir = "/tmp/ExampleSource"
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    resolved = app._resolve_new_project_name("", source_dir)
+    assert resolved == "ExampleSource"
+
+
+def test_resolve_new_project_name_keeps_entered_on_no_prompt_accept(app_env, monkeypatch):
+    # When name differs from source folder and user says no, keep the entered name.
+    app = app_env["app"]
+    source_dir = "/tmp/ExampleSource"
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.No)
+    resolved = app._resolve_new_project_name("Custom Name", source_dir)
+    assert resolved == "Custom Name"

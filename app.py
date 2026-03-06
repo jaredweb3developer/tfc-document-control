@@ -1146,6 +1146,41 @@ class DocumentControlApp(QMainWindow):
         self._save_settings()
         self._info(f"Project '{name}' saved.")
 
+    def _resolve_new_project_name(self, entered_name: str, source_dir: str) -> str:
+        name = entered_name.strip()
+        source_dir_value = source_dir.strip()
+        if not source_dir_value:
+            return name
+
+        suggested_name = Path(source_dir_value).name.strip()
+        if not suggested_name:
+            return name
+
+        if not name:
+            answer = QMessageBox.question(
+                self,
+                "Project Name Suggestion",
+                f"Use source folder name '{suggested_name}' as the project name?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            return suggested_name if answer == QMessageBox.Yes else ""
+
+        if suggested_name != name:
+            answer = QMessageBox.question(
+                self,
+                "Project Name Suggestion",
+                (
+                    f"Use source folder name '{suggested_name}' as the project name instead "
+                    f"of '{name}'?"
+                ),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer == QMessageBox.Yes:
+                return suggested_name
+        return name
+
     def _show_new_project_dialog(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("New Project")
@@ -1171,6 +1206,10 @@ class DocumentControlApp(QMainWindow):
             selected = QFileDialog.getExistingDirectory(dialog, "Select Source Directory", start_dir)
             if selected:
                 source_dir_edit.setText(selected)
+                if not name_edit.text().strip():
+                    source_name = Path(selected).name.strip()
+                    if source_name:
+                        name_edit.setText(source_name)
 
         browse_source_btn.clicked.connect(choose_source_dir)
         form_layout.addWidget(QLabel("Project Name:"), 0, 0)
@@ -1200,11 +1239,6 @@ class DocumentControlApp(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
 
-        name = name_edit.text().strip()
-        if not name:
-            self._error("Project name is required.")
-            return
-
         client = client_edit.text().strip()
         year_started = year_edit.text().strip()
         source_dir = source_dir_edit.text().strip()
@@ -1217,20 +1251,11 @@ class DocumentControlApp(QMainWindow):
             if not source_path.is_dir():
                 self._error("Selected source directory does not exist.")
                 return
-            suggested_name = source_path.name.strip()
-            if suggested_name and suggested_name != name:
-                answer = QMessageBox.question(
-                    self,
-                    "Project Name Suggestion",
-                    (
-                        f"Use source folder name '{suggested_name}' as the project name instead "
-                        f"of '{name}'?"
-                    ),
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                if answer == QMessageBox.Yes:
-                    name = suggested_name
+
+        name = self._resolve_new_project_name(name_edit.text(), source_dir)
+        if not name:
+            self._error("Project name is required.")
+            return
 
         project_dir = self._ensure_base_projects_dir() / self._safe_project_dir_name(name)
         sources: List[str] = []
