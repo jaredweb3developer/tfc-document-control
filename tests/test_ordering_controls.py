@@ -107,3 +107,64 @@ def test_move_tracked_source_updates_project_config_order(app_env):
     cfg = app._read_project_config(project_dir)
     assert cfg.get("sources") == [str(source_b), str(source_a)]
     assert cfg.get("selected_source") == str(source_b)
+
+
+def test_move_to_top_and_bottom_controls_persist(app_env):
+    # Move-to-top/bottom should persist list ordering for project, favorites, notes, and sources.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_a = tmp / "Projects" / "A"
+    project_b = tmp / "Projects" / "B"
+    project_c = tmp / "Projects" / "C"
+    project_a.mkdir(parents=True)
+    project_b.mkdir(parents=True)
+    project_c.mkdir(parents=True)
+
+    app.tracked_projects = [
+        {"name": "A", "project_dir": str(project_a), "client": "", "year_started": ""},
+        {"name": "B", "project_dir": str(project_b), "client": "", "year_started": ""},
+        {"name": "C", "project_dir": str(project_c), "client": "", "year_started": ""},
+    ]
+    app._refresh_tracked_projects_list()
+    app.tracked_projects_list.setCurrentRow(2)
+    app._move_selected_project_top()
+    assert app.tracked_projects[0]["project_dir"] == str(project_c)
+
+    src_a = tmp / "src-a"
+    src_b = tmp / "src-b"
+    src_c = tmp / "src-c"
+    src_a.mkdir(parents=True)
+    src_b.mkdir(parents=True)
+    src_c.mkdir(parents=True)
+    project_dir = tmp / "Projects" / "OrderTopBottom"
+    notes = [
+        {"id": "n1", "subject": "One", "body": "1", "created_at": "", "updated_at": ""},
+        {"id": "n2", "subject": "Two", "body": "2", "created_at": "", "updated_at": ""},
+        {"id": "n3", "subject": "Three", "body": "3", "created_at": "", "updated_at": ""},
+    ]
+    favorites = ["/x/one.txt", "/x/two.txt", "/x/three.txt"]
+    app._write_project_config(
+        project_dir,
+        "OrderTopBottom",
+        [str(src_a), str(src_b), str(src_c)],
+        favorites=favorites,
+        notes=notes,
+        selected_source=str(src_a),
+    )
+    app._load_project_from_dir(project_dir)
+
+    app.favorites_list.setCurrentRow(0)
+    app._move_selected_favorite_bottom()
+    cfg = app._read_project_config(project_dir)
+    assert cfg.get("favorites") == ["/x/two.txt", "/x/three.txt", "/x/one.txt"]
+
+    app.notes_list.setCurrentRow(0)
+    app._move_selected_note_bottom()
+    cfg = app._read_project_config(project_dir)
+    assert [note["id"] for note in cfg.get("notes", [])] == ["n2", "n3", "n1"]
+
+    app.source_roots_list.setCurrentRow(2)
+    app._move_selected_source_top()
+    cfg = app._read_project_config(project_dir)
+    assert cfg.get("sources") == [str(src_c), str(src_a), str(src_b)]
