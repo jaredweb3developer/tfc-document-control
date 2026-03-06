@@ -39,3 +39,63 @@ def test_history_cache_invalidation_after_append(app_env):
     rows2 = app._read_history_rows(src)
     assert len(rows2) == 2
     assert rows2[-1]["action"] == "CHECK_IN_MODIFIED"
+
+
+def test_directory_cache_ttl_switches_by_remote_status(app_env, monkeypatch):
+    # When no explicit override is set, remote paths should use longer cache TTL.
+    app = app_env["app"]
+    sample_dir = app_env["tmp"] / "sample"
+
+    app._dir_cache_ttl_seconds = None
+    monkeypatch.setattr(app, "_is_probably_remote_directory", lambda _p: True)
+    assert app._directory_cache_ttl(sample_dir) == app._remote_dir_cache_ttl_seconds
+
+    monkeypatch.setattr(app, "_is_probably_remote_directory", lambda _p: False)
+    assert app._directory_cache_ttl(sample_dir) == app._local_dir_cache_ttl_seconds
+
+
+def test_file_search_refresh_uses_busy_feedback(app_env, monkeypatch):
+    # Search debounce callback should route through feedback wrapper.
+    app = app_env["app"]
+    called = {"count": 0, "message": ""}
+
+    def fake_refresh(message):
+        called["count"] += 1
+        called["message"] = message
+
+    monkeypatch.setattr(app, "_refresh_source_files_with_feedback", fake_refresh)
+    app._refresh_source_files_from_search()
+
+    assert called["count"] == 1
+    assert called["message"] == "Filtering source files..."
+
+
+def test_set_current_directory_clears_file_search_on_change(app_env):
+    # Switching active directories should clear the file-search input.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    dir_a = tmp / "dir-a"
+    dir_b = tmp / "dir-b"
+    dir_a.mkdir(parents=True)
+    dir_b.mkdir(parents=True)
+
+    app.current_directory = dir_a
+    app.file_search_edit.setText("abc")
+    app._set_current_directory(dir_b)
+    assert app.file_search_edit.text() == ""
+
+
+def test_load_project_clears_file_search(app_env):
+    # Project switches should reset file-search so old query does not carry over.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    source_dir = tmp / "source"
+    source_dir.mkdir(parents=True)
+    project_dir = tmp / "Projects" / "SearchReset"
+    app._write_project_config(project_dir, "SearchReset", [str(source_dir)])
+
+    app.file_search_edit.setText("leftover query")
+    app._load_project_from_dir(project_dir)
+    assert app.file_search_edit.text() == ""

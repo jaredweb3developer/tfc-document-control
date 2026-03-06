@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 import shutil
 import sys
 from contextlib import contextmanager
@@ -105,7 +106,9 @@ class DocumentControlApp(QMainWindow):
         self.main_section_toggles: List[QToolButton] = []
         self._dir_files_cache: Dict[str, Tuple[float, List[Path]]] = {}
         self._history_rows_cache: Dict[str, Tuple[int, List[Dict[str, str]]]] = {}
-        self._dir_cache_ttl_seconds = 2.0
+        self._dir_cache_ttl_seconds: Optional[float] = None
+        self._remote_dir_cache_ttl_seconds = 60.0
+        self._local_dir_cache_ttl_seconds = 5.0
         self._startup_splash_dialog: Optional[QDialog] = None
         self._startup_splash_label: Optional[QLabel] = None
         self.project_search_debounce = QTimer(self)
@@ -119,7 +122,7 @@ class DocumentControlApp(QMainWindow):
         self.file_search_debounce = QTimer(self)
         self.file_search_debounce.setSingleShot(True)
         self.file_search_debounce.setInterval(300)
-        self.file_search_debounce.timeout.connect(self._refresh_source_files)
+        self.file_search_debounce.timeout.connect(self._refresh_source_files_from_search)
 
         self._build_ui()
         self._show_startup_splash("Starting TFC Document Control...")
@@ -1274,6 +1277,25 @@ class DocumentControlApp(QMainWindow):
     def _on_file_search_changed(self, _text: str) -> None:
         self.file_search_debounce.start()
 
+    def _clear_file_search_filter(self) -> None:
+        if not self.file_search_edit.text():
+            return
+        self.file_search_debounce.stop()
+        self.file_search_edit.blockSignals(True)
+        self.file_search_edit.clear()
+        self.file_search_edit.blockSignals(False)
+        self._debug_event("file_search_cleared")
+
+    def _refresh_source_files_with_feedback(self, message: str) -> None:
+        if not self.current_directory or not self.current_directory.is_dir():
+            self._refresh_source_files()
+            return
+        with self._busy_action(message):
+            self._refresh_source_files()
+
+    def _refresh_source_files_from_search(self) -> None:
+        self._refresh_source_files_with_feedback("Filtering source files...")
+
     def _load_last_or_default_project(self) -> None:
         if self.current_project_dir:
             project_dir = Path(self.current_project_dir)
@@ -1590,6 +1612,7 @@ class DocumentControlApp(QMainWindow):
             self.file_filter_mode_combo.blockSignals(True)
             self.file_filter_mode_combo.setCurrentText(filter_mode)
             self.file_filter_mode_combo.blockSignals(False)
+            self._clear_file_search_filter()
             self._set_extension_filters(extension_filters)
             self.current_project_label.setText(f"Current Project: {name}")
             self._register_tracked_project(name, project_dir, client, year_started)
@@ -1906,6 +1929,8 @@ class DocumentControlApp(QMainWindow):
         self._set_current_directory(root_path)
 
     def _set_current_directory(self, directory: Path) -> None:
+        if self.current_directory is None or self.current_directory != directory:
+            self._clear_file_search_filter()
         self.current_directory = directory
         self.current_folder_label.setText(f"Current folder: {directory}")
         self._refresh_source_files()
@@ -1919,7 +1944,8 @@ class DocumentControlApp(QMainWindow):
         key = str(directory)
         now = perf_counter()
         cached = self._dir_files_cache.get(key)
-        if cached and (now - cached[0]) <= self._dir_cache_ttl_seconds:
+        ttl = self._directory_cache_ttl(directory)
+        if cached and (now - cached[0]) <= ttl:
             return cached[1]
 
         entries: List[Path] = []
@@ -1932,6 +1958,27 @@ class DocumentControlApp(QMainWindow):
         entries.sort(key=lambda item: item.name.lower())
         self._dir_files_cache[key] = (now, entries)
         return entries
+
+    def _is_probably_remote_directory(self, directory: Path) -> bool:
+        directory_text = str(directory)
+        if directory_text.startswith("\\\\"):
+            return True
+
+        home_drive = str(Path.home().drive).upper()
+        directory_drive = str(directory.drive).upper()
+        if home_drive and directory_drive and directory_drive != home_drive:
+            return True
+
+        return False
+
+    def _directory_cache_ttl(self, directory: Path) -> float:
+        # Preserve explicit override used by tests and manual tuning.
+        explicit_ttl = getattr(self, "_dir_cache_ttl_seconds", None)
+        if isinstance(explicit_ttl, (int, float)) and explicit_ttl > 0:
+            return float(explicit_ttl)
+        if self._is_probably_remote_directory(directory):
+            return self._remote_dir_cache_ttl_seconds
+        return self._local_dir_cache_ttl_seconds
 
     def _on_tree_item_expanded(self, item: QTreeWidgetItem) -> None:
         self._debug_event("directory_tree_expanded", directory=str(item.data(0, Qt.UserRole) or ""))
@@ -2570,18 +2617,21 @@ class DocumentControlApp(QMainWindow):
         self.file_extension_list_edit.blockSignals(False)
 
     def _on_filter_mode_changed(self) -> None:
-        self._save_current_project_filters()
+        self._save_current_project_filters(show_busy=True)
 
     def _on_extension_list_changed(self) -> None:
         self.extension_filter_debounce.start()
 
     def _apply_debounced_extension_filters(self) -> None:
-        self._save_current_project_filters()
+        self._save_current_project_filters(show_busy=True)
 
-    def _save_current_project_filters(self) -> None:
+    def _save_current_project_filters(self, show_busy: bool = False) -> None:
         project_dir = self._current_project_path()
         if not project_dir or not project_dir.is_dir():
-            self._refresh_source_files()
+            if show_busy:
+                self._refresh_source_files_with_feedback("Filtering source files...")
+            else:
+                self._refresh_source_files()
             return
 
         self._save_project_config(
@@ -2591,7 +2641,10 @@ class DocumentControlApp(QMainWindow):
             extension_filters=self._current_extension_filters(),
             filter_mode=self.file_filter_mode_combo.currentText(),
         )
-        self._refresh_source_files()
+        if show_busy:
+            self._refresh_source_files_with_feedback("Filtering source files...")
+        else:
+            self._refresh_source_files()
 
     def _add_filter_extension(self) -> None:
         filters = self._current_extension_filters()
@@ -2599,17 +2652,17 @@ class DocumentControlApp(QMainWindow):
         if normalized and normalized not in filters:
             filters.append(normalized)
             self._set_extension_filters(filters)
-        self._save_current_project_filters()
+        self._save_current_project_filters(show_busy=True)
 
     def _remove_filter_extension(self) -> None:
         normalized = self._normalize_extension_value(self.file_extension_combo.currentText())
         filters = [value for value in self._current_extension_filters() if value != normalized]
         self._set_extension_filters(filters)
-        self._save_current_project_filters()
+        self._save_current_project_filters(show_busy=True)
 
     def _clear_filter_extensions(self) -> None:
         self._set_extension_filters([])
-        self._save_current_project_filters()
+        self._save_current_project_filters(show_busy=True)
 
     def _matches_extension_filter(self, file_path: Path) -> bool:
         mode = self.file_filter_mode_combo.currentText()
