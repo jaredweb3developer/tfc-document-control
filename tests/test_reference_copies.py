@@ -1,0 +1,84 @@
+from pathlib import Path
+
+from app import CheckoutRecord
+
+
+def test_copy_selected_as_reference_creates_local_copy_without_locking_source(app_env):
+    # Reference copy should not rename/lock source file and should create a tracked reference record.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    source_root = tmp / "source-root"
+    source_root.mkdir(parents=True)
+    source_file = source_root / "drawing-a.dwg"
+    source_file.write_text("dwg-data", encoding="utf-8")
+
+    project_dir = tmp / "Projects" / "RefProject"
+    app._write_project_config(
+        project_dir,
+        "RefProject",
+        [str(source_root)],
+        selected_source=str(source_root),
+    )
+
+    app.initials_edit.setText("JH")
+    app._load_project_from_dir(project_dir)
+    app._refresh_source_files()
+
+    # Select the source file in the Files list.
+    for row in range(app.files_list.count()):
+        item = app.files_list.item(row)
+        if item.text() == "drawing-a.dwg":
+            item.setSelected(True)
+            break
+
+    app._copy_selected_as_reference()
+
+    assert source_file.exists()
+    assert not (source_root / "drawing-a-JH.dwg").exists()
+
+    reference_records = [record for record in app.records if record.record_type == "reference_copy"]
+    assert len(reference_records) == 1
+    ref_record = reference_records[0]
+    assert ref_record.source_file == str(source_file)
+    assert ref_record.locked_source_file == ""
+    assert Path(ref_record.local_file).exists()
+    assert app.reference_records_table.rowCount() == 1
+
+
+def test_checkin_selected_rejects_reference_copy_rows(app_env, monkeypatch):
+    # Check-in should reject pure reference selections without opening check-in mode flow.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "RefOnly"
+    project_dir.mkdir(parents=True)
+    ref_local = tmp / "Projects" / "RefOnly" / "reference_copies" / "x.dwg"
+    ref_local.parent.mkdir(parents=True, exist_ok=True)
+    ref_local.write_text("ref", encoding="utf-8")
+
+    app.initials_edit.setText("JH")
+    app.current_project_dir = str(project_dir)
+    app.records = [
+        CheckoutRecord(
+            source_file=str(tmp / "src" / "x.dwg"),
+            locked_source_file="",
+            local_file=str(ref_local),
+            initials="JH",
+            project_name="RefOnly",
+            project_dir=str(project_dir),
+            source_root=str(tmp / "src"),
+            checked_out_at="",
+            record_type="reference_copy",
+        )
+    ]
+    app._render_records_tables()
+    app.records_tabs.setCurrentWidget(app.reference_records_table)
+    app.reference_records_table.selectRow(0)
+
+    captured = {"msg": ""}
+    monkeypatch.setattr(app, "_error", lambda msg: captured.__setitem__("msg", msg))
+
+    app._checkin_selected()
+
+    assert "Reference copies cannot be checked in" in captured["msg"]

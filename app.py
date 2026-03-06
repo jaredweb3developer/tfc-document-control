@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import stat
 import shutil
 import sys
 from contextlib import contextmanager
@@ -77,6 +78,7 @@ class CheckoutRecord:
     project_dir: str
     source_root: str
     checked_out_at: str = ""
+    record_type: str = "checked_out"
 
 
 @dataclass
@@ -519,6 +521,8 @@ class DocumentControlApp(QMainWindow):
         view_history_btn.clicked.connect(self._show_selected_file_history)
         add_to_favorites_btn = QPushButton("Add Selected To Favorites")
         add_to_favorites_btn.clicked.connect(self._add_selected_source_files_to_favorites)
+        reference_copy_btn = QPushButton("Copy As Reference")
+        reference_copy_btn.clicked.connect(self._copy_selected_as_reference)
         add_new_btn = QPushButton("Add Local File(s) To Here")
         add_new_btn.clicked.connect(self._add_new_files_to_source)
         file_button_bar.addWidget(refresh_btn)
@@ -526,6 +530,7 @@ class DocumentControlApp(QMainWindow):
         file_button_bar.addWidget(open_btn)
         file_button_bar.addWidget(view_history_btn)
         file_button_bar.addWidget(add_to_favorites_btn)
+        file_button_bar.addWidget(reference_copy_btn)
         file_button_bar.addWidget(add_new_btn)
         file_button_bar.addStretch()
         files_layout.addLayout(file_button_bar)
@@ -563,8 +568,10 @@ class DocumentControlApp(QMainWindow):
         self.records_tabs = QTabWidget()
         self.all_records_table = self._build_records_table()
         self.project_records_table = self._build_records_table()
+        self.reference_records_table = self._build_reference_records_table()
         self.records_tabs.addTab(self.all_records_table, "All Checked Out")
         self.records_tabs.addTab(self.project_records_table, "Current Project")
+        self.records_tabs.addTab(self.reference_records_table, "Reference Copies")
         layout.addWidget(self.records_tabs)
 
         button_bar = QHBoxLayout()
@@ -572,8 +579,11 @@ class DocumentControlApp(QMainWindow):
         checkin_btn.clicked.connect(self._checkin_selected)
         open_btn = QPushButton("Open Selected")
         open_btn.clicked.connect(self._open_selected_record_files)
+        remove_ref_btn = QPushButton("Remove Selected Ref")
+        remove_ref_btn.clicked.connect(self._remove_selected_reference_records)
         button_bar.addWidget(checkin_btn)
         button_bar.addWidget(open_btn)
+        button_bar.addWidget(remove_ref_btn)
         button_bar.addStretch()
         layout.addLayout(button_bar)
 
@@ -595,6 +605,20 @@ class DocumentControlApp(QMainWindow):
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        return table
+
+    def _build_reference_records_table(self) -> QTableWidget:
+        table = QTableWidget(0, 4)
+        table.setHorizontalHeaderLabels(["Source", "Local", "Project", "Copied"])
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setSelectionMode(QTableWidget.ExtendedSelection)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.cellDoubleClicked.connect(self._open_record_row)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         return table
 
     def _default_projects_dir(self) -> Path:
@@ -2145,6 +2169,78 @@ class DocumentControlApp(QMainWindow):
     def _selected_source_file_paths(self) -> List[Path]:
         return [Path(item.data(Qt.UserRole)) for item in self.files_list.selectedItems()]
 
+    def _set_local_reference_read_only(self, path: Path) -> None:
+        # Best-effort: mark reference copies read-only on local filesystem.
+        try:
+            current_mode = path.stat().st_mode
+            path.chmod(current_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+        except OSError:
+            return
+
+    def _copy_selected_as_reference(self) -> None:
+        if not self._validate_identity():
+            return
+
+        project_dir = self._validate_current_project()
+        current_directory = self._validate_current_directory()
+        source_root = self._current_source_root()
+        if not project_dir or not current_directory or not source_root:
+            return
+
+        selected_files = self._selected_source_file_paths()
+        if not selected_files:
+            self._error("Select at least one source file to copy as reference.")
+            return
+
+        reference_root = project_dir / "reference_copies" / self._source_key(project_dir, source_root)
+        copied_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        errors: List[str] = []
+
+        with self._debug_timed(
+            "copy_reference_selected",
+            selected_count=len(selected_files),
+            directory=str(current_directory),
+            source_root=str(source_root),
+        ):
+            with self._busy_action("Copying reference file(s)..."):
+                for source_file in selected_files:
+                    if not source_file.exists():
+                        errors.append(f"Missing source file: {source_file.name}")
+                        continue
+                    try:
+                        relative_path = source_file.relative_to(source_root)
+                    except ValueError:
+                        relative_path = Path(source_file.name)
+                    local_file = reference_root / relative_path
+
+                    try:
+                        local_file.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source_file, local_file)
+                        self._set_local_reference_read_only(local_file)
+                        self.records.append(
+                            CheckoutRecord(
+                                source_file=str(source_file),
+                                locked_source_file="",
+                                local_file=str(local_file),
+                                initials=self._normalize_initials(),
+                                project_name=self._current_project_name(),
+                                project_dir=str(project_dir),
+                                source_root=str(source_root),
+                                checked_out_at=copied_at,
+                                record_type="reference_copy",
+                            )
+                        )
+                    except OSError as exc:
+                        errors.append(f"{source_file.name}: {exc}")
+
+                self._save_records()
+                self._render_records_tables()
+
+        if errors:
+            self._error("Some reference copies failed:\n" + "\n".join(errors))
+        else:
+            self._info("Reference copy operation complete.")
+
     def _current_project_config(self) -> Optional[Dict[str, object]]:
         project_dir = self._current_project_path()
         if not project_dir or not project_dir.is_dir():
@@ -3354,6 +3450,19 @@ class DocumentControlApp(QMainWindow):
             self._error("Select at least one checked-out row to check in.")
             return
 
+        selected_checked_out = 0
+        selected_reference = 0
+        for record_idx in selected_indexes:
+            if not (0 <= record_idx < len(self.records)):
+                continue
+            if self.records[record_idx].record_type == "checked_out":
+                selected_checked_out += 1
+            elif self.records[record_idx].record_type == "reference_copy":
+                selected_reference += 1
+        if selected_checked_out == 0 and selected_reference > 0:
+            self._error("Reference copies cannot be checked in. Use 'Remove Selected Ref' instead.")
+            return
+
         choice = self._show_checkin_mode_dialog(
             "Check In Files",
             "Choose how the selected files should be checked in.",
@@ -3368,6 +3477,8 @@ class DocumentControlApp(QMainWindow):
             if not (0 <= record_idx < len(self.records)):
                 continue
             record = self.records[record_idx]
+            if record.record_type != "checked_out":
+                continue
             reason = (
                 "Copy the local checked-out file back to the locked source file before releasing it."
                 if choice == "modified"
@@ -3384,6 +3495,9 @@ class DocumentControlApp(QMainWindow):
                     reason=reason,
                 )
             )
+        if not actions:
+            self._error("Select at least one checked-out row to check in.")
+            return
 
         with self._debug_timed("checkin_selected", selected_count=len(actions)):
             with self._busy_action("Checking in file(s)..."):
@@ -3466,6 +3580,26 @@ class DocumentControlApp(QMainWindow):
             return
         paths = [Path(self.records[idx].local_file) for idx in indexes if 0 <= idx < len(self.records)]
         self._open_paths(paths)
+
+    def _remove_selected_reference_records(self) -> None:
+        indexes = self._selected_record_indexes()
+        if not indexes:
+            self._error("Select at least one reference copy row to remove.")
+            return
+
+        removable_indexes = [
+            idx
+            for idx in indexes
+            if 0 <= idx < len(self.records) and self.records[idx].record_type == "reference_copy"
+        ]
+        if not removable_indexes:
+            self._error("Selected rows do not contain reference copies.")
+            return
+
+        with self._busy_action("Removing reference copy record(s)..."):
+            self._remove_record_indexes(removable_indexes)
+            self._save_records()
+            self._render_records_tables()
 
     def _open_paths(self, paths: List[Path]) -> None:
         errors: List[str] = []
@@ -3595,14 +3729,25 @@ class DocumentControlApp(QMainWindow):
 
     def _render_records_tables(self) -> None:
         with self._debug_timed("render_records_tables", record_count=len(self.records)):
-            self._populate_records_table(self.all_records_table, list(enumerate(self.records)))
+            checked_out_items = [
+                (idx, record)
+                for idx, record in enumerate(self.records)
+                if record.record_type == "checked_out"
+            ]
+            self._populate_records_table(self.all_records_table, checked_out_items)
             current_project = self.current_project_dir
             filtered = [
                 (idx, record)
-                for idx, record in enumerate(self.records)
+                for idx, record in checked_out_items
                 if record.project_dir == current_project
             ]
             self._populate_records_table(self.project_records_table, filtered)
+            reference_items = [
+                (idx, record)
+                for idx, record in enumerate(self.records)
+                if record.record_type == "reference_copy"
+            ]
+            self._populate_reference_records_table(self.reference_records_table, reference_items)
 
     def _populate_records_table(
         self, table: QTableWidget, items: List[tuple[int, CheckoutRecord]]
@@ -3641,6 +3786,36 @@ class DocumentControlApp(QMainWindow):
         table.setColumnWidth(4, max(table.columnWidth(4), 170))
         table.setColumnWidth(5, max(table.columnWidth(5), 150))
 
+    def _populate_reference_records_table(
+        self, table: QTableWidget, items: List[tuple[int, CheckoutRecord]]
+    ) -> None:
+        table.setRowCount(len(items))
+        for row_idx, (record_idx, record) in enumerate(items):
+            values = [
+                self._short_path(record.source_file),
+                self._local_display_name(record.local_file),
+                record.project_name,
+                self._format_checkout_timestamp(record.checked_out_at),
+            ]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col_idx == 0:
+                    item.setData(Qt.UserRole, record_idx)
+                    item.setToolTip(record.source_file)
+                elif col_idx == 1:
+                    item.setToolTip(record.local_file)
+                elif col_idx == 2:
+                    item.setToolTip(record.project_dir)
+                else:
+                    item.setToolTip(record.checked_out_at)
+                table.setItem(row_idx, col_idx, item)
+
+        table.resizeColumnsToContents()
+        table.setColumnWidth(0, max(table.columnWidth(0), 280))
+        table.setColumnWidth(1, max(table.columnWidth(1), 200))
+        table.setColumnWidth(2, max(table.columnWidth(2), 180))
+        table.setColumnWidth(3, max(table.columnWidth(3), 150))
+
     def _load_records(self) -> None:
         with self._debug_timed("load_records"):
             data = self._read_json_candidates(
@@ -3669,6 +3844,7 @@ class DocumentControlApp(QMainWindow):
                             project_dir=str(entry.get("project_dir", "")),
                             source_root=str(entry.get("source_root", "")),
                             checked_out_at=str(entry.get("checked_out_at", "")),
+                            record_type=str(entry.get("record_type", "checked_out") or "checked_out"),
                         )
                     )
             except (OSError, ValueError, TypeError):
