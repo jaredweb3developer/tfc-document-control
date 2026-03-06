@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from PySide6.QtCore import QDir, QPoint, Qt, QTimer, QUrl
@@ -306,19 +306,6 @@ class DocumentControlApp(QMainWindow):
         group = QGroupBox("Projects")
         layout = QVBoxLayout(group)
 
-        new_project_btn = QPushButton("New Project")
-        new_project_btn.clicked.connect(self._show_new_project_dialog)
-        load_project_btn = QPushButton("Load Selected")
-        load_project_btn.clicked.connect(self._load_selected_tracked_project)
-        add_project_btn = QPushButton("Track Existing")
-        add_project_btn.clicked.connect(self._add_existing_project)
-        edit_project_btn = QPushButton("Edit Selected")
-        edit_project_btn.clicked.connect(self._edit_selected_project)
-        remove_project_btn = QPushButton("Untrack Selected")
-        remove_project_btn.clicked.connect(self._remove_selected_project)
-        open_location_btn = QPushButton("Open Location")
-        open_location_btn.clicked.connect(self._open_selected_project_location)
-
         self.tracked_projects_list = QListWidget()
         self.tracked_projects_list.itemDoubleClicked.connect(self._show_tracked_projects_context_menu_for_item)
         self.tracked_projects_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -337,14 +324,25 @@ class DocumentControlApp(QMainWindow):
         tracked_layout.addWidget(QLabel("Tracked Projects"))
         tracked_layout.addWidget(self.project_search_edit)
         tracked_layout.addWidget(self.tracked_projects_list, stretch=1)
-
-        tracked_controls = QGridLayout()
-        tracked_controls.addWidget(new_project_btn, 0, 0)
-        tracked_controls.addWidget(load_project_btn, 0, 1)
-        tracked_controls.addWidget(add_project_btn, 1, 0)
-        tracked_controls.addWidget(edit_project_btn, 1, 1)
-        tracked_controls.addWidget(remove_project_btn, 2, 0)
-        tracked_controls.addWidget(open_location_btn, 2, 1)
+        tracked_controls = QHBoxLayout()
+        tracked_controls.addWidget(
+            self._build_options_button(
+                [
+                    ("New Project", self._show_new_project_dialog),
+                    ("Load Selected", self._load_selected_tracked_project),
+                    ("Track Existing", self._add_existing_project),
+                    ("Edit Selected", self._edit_selected_project),
+                    ("Open Location", self._open_selected_project_location),
+                    ("Untrack Selected", self._remove_selected_project),
+                    ("---", self._load_selected_tracked_project),
+                    ("Move Up", self._move_selected_project_up),
+                    ("Move Down", self._move_selected_project_down),
+                    ("Move to Top", self._move_selected_project_top),
+                    ("Move to Bottom", self._move_selected_project_bottom),
+                ]
+            )
+        )
+        tracked_controls.addStretch()
         tracked_layout.addLayout(tracked_controls)
 
         favorites_panel = QWidget()
@@ -355,16 +353,22 @@ class DocumentControlApp(QMainWindow):
         self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.favorites_list.customContextMenuRequested.connect(self._show_favorites_context_menu)
         favorites_layout.addWidget(self.favorites_list, stretch=1)
-        favorites_controls = QGridLayout()
-        add_favorite_btn = QPushButton("Add Favorite")
-        add_favorite_btn.clicked.connect(self._browse_and_add_favorites)
-        remove_favorite_btn = QPushButton("Remove Favorite")
-        remove_favorite_btn.clicked.connect(self._remove_selected_favorites)
-        open_favorite_btn = QPushButton("Open Selected")
-        open_favorite_btn.clicked.connect(self._open_selected_favorites)
-        favorites_controls.addWidget(add_favorite_btn, 0, 0)
-        favorites_controls.addWidget(remove_favorite_btn, 0, 1)
-        favorites_controls.addWidget(open_favorite_btn, 1, 0, 1, 2)
+        favorites_controls = QHBoxLayout()
+        favorites_controls.addWidget(
+            self._build_options_button(
+                [
+                    ("Add Favorite", self._browse_and_add_favorites),
+                    ("Open Selected", self._open_selected_favorites),
+                    ("Remove Favorite", self._remove_selected_favorites),
+                    ("---", self._open_selected_favorites),
+                    ("Move Up", self._move_selected_favorite_up),
+                    ("Move Down", self._move_selected_favorite_down),
+                    ("Move to Top", self._move_selected_favorite_top),
+                    ("Move to Bottom", self._move_selected_favorite_bottom),
+                ]
+            )
+        )
+        favorites_controls.addStretch()
         favorites_layout.addLayout(favorites_controls)
 
         notes_panel = QWidget()
@@ -375,16 +379,22 @@ class DocumentControlApp(QMainWindow):
         self.notes_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.notes_list.customContextMenuRequested.connect(self._show_notes_context_menu)
         notes_layout.addWidget(self.notes_list, stretch=1)
-        notes_controls = QGridLayout()
-        new_note_btn = QPushButton("New Note")
-        new_note_btn.clicked.connect(self._create_note)
-        edit_note_btn = QPushButton("Edit Note")
-        edit_note_btn.clicked.connect(self._edit_selected_note)
-        remove_note_btn = QPushButton("Remove Note")
-        remove_note_btn.clicked.connect(self._remove_selected_note)
-        notes_controls.addWidget(new_note_btn, 0, 0)
-        notes_controls.addWidget(edit_note_btn, 0, 1)
-        notes_controls.addWidget(remove_note_btn, 1, 0, 1, 2)
+        notes_controls = QHBoxLayout()
+        notes_controls.addWidget(
+            self._build_options_button(
+                [
+                    ("New Note", self._create_note),
+                    ("Edit Selected", self._edit_selected_note),
+                    ("Remove Selected", self._remove_selected_note),
+                    ("---", self._create_note),
+                    ("Move Up", self._move_selected_note_up),
+                    ("Move Down", self._move_selected_note_down),
+                    ("Move to Top", self._move_selected_note_top),
+                    ("Move to Bottom", self._move_selected_note_bottom),
+                ]
+            )
+        )
+        notes_controls.addStretch()
         notes_layout.addLayout(notes_controls)
 
         content_splitter = QSplitter(Qt.Horizontal)
@@ -419,12 +429,21 @@ class DocumentControlApp(QMainWindow):
         tracked_layout.addWidget(self.source_roots_list)
 
         source_button_bar = QHBoxLayout()
-        add_source_btn = QPushButton("Track Dir (Browse)")
-        add_source_btn.clicked.connect(self._add_source_directory)
-        remove_source_btn = QPushButton("Untrack Dir")
-        remove_source_btn.clicked.connect(self._remove_source_directory)
-        source_button_bar.addWidget(add_source_btn)
-        source_button_bar.addWidget(remove_source_btn)
+        source_button_bar.addWidget(
+            self._build_options_button(
+                [
+                    ("Track Dir (Browse)", self._add_source_directory),
+                    ("Track Directory", self._track_current_directory),
+                    ("Untrack Dir", self._remove_source_directory),
+                    ("---", self._track_current_directory),
+                    ("Move Up", self._move_selected_source_up),
+                    ("Move Down", self._move_selected_source_down),
+                    ("Move to Top", self._move_selected_source_top),
+                    ("Move to Bottom", self._move_selected_source_bottom),
+                ]
+            )
+        )
+        source_button_bar.addStretch()
         tracked_layout.addLayout(source_button_bar)
 
         directory_panel = QWidget()
@@ -441,15 +460,15 @@ class DocumentControlApp(QMainWindow):
         self.directory_tree.setMinimumHeight(260)
         directory_layout.addWidget(self.directory_tree, stretch=1)
         directory_button_bar = QHBoxLayout()
-        browse_directory_btn = QPushButton("Browse")
-        browse_directory_btn.clicked.connect(self._browse_directory_tree_root)
-        view_directory_btn = QPushButton("View Location")
-        view_directory_btn.clicked.connect(self._view_current_directory_location)
-        track_current_directory_btn = QPushButton("Track Directory")
-        track_current_directory_btn.clicked.connect(self._track_current_directory)
-        directory_button_bar.addWidget(browse_directory_btn)
-        directory_button_bar.addWidget(view_directory_btn)
-        directory_button_bar.addWidget(track_current_directory_btn)
+        directory_button_bar.addWidget(
+            self._build_options_button(
+                [
+                    ("Browse", self._browse_directory_tree_root),
+                    ("View Location", self._view_current_directory_location),
+                    ("Track Directory", self._track_current_directory),
+                ]
+            )
+        )
         directory_button_bar.addStretch()
         directory_layout.addLayout(directory_button_bar)
 
@@ -524,27 +543,21 @@ class DocumentControlApp(QMainWindow):
         files_layout.addWidget(self.files_list, stretch=1)
 
         file_button_bar = QHBoxLayout()
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self._refresh_source_files)
-        checkout_btn = QPushButton("Check Out Selected")
-        checkout_btn.clicked.connect(self._checkout_selected)
-        open_btn = QPushButton("Open Selected")
-        open_btn.clicked.connect(self._open_selected_source_files)
-        view_history_btn = QPushButton("View History")
-        view_history_btn.clicked.connect(self._show_selected_file_history)
-        add_to_favorites_btn = QPushButton("Add Selected To Favorites")
-        add_to_favorites_btn.clicked.connect(self._add_selected_source_files_to_favorites)
-        reference_copy_btn = QPushButton("Copy As Reference")
-        reference_copy_btn.clicked.connect(self._copy_selected_as_reference)
-        add_new_btn = QPushButton("Add Local File(s) To Here")
-        add_new_btn.clicked.connect(self._add_new_files_to_source)
-        file_button_bar.addWidget(refresh_btn)
-        file_button_bar.addWidget(checkout_btn)
-        file_button_bar.addWidget(open_btn)
-        file_button_bar.addWidget(view_history_btn)
-        file_button_bar.addWidget(add_to_favorites_btn)
-        file_button_bar.addWidget(reference_copy_btn)
-        file_button_bar.addWidget(add_new_btn)
+        file_button_bar.addWidget(
+            self._build_options_button(
+                [
+                    ("Refresh", self._refresh_source_files),
+                    ("Open Selected", self._open_selected_source_files),
+                    ("Check Out Selected", self._checkout_selected),
+                    ("Check In Selected (If Mine)", self._checkin_selected_source_files_if_owned),
+                    ("View History", self._show_selected_file_history),
+                    ("---", self._open_selected_source_files),
+                    ("Add Selected To Favorites", self._add_selected_source_files_to_favorites),
+                    ("Copy As Reference", self._copy_selected_as_reference),
+                    ("Add Local File(s) To Here", self._add_new_files_to_source),
+                ]
+            )
+        )
         file_button_bar.addStretch()
         files_layout.addLayout(file_button_bar)
 
@@ -560,12 +573,14 @@ class DocumentControlApp(QMainWindow):
         controlled_layout.addWidget(self.controlled_files_list, stretch=1)
 
         controlled_button_bar = QHBoxLayout()
-        refresh_controlled_btn = QPushButton("Refresh")
-        refresh_controlled_btn.clicked.connect(self._refresh_controlled_files)
-        force_checkin_btn = QPushButton("Force Check In")
-        force_checkin_btn.clicked.connect(self._force_checkin_selected)
-        controlled_button_bar.addWidget(refresh_controlled_btn)
-        controlled_button_bar.addWidget(force_checkin_btn)
+        controlled_button_bar.addWidget(
+            self._build_options_button(
+                [
+                    ("Refresh", self._refresh_controlled_files),
+                    ("Force Check In", self._force_checkin_selected),
+                ]
+            )
+        )
         controlled_button_bar.addStretch()
         controlled_layout.addLayout(controlled_button_bar)
 
@@ -592,15 +607,15 @@ class DocumentControlApp(QMainWindow):
         layout.addWidget(self.records_tabs)
 
         button_bar = QHBoxLayout()
-        checkin_btn = QPushButton("Check In Selected")
-        checkin_btn.clicked.connect(self._checkin_selected)
-        open_btn = QPushButton("Open Selected")
-        open_btn.clicked.connect(self._open_selected_record_files)
-        remove_ref_btn = QPushButton("Remove Selected Ref")
-        remove_ref_btn.clicked.connect(self._remove_selected_reference_records)
-        button_bar.addWidget(checkin_btn)
-        button_bar.addWidget(open_btn)
-        button_bar.addWidget(remove_ref_btn)
+        button_bar.addWidget(
+            self._build_options_button(
+                [
+                    ("Open Selected", self._open_selected_record_files),
+                    ("Check In Selected", self._checkin_selected),
+                    ("Remove Selected Ref", self._remove_selected_reference_records),
+                ]
+            )
+        )
         button_bar.addStretch()
         layout.addLayout(button_bar)
 
@@ -1325,6 +1340,48 @@ class DocumentControlApp(QMainWindow):
     def _on_file_search_changed(self, _text: str) -> None:
         self.file_search_debounce.start()
 
+    def _move_list_widget_item(self, list_widget: QListWidget, delta: int) -> bool:
+        row = list_widget.currentRow()
+        if row < 0:
+            return False
+        new_row = row + delta
+        if new_row < 0 or new_row >= list_widget.count():
+            return False
+        item = list_widget.takeItem(row)
+        list_widget.insertItem(new_row, item)
+        list_widget.setCurrentRow(new_row)
+        item.setSelected(True)
+        return True
+
+    def _move_list_widget_item_to(self, list_widget: QListWidget, target_row: int) -> bool:
+        row = list_widget.currentRow()
+        if row < 0:
+            return False
+        target_row = max(0, min(target_row, list_widget.count() - 1))
+        if row == target_row:
+            return False
+        item = list_widget.takeItem(row)
+        list_widget.insertItem(target_row, item)
+        list_widget.setCurrentRow(target_row)
+        item.setSelected(True)
+        return True
+
+    def _build_options_button(
+        self, actions: List[Tuple[str, Callable[[], None]]], label: str = "Options"
+    ) -> QToolButton:
+        button = QToolButton(self)
+        button.setText(label)
+        button.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(button)
+        for action_label, callback in actions:
+            if action_label == "---":
+                menu.addSeparator()
+                continue
+            action = menu.addAction(action_label)
+            action.triggered.connect(callback)
+        button.setMenu(menu)
+        return button
+
     def _clear_file_search_filter(self) -> None:
         if not self.file_search_edit.text():
             return
@@ -1677,6 +1734,72 @@ class DocumentControlApp(QMainWindow):
         if not item:
             return None
         return Path(str(item.data(Qt.UserRole)))
+
+    def _select_tracked_project_by_dir(self, project_dir: str) -> None:
+        for row in range(self.tracked_projects_list.count()):
+            item = self.tracked_projects_list.item(row)
+            if str(item.data(Qt.UserRole)) == project_dir:
+                self.tracked_projects_list.setCurrentItem(item)
+                return
+
+    def _move_selected_project(self, delta: int) -> None:
+        item = self.tracked_projects_list.currentItem()
+        if not item:
+            self._error("Select a tracked project to move.")
+            return
+
+        project_dir = str(item.data(Qt.UserRole))
+        index = -1
+        for idx, entry in enumerate(self.tracked_projects):
+            if entry["project_dir"] == project_dir:
+                index = idx
+                break
+        if index < 0:
+            return
+        new_index = index + delta
+        if new_index < 0 or new_index >= len(self.tracked_projects):
+            return
+        self.tracked_projects[index], self.tracked_projects[new_index] = (
+            self.tracked_projects[new_index],
+            self.tracked_projects[index],
+        )
+        self._save_tracked_projects()
+        self._refresh_tracked_projects_list()
+        self._select_tracked_project_by_dir(project_dir)
+
+    def _move_selected_project_to(self, target_index: int) -> None:
+        item = self.tracked_projects_list.currentItem()
+        if not item:
+            self._error("Select a tracked project to move.")
+            return
+        project_dir = str(item.data(Qt.UserRole))
+        index = -1
+        for idx, entry in enumerate(self.tracked_projects):
+            if entry["project_dir"] == project_dir:
+                index = idx
+                break
+        if index < 0:
+            return
+        target_index = max(0, min(target_index, len(self.tracked_projects) - 1))
+        if index == target_index:
+            return
+        entry = self.tracked_projects.pop(index)
+        self.tracked_projects.insert(target_index, entry)
+        self._save_tracked_projects()
+        self._refresh_tracked_projects_list()
+        self._select_tracked_project_by_dir(project_dir)
+
+    def _move_selected_project_up(self) -> None:
+        self._move_selected_project(-1)
+
+    def _move_selected_project_down(self) -> None:
+        self._move_selected_project(1)
+
+    def _move_selected_project_top(self) -> None:
+        self._move_selected_project_to(0)
+
+    def _move_selected_project_bottom(self) -> None:
+        self._move_selected_project_to(len(self.tracked_projects) - 1)
 
     def _update_project_record_paths(
         self, old_project_dir: Path, new_project_dir: Path, new_project_name: str
@@ -2187,6 +2310,44 @@ class DocumentControlApp(QMainWindow):
                     break
             self._save_settings()
 
+    def _save_sources_from_ui_order(self) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        sources = self._source_roots_from_list()
+        selected_source = self._current_source_root_value()
+        self._save_project_config(
+            project_dir,
+            name=self._current_project_name(),
+            sources=sources,
+            extension_filters=self._current_extension_filters(),
+            filter_mode=self.file_filter_mode_combo.currentText(),
+            selected_source=selected_source,
+        )
+        self._save_settings()
+
+    def _move_selected_source(self, delta: int) -> None:
+        if not self._move_list_widget_item(self.source_roots_list, delta):
+            return
+        self._save_sources_from_ui_order()
+
+    def _move_selected_source_to(self, target_index: int) -> None:
+        if not self._move_list_widget_item_to(self.source_roots_list, target_index):
+            return
+        self._save_sources_from_ui_order()
+
+    def _move_selected_source_up(self) -> None:
+        self._move_selected_source(-1)
+
+    def _move_selected_source_down(self) -> None:
+        self._move_selected_source(1)
+
+    def _move_selected_source_top(self) -> None:
+        self._move_selected_source_to(0)
+
+    def _move_selected_source_bottom(self) -> None:
+        self._move_selected_source_to(self.source_roots_list.count() - 1)
+
     def _selected_source_file_paths(self) -> List[Path]:
         return [Path(item.data(Qt.UserRole)) for item in self.files_list.selectedItems()]
 
@@ -2344,6 +2505,37 @@ class DocumentControlApp(QMainWindow):
         favorites = [favorite for favorite in self._current_project_favorites() if favorite not in selected_paths]
         self._set_project_favorites(favorites)
 
+    def _favorites_from_ui_order(self) -> List[str]:
+        ordered: List[str] = []
+        for row in range(self.favorites_list.count()):
+            item = self.favorites_list.item(row)
+            value = str(item.data(Qt.UserRole))
+            if value and value not in ordered:
+                ordered.append(value)
+        return ordered
+
+    def _move_selected_favorite(self, delta: int) -> None:
+        if not self._move_list_widget_item(self.favorites_list, delta):
+            return
+        self._set_project_favorites(self._favorites_from_ui_order())
+
+    def _move_selected_favorite_to(self, target_index: int) -> None:
+        if not self._move_list_widget_item_to(self.favorites_list, target_index):
+            return
+        self._set_project_favorites(self._favorites_from_ui_order())
+
+    def _move_selected_favorite_up(self) -> None:
+        self._move_selected_favorite(-1)
+
+    def _move_selected_favorite_down(self) -> None:
+        self._move_selected_favorite(1)
+
+    def _move_selected_favorite_top(self) -> None:
+        self._move_selected_favorite_to(0)
+
+    def _move_selected_favorite_bottom(self) -> None:
+        self._move_selected_favorite_to(self.favorites_list.count() - 1)
+
     def _open_favorite_item(self, item: QListWidgetItem) -> None:
         self._open_paths([Path(str(item.data(Qt.UserRole)))])
 
@@ -2466,6 +2658,39 @@ class DocumentControlApp(QMainWindow):
             return
         notes = [note for note in self._current_project_notes() if note.get("id", "") != note_id]
         self._set_project_notes(notes)
+
+    def _notes_from_ui_order(self) -> List[Dict[str, str]]:
+        by_id = {str(note.get("id", "")): note for note in self._current_project_notes()}
+        ordered_notes: List[Dict[str, str]] = []
+        for row in range(self.notes_list.count()):
+            item = self.notes_list.item(row)
+            note_id = str(item.data(Qt.UserRole))
+            note = by_id.get(note_id)
+            if note:
+                ordered_notes.append(note)
+        return ordered_notes
+
+    def _move_selected_note(self, delta: int) -> None:
+        if not self._move_list_widget_item(self.notes_list, delta):
+            return
+        self._set_project_notes(self._notes_from_ui_order())
+
+    def _move_selected_note_to(self, target_index: int) -> None:
+        if not self._move_list_widget_item_to(self.notes_list, target_index):
+            return
+        self._set_project_notes(self._notes_from_ui_order())
+
+    def _move_selected_note_up(self) -> None:
+        self._move_selected_note(-1)
+
+    def _move_selected_note_down(self) -> None:
+        self._move_selected_note(1)
+
+    def _move_selected_note_top(self) -> None:
+        self._move_selected_note_to(0)
+
+    def _move_selected_note_bottom(self) -> None:
+        self._move_selected_note_to(self.notes_list.count() - 1)
 
     def _normalize_filter_preset(self, preset: Dict[str, object]) -> Optional[Dict[str, object]]:
         name = str(preset.get("name", "")).strip()
@@ -3462,11 +3687,7 @@ class DocumentControlApp(QMainWindow):
                 updated_plans.append(updated)
             planned_actions = updated_plans
 
-    def _checkin_selected(self) -> None:
-        if not self._validate_identity():
-            return
-
-        selected_indexes = set(self._selected_record_indexes())
+    def _checkin_record_indexes(self, selected_indexes: set[int]) -> None:
         if not selected_indexes:
             self._error("Select at least one checked-out row to check in.")
             return
@@ -3531,6 +3752,33 @@ class DocumentControlApp(QMainWindow):
         else:
             self._info("Check-in complete.")
 
+    def _checkin_selected(self) -> None:
+        if not self._validate_identity():
+            return
+        self._checkin_record_indexes(set(self._selected_record_indexes()))
+
+    def _checkin_selected_source_files_if_owned(self) -> None:
+        if not self._validate_identity():
+            return
+        selected_files = self._selected_source_file_paths()
+        if not selected_files:
+            self._error("Select at least one source file to check in.")
+            return
+        initials = self._normalize_initials()
+        selected_paths = {str(path) for path in selected_files}
+        selected_record_indexes: set[int] = set()
+        for idx, record in enumerate(self.records):
+            if record.record_type != "checked_out":
+                continue
+            if record.initials != initials:
+                continue
+            if record.source_file in selected_paths or record.locked_source_file in selected_paths:
+                selected_record_indexes.add(idx)
+        if not selected_record_indexes:
+            self._error("No selected files are currently checked out by your initials.")
+            return
+        self._checkin_record_indexes(selected_record_indexes)
+
     def _add_new_files_to_source(self) -> None:
         if not self._validate_identity():
             return
@@ -3593,8 +3841,10 @@ class DocumentControlApp(QMainWindow):
         actions = [
             ("Open Selected", "open"),
             ("Check Out Selected", "checkout"),
+            ("Check In Selected (If Mine)", "checkin_mine"),
             ("Copy As Reference", "reference"),
             ("View History", "history"),
+            ("Add Local File(s) To Here", "add_local"),
             ("Add Selected To Favorites", "favorite"),
             ("Refresh", "refresh"),
         ]
@@ -3613,11 +3863,17 @@ class DocumentControlApp(QMainWindow):
         if action_id == "checkout":
             self._checkout_selected()
             return
+        if action_id == "checkin_mine":
+            self._checkin_selected_source_files_if_owned()
+            return
         if action_id == "reference":
             self._copy_selected_as_reference()
             return
         if action_id == "history":
             self._show_selected_file_history()
+            return
+        if action_id == "add_local":
+            self._add_new_files_to_source()
             return
         if action_id == "favorite":
             self._add_selected_source_files_to_favorites()
@@ -3754,6 +4010,10 @@ class DocumentControlApp(QMainWindow):
         edit_action = menu.addAction("Edit Selected")
         open_loc_action = menu.addAction("Open Location")
         untrack_action = menu.addAction("Untrack Selected")
+        move_up_action = menu.addAction("Move Up")
+        move_down_action = menu.addAction("Move Down")
+        move_top_action = menu.addAction("Move to Top")
+        move_bottom_action = menu.addAction("Move to Bottom")
         chosen = menu.exec(self.tracked_projects_list.mapToGlobal(pos))
         if chosen == load_action:
             self._load_selected_tracked_project()
@@ -3763,6 +4023,14 @@ class DocumentControlApp(QMainWindow):
             self._open_selected_project_location()
         elif chosen == untrack_action:
             self._remove_selected_project()
+        elif chosen == move_up_action:
+            self._move_selected_project_up()
+        elif chosen == move_down_action:
+            self._move_selected_project_down()
+        elif chosen == move_top_action:
+            self._move_selected_project_top()
+        elif chosen == move_bottom_action:
+            self._move_selected_project_bottom()
 
     def _show_favorites_context_menu_for_item(self, item: QListWidgetItem) -> None:
         self.favorites_list.setCurrentItem(item)
@@ -3778,13 +4046,28 @@ class DocumentControlApp(QMainWindow):
             self.favorites_list.setCurrentItem(item)
 
         menu = QMenu(self)
+        add_action = menu.addAction("Add Favorite")
         open_action = menu.addAction("Open Selected")
         remove_action = menu.addAction("Remove Favorite")
+        move_up_action = menu.addAction("Move Up")
+        move_down_action = menu.addAction("Move Down")
+        move_top_action = menu.addAction("Move to Top")
+        move_bottom_action = menu.addAction("Move to Bottom")
         chosen = menu.exec(self.favorites_list.mapToGlobal(pos))
-        if chosen == open_action:
+        if chosen == add_action:
+            self._browse_and_add_favorites()
+        elif chosen == open_action:
             self._open_selected_favorites()
         elif chosen == remove_action:
             self._remove_selected_favorites()
+        elif chosen == move_up_action:
+            self._move_selected_favorite_up()
+        elif chosen == move_down_action:
+            self._move_selected_favorite_down()
+        elif chosen == move_top_action:
+            self._move_selected_favorite_top()
+        elif chosen == move_bottom_action:
+            self._move_selected_favorite_bottom()
 
     def _show_notes_context_menu_for_item(self, item: QListWidgetItem) -> None:
         self.notes_list.setCurrentItem(item)
@@ -3803,6 +4086,10 @@ class DocumentControlApp(QMainWindow):
         new_action = menu.addAction("New Note")
         edit_action = menu.addAction("Edit Selected")
         remove_action = menu.addAction("Remove Selected")
+        move_up_action = menu.addAction("Move Up")
+        move_down_action = menu.addAction("Move Down")
+        move_top_action = menu.addAction("Move to Top")
+        move_bottom_action = menu.addAction("Move to Bottom")
         chosen = menu.exec(self.notes_list.mapToGlobal(pos))
         if chosen == new_action:
             self._create_note()
@@ -3810,6 +4097,14 @@ class DocumentControlApp(QMainWindow):
             self._edit_selected_note()
         elif chosen == remove_action:
             self._remove_selected_note()
+        elif chosen == move_up_action:
+            self._move_selected_note_up()
+        elif chosen == move_down_action:
+            self._move_selected_note_down()
+        elif chosen == move_top_action:
+            self._move_selected_note_top()
+        elif chosen == move_bottom_action:
+            self._move_selected_note_bottom()
 
     def _show_source_roots_context_menu(self, pos: QPoint) -> None:
         item = self.source_roots_list.itemAt(pos)
@@ -3822,6 +4117,10 @@ class DocumentControlApp(QMainWindow):
         track_browse_action = menu.addAction("Track Dir (Browse)")
         track_current_action = menu.addAction("Track Directory")
         untrack_action = menu.addAction("Untrack Dir")
+        move_up_action = menu.addAction("Move Up")
+        move_down_action = menu.addAction("Move Down")
+        move_top_action = menu.addAction("Move to Top")
+        move_bottom_action = menu.addAction("Move to Bottom")
         chosen = menu.exec(self.source_roots_list.mapToGlobal(pos))
         if chosen == track_browse_action:
             self._add_source_directory()
@@ -3829,6 +4128,14 @@ class DocumentControlApp(QMainWindow):
             self._track_current_directory()
         elif chosen == untrack_action:
             self._remove_source_directory()
+        elif chosen == move_up_action:
+            self._move_selected_source_up()
+        elif chosen == move_down_action:
+            self._move_selected_source_down()
+        elif chosen == move_top_action:
+            self._move_selected_source_top()
+        elif chosen == move_bottom_action:
+            self._move_selected_source_bottom()
 
     def _open_paths(self, paths: List[Path]) -> None:
         errors: List[str] = []

@@ -8,15 +8,37 @@ def test_source_file_context_actions_dispatch(app_env, monkeypatch):
 
     monkeypatch.setattr(app, "_open_selected_source_files", lambda: called.append("open"))
     monkeypatch.setattr(app, "_checkout_selected", lambda: called.append("checkout"))
+    monkeypatch.setattr(
+        app, "_checkin_selected_source_files_if_owned", lambda: called.append("checkin_mine")
+    )
     monkeypatch.setattr(app, "_copy_selected_as_reference", lambda: called.append("reference"))
     monkeypatch.setattr(app, "_show_selected_file_history", lambda: called.append("history"))
+    monkeypatch.setattr(app, "_add_new_files_to_source", lambda: called.append("add_local"))
     monkeypatch.setattr(app, "_add_selected_source_files_to_favorites", lambda: called.append("favorite"))
     monkeypatch.setattr(app, "_refresh_source_files", lambda: called.append("refresh"))
 
-    for action_id in ["open", "checkout", "reference", "history", "favorite", "refresh"]:
+    for action_id in [
+        "open",
+        "checkout",
+        "checkin_mine",
+        "reference",
+        "history",
+        "add_local",
+        "favorite",
+        "refresh",
+    ]:
         app._handle_source_file_context_action(action_id)
 
-    assert called == ["open", "checkout", "reference", "history", "favorite", "refresh"]
+    assert called == [
+        "open",
+        "checkout",
+        "checkin_mine",
+        "reference",
+        "history",
+        "add_local",
+        "favorite",
+        "refresh",
+    ]
 
 
 def test_records_context_actions_dispatch(app_env, monkeypatch):
