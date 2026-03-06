@@ -3832,12 +3832,13 @@ class DocumentControlApp(QMainWindow):
         if not revisions:
             self._error("No revisions are available for the selected file.")
             return None
+        checkin_by_revision = self._checkin_history_by_revision_id_for_record(record)
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Revisions - {Path(record.source_file).name}")
         dialog.resize(900, 420)
         layout = QVBoxLayout(dialog)
-        table = QTableWidget(len(revisions), 4)
-        table.setHorizontalHeaderLabels(["Revision", "Timestamp", "Hash", "Note"])
+        table = QTableWidget(len(revisions), 5)
+        table.setHorizontalHeaderLabels(["Revision", "Timestamp", "Checked In", "Hash", "Note"])
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setSelectionMode(QTableWidget.SingleSelection)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -3845,11 +3846,23 @@ class DocumentControlApp(QMainWindow):
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
         for row, entry in enumerate(revisions):
+            revision_id = str(entry.get("id", ""))
+            checkin_row = checkin_by_revision.get(revision_id)
+            checked_in_value = "Yes" if checkin_row else "No"
+            checked_in_tooltip = ""
+            if checkin_row:
+                checked_in_tooltip = (
+                    f"Action: {checkin_row.get('action', '')}\n"
+                    f"When: {self._format_history_timestamp(str(checkin_row.get('timestamp', '')))}\n"
+                    f"By: {checkin_row.get('user_full_name', '') or checkin_row.get('user_initials', '')}"
+                )
             values = [
-                str(entry.get("id", "")),
+                revision_id,
                 self._format_history_timestamp(str(entry.get("created_at", ""))),
+                checked_in_value,
                 str(entry.get("sha256", ""))[:12],
                 str(entry.get("note", "")),
             ]
@@ -3857,7 +3870,12 @@ class DocumentControlApp(QMainWindow):
                 item = QTableWidgetItem(value)
                 if col == 0:
                     item.setData(Qt.UserRole, row)
-                item.setToolTip(str(entry.get("sha256", "")) if col == 2 else value)
+                if col == 2 and checked_in_tooltip:
+                    item.setToolTip(checked_in_tooltip)
+                elif col == 3:
+                    item.setToolTip(str(entry.get("sha256", "")))
+                else:
+                    item.setToolTip(value)
                 table.setItem(row, col, item)
         if table.rowCount() > 0:
             table.setCurrentCell(0, 0)
@@ -3875,6 +3893,25 @@ class DocumentControlApp(QMainWindow):
         if row < 0 or row >= len(revisions):
             return None
         return revisions[row]
+
+    def _checkin_history_by_revision_id_for_record(
+        self, record: CheckoutRecord
+    ) -> Dict[str, Dict[str, str]]:
+        source_path = Path(record.source_file)
+        source_dir = source_path.parent
+        source_name = source_path.name
+        indexed: Dict[str, Dict[str, str]] = {}
+        for row in self._read_history_rows(source_dir):
+            revision_id = str(row.get("revision_id", "")).strip()
+            if not revision_id:
+                continue
+            if str(row.get("file_name", "")).strip() != source_name:
+                continue
+            action = str(row.get("action", "")).strip()
+            if "CHECK_IN" not in action:
+                continue
+            indexed[revision_id] = row
+        return indexed
 
     def _switch_record_to_revision(self, record: CheckoutRecord, revision: Dict[str, object]) -> bool:
         if not self._ensure_saved_state_before_revision_switch(record):
