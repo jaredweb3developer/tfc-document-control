@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import os
 import stat
@@ -57,6 +58,7 @@ TRACKED_PROJECTS_SCHEMA_VERSION = 1
 PROJECT_CONFIG_SCHEMA_VERSION = 1
 FILTER_PRESETS_SCHEMA_VERSION = 1
 RECORDS_SCHEMA_VERSION = 1
+FILE_VERSIONS_SCHEMA_VERSION = 1
 USER_DATA_ROOT = Path.home() / "Documents" / USER_DATA_DIR_NAME
 SETTINGS_FILE = USER_DATA_ROOT / "settings.json"
 LEGACY_SETTINGS_FILE = APP_ROOT / "settings.json"
@@ -67,6 +69,8 @@ PROJECT_CONFIG_FILE = "dctl.json"
 HISTORY_FILE_NAME = ".doc_control_history.csv"
 DEFAULT_PROJECT_NAME = "Default"
 DEBUG_EVENTS_FILE = USER_DATA_ROOT / "debug_events.log"
+FILE_VERSIONS_FILE = "file_versions.json"
+FILE_VERSIONS_DIR = "file_versions"
 
 
 @dataclass
@@ -634,6 +638,8 @@ class DocumentControlApp(QMainWindow):
                 [
                     ("Open Selected", self._open_selected_record_files),
                     ("Check In Selected", self._checkin_selected),
+                    ("Create Revision Snapshot", self._create_revision_snapshot_for_selected_records),
+                    ("Switch To Revision", self._switch_selected_record_to_revision),
                     ("Remove Selected Ref", self._remove_selected_reference_records),
                 ]
             )
@@ -3324,13 +3330,22 @@ class DocumentControlApp(QMainWindow):
     def _locked_name_for(self, source_file: Path, initials: str) -> Path:
         return source_file.with_name(f"{source_file.stem}-{initials}{source_file.suffix}")
 
-    def _append_history(self, source_dir: Path, action: str, file_name: str) -> None:
+    def _append_history(
+        self, source_dir: Path, action: str, file_name: str, revision_id: str = ""
+    ) -> None:
         history_file = source_dir / HISTORY_FILE_NAME
         if not history_file.exists():
             with history_file.open("w", encoding="utf-8", newline="") as handle:
                 writer = csv.writer(handle)
                 writer.writerow(
-                    ["timestamp", "action", "file_name", "user_initials", "user_full_name"]
+                    [
+                        "timestamp",
+                        "action",
+                        "file_name",
+                        "revision_id",
+                        "user_initials",
+                        "user_full_name",
+                    ]
                 )
 
         with history_file.open("a", encoding="utf-8", newline="") as handle:
@@ -3340,6 +3355,7 @@ class DocumentControlApp(QMainWindow):
                     datetime.now().astimezone().isoformat(timespec="seconds"),
                     action,
                     file_name,
+                    revision_id,
                     self._normalize_initials(),
                     self._current_full_name(),
                 ]
@@ -3424,6 +3440,7 @@ class DocumentControlApp(QMainWindow):
                     [
                         self._format_history_timestamp(row.get("timestamp", "")),
                         row.get("action", ""),
+                        row.get("revision_id", ""),
                         row.get("user_initials", ""),
                         row.get("user_full_name", ""),
                     ]
@@ -3541,17 +3558,21 @@ class DocumentControlApp(QMainWindow):
                         local_file.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(source_file, local_file)
                         source_file.rename(locked_source_file)
-                        self.records.append(
-                            CheckoutRecord(
-                                source_file=str(source_file),
-                                locked_source_file=str(locked_source_file),
-                                local_file=str(local_file),
-                                initials=initials,
-                                project_name=self._current_project_name(),
-                                project_dir=str(project_dir),
-                                source_root=str(source_root),
-                                checked_out_at=checked_out_at,
-                            )
+                        new_record = CheckoutRecord(
+                            source_file=str(source_file),
+                            locked_source_file=str(locked_source_file),
+                            local_file=str(local_file),
+                            initials=initials,
+                            project_name=self._current_project_name(),
+                            project_dir=str(project_dir),
+                            source_root=str(source_root),
+                            checked_out_at=checked_out_at,
+                        )
+                        self.records.append(new_record)
+                        self._create_revision_snapshot_for_record(
+                            new_record,
+                            note="Baseline snapshot captured at checkout.",
+                            origin="checkout_baseline",
                         )
                         self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
                         self._invalidate_directory_caches(source_file.parent)
@@ -3578,6 +3599,295 @@ class DocumentControlApp(QMainWindow):
             if isinstance(record_idx, int):
                 indexes.append(record_idx)
         return indexes
+
+    def _selected_checked_out_record_indexes(self) -> List[int]:
+        return [
+            idx
+            for idx in self._selected_record_indexes()
+            if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+        ]
+
+    def _file_versions_registry_path(self, project_dir: Path) -> Path:
+        return project_dir / FILE_VERSIONS_FILE
+
+    def _file_versions_root(self, project_dir: Path) -> Path:
+        return project_dir / FILE_VERSIONS_DIR
+
+    def _record_version_key(self, record: CheckoutRecord) -> str:
+        key_source = "|".join([record.project_dir, record.source_file, record.locked_source_file])
+        return hashlib.sha256(key_source.encode("utf-8")).hexdigest()[:16]
+
+    def _load_file_versions_registry(self, project_dir: Path) -> Dict[str, object]:
+        registry_path = self._file_versions_registry_path(project_dir)
+        if not registry_path.exists():
+            return {
+                "schema_version": FILE_VERSIONS_SCHEMA_VERSION,
+                "app_version": APP_VERSION,
+                "files": {},
+            }
+        try:
+            raw = json.loads(registry_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            raw = {}
+        files = raw.get("files", {}) if isinstance(raw, dict) else {}
+        if not isinstance(files, dict):
+            files = {}
+        return {
+            "schema_version": FILE_VERSIONS_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
+            "files": files,
+        }
+
+    def _save_file_versions_registry(self, project_dir: Path, registry: Dict[str, object]) -> None:
+        registry_path = self._file_versions_registry_path(project_dir)
+        self._ensure_parent_dir(registry_path)
+        registry_path.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+
+    def _compute_file_sha256(self, file_path: Path) -> str:
+        digest = hashlib.sha256()
+        with file_path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _next_revision_id(self, existing_entries: List[Dict[str, object]]) -> str:
+        existing_ids = {str(entry.get("id", "")) for entry in existing_entries}
+        while True:
+            stamp = datetime.now().strftime("%y%m%d%H%M%S")
+            candidate = f"R{stamp}-{uuid4().hex[:4].upper()}"
+            if candidate not in existing_ids:
+                return candidate
+
+    def _prompt_revision_note(self, title: str, initial_note: str = "") -> Tuple[bool, str]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(520, 220)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Optional revision note:"))
+        note_edit = QPlainTextEdit(initial_note)
+        layout.addWidget(note_edit, stretch=1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return False, ""
+        return True, note_edit.toPlainText().strip()
+
+    def _revision_entries_for_record(self, record: CheckoutRecord) -> List[Dict[str, object]]:
+        project_dir = Path(record.project_dir)
+        registry = self._load_file_versions_registry(project_dir)
+        files = registry.get("files", {})
+        if not isinstance(files, dict):
+            return []
+        file_entry = files.get(self._record_version_key(record), {})
+        if not isinstance(file_entry, dict):
+            return []
+        revisions = file_entry.get("revisions", [])
+        if not isinstance(revisions, list):
+            return []
+        return [dict(item) for item in revisions if isinstance(item, dict)]
+
+    def _create_revision_snapshot_for_record(
+        self,
+        record: CheckoutRecord,
+        note: str = "",
+        origin: str = "manual",
+        snapshot_source_path: Optional[Path] = None,
+    ) -> Optional[Dict[str, object]]:
+        source_path = snapshot_source_path or Path(record.local_file)
+        if not source_path.exists():
+            self._error(f"Missing snapshot source file: {source_path}")
+            return None
+
+        project_dir = Path(record.project_dir)
+        revisions_root = self._file_versions_root(project_dir)
+        registry = self._load_file_versions_registry(project_dir)
+        files = registry.setdefault("files", {})
+        if not isinstance(files, dict):
+            files = {}
+            registry["files"] = files
+
+        key = self._record_version_key(record)
+        file_entry = files.get(key)
+        if not isinstance(file_entry, dict):
+            file_entry = {
+                "source_file": record.source_file,
+                "locked_source_file": record.locked_source_file,
+                "local_file": record.local_file,
+                "project_name": record.project_name,
+                "revisions": [],
+            }
+            files[key] = file_entry
+
+        revisions = file_entry.get("revisions", [])
+        if not isinstance(revisions, list):
+            revisions = []
+            file_entry["revisions"] = revisions
+
+        file_hash = self._compute_file_sha256(source_path)
+        for revision in revisions:
+            if str(revision.get("sha256", "")) == file_hash:
+                return dict(revision)
+
+        revision_id = self._next_revision_id([dict(item) for item in revisions if isinstance(item, dict)])
+        snapshot_dir = revisions_root / key
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_name = f"{revision_id}{source_path.suffix}"
+        snapshot_path = snapshot_dir / snapshot_name
+        shutil.copy2(source_path, snapshot_path)
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        revision_entry: Dict[str, object] = {
+            "id": revision_id,
+            "created_at": timestamp,
+            "note": note,
+            "sha256": file_hash,
+            "origin": origin,
+            "snapshot_file": str(snapshot_path.relative_to(project_dir)),
+        }
+        revisions.append(revision_entry)
+        file_entry["local_file"] = record.local_file
+        self._save_file_versions_registry(project_dir, registry)
+        return revision_entry
+
+    def _ensure_saved_state_before_revision_switch(self, record: CheckoutRecord) -> bool:
+        local_path = Path(record.local_file)
+        if not local_path.exists():
+            self._error(f"Missing local file: {local_path}")
+            return False
+        current_hash = self._compute_file_sha256(local_path)
+        revisions = self._revision_entries_for_record(record)
+        existing_hashes = {str(item.get("sha256", "")) for item in revisions}
+        if current_hash in existing_hashes:
+            return True
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Unsaved Current State")
+        dialog.setText("Current local file state does not match any saved revision.")
+        dialog.setInformativeText("Create a snapshot of the current state before switching revisions?")
+        save_btn = dialog.addButton("Save Snapshot", QMessageBox.AcceptRole)
+        continue_btn = dialog.addButton("Continue Without Saving", QMessageBox.ActionRole)
+        dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(save_btn)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked == save_btn:
+            created = self._create_revision_snapshot_for_record(
+                record,
+                note="Auto snapshot before switching revision.",
+                origin="auto_before_switch",
+            )
+            return created is not None
+        if clicked == continue_btn:
+            return True
+        return False
+
+    def _choose_revision_for_record(self, record: CheckoutRecord) -> Optional[Dict[str, object]]:
+        revisions = self._revision_entries_for_record(record)
+        if not revisions:
+            self._error("No revisions are available for the selected file.")
+            return None
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Revisions - {Path(record.source_file).name}")
+        dialog.resize(900, 420)
+        layout = QVBoxLayout(dialog)
+        table = QTableWidget(len(revisions), 4)
+        table.setHorizontalHeaderLabels(["Revision", "Timestamp", "Hash", "Note"])
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setSelectionMode(QTableWidget.SingleSelection)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        for row, entry in enumerate(revisions):
+            values = [
+                str(entry.get("id", "")),
+                self._format_history_timestamp(str(entry.get("created_at", ""))),
+                str(entry.get("sha256", ""))[:12],
+                str(entry.get("note", "")),
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col == 0:
+                    item.setData(Qt.UserRole, row)
+                item.setToolTip(str(entry.get("sha256", "")) if col == 2 else value)
+                table.setItem(row, col, item)
+        if table.rowCount() > 0:
+            table.setCurrentCell(0, 0)
+        layout.addWidget(table)
+        buttons = QDialogButtonBox()
+        switch_btn = buttons.addButton("Switch To Selected", QDialogButtonBox.AcceptRole)
+        cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+        selected: Dict[str, int] = {"row": -1}
+        switch_btn.clicked.connect(lambda: (selected.__setitem__("row", table.currentRow()), dialog.accept()))
+        cancel_btn.clicked.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        row = selected["row"]
+        if row < 0 or row >= len(revisions):
+            return None
+        return revisions[row]
+
+    def _switch_record_to_revision(self, record: CheckoutRecord, revision: Dict[str, object]) -> bool:
+        if not self._ensure_saved_state_before_revision_switch(record):
+            return False
+        project_dir = Path(record.project_dir)
+        relative_snapshot = str(revision.get("snapshot_file", "")).strip()
+        if not relative_snapshot:
+            self._error("Selected revision is missing snapshot data.")
+            return False
+        snapshot_path = project_dir / relative_snapshot
+        local_path = Path(record.local_file)
+        if not snapshot_path.exists():
+            self._error(f"Revision snapshot file is missing:\n{snapshot_path}")
+            return False
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(snapshot_path, local_path)
+        except OSError as exc:
+            self._error(f"Could not switch to revision:\n{exc}")
+            return False
+        return True
+
+    def _create_revision_snapshot_for_selected_records(self) -> None:
+        indexes = self._selected_checked_out_record_indexes()
+        if not indexes:
+            self._error("Select at least one checked-out file to snapshot.")
+            return
+        accepted, note = self._prompt_revision_note("Create Revision Snapshot")
+        if not accepted:
+            return
+        created_count = 0
+        with self._busy_action("Creating revision snapshot(s)..."):
+            for idx in indexes:
+                if not (0 <= idx < len(self.records)):
+                    continue
+                created = self._create_revision_snapshot_for_record(self.records[idx], note=note)
+                if created:
+                    created_count += 1
+        if created_count == 0:
+            self._info("No new snapshots were created (current states already tracked).")
+        else:
+            self._info(f"Created {created_count} revision snapshot(s).")
+
+    def _switch_selected_record_to_revision(self) -> None:
+        indexes = self._selected_checked_out_record_indexes()
+        if len(indexes) != 1:
+            self._error("Select exactly one checked-out file to switch revisions.")
+            return
+        record = self.records[indexes[0]]
+        revision = self._choose_revision_for_record(record)
+        if not revision:
+            return
+        with self._busy_action("Switching file revision..."):
+            switched = self._switch_record_to_revision(record, revision)
+        if switched:
+            self._info(f"Switched to revision {revision.get('id', '')}.")
 
     def _remove_record_indexes(self, record_indexes: List[int]) -> None:
         selected = set(record_indexes)
@@ -3659,10 +3969,23 @@ class DocumentControlApp(QMainWindow):
                 else:
                     continue
 
+                revision_id = ""
+                if action.record_idx >= 0 and 0 <= action.record_idx < len(self.records):
+                    record = self.records[action.record_idx]
+                    checkin_revision = self._create_revision_snapshot_for_record(
+                        record,
+                        note=f"Check-in snapshot ({self._history_action_for_checkin(action, workflow)}).",
+                        origin=f"{workflow}_checkin",
+                        snapshot_source_path=source_file,
+                    )
+                    if checkin_revision:
+                        revision_id = str(checkin_revision.get("id", ""))
+
                 self._append_history(
                     source_file.parent,
                     self._history_action_for_checkin(action, workflow),
                     source_file.name,
+                    revision_id,
                 )
                 self._invalidate_directory_caches(source_file.parent)
                 if action.record_idx >= 0:
@@ -4176,6 +4499,10 @@ class DocumentControlApp(QMainWindow):
         else:
             checkin_action = menu.addAction("Check In Selected")
             action_map[checkin_action] = "checkin"
+            snapshot_action = menu.addAction("Create Revision Snapshot")
+            action_map[snapshot_action] = "snapshot"
+            switch_action = menu.addAction("Switch To Revision")
+            action_map[switch_action] = "switch_revision"
         chosen = menu.exec(table.viewport().mapToGlobal(pos))
         if chosen in action_map:
             self._handle_records_context_action(action_map[chosen])
@@ -4186,6 +4513,12 @@ class DocumentControlApp(QMainWindow):
             return
         if action_id == "checkin":
             self._checkin_selected()
+            return
+        if action_id == "snapshot":
+            self._create_revision_snapshot_for_selected_records()
+            return
+        if action_id == "switch_revision":
+            self._switch_selected_record_to_revision()
             return
         if action_id == "remove_ref":
             self._remove_selected_reference_records()
@@ -4496,15 +4829,16 @@ class DocumentControlApp(QMainWindow):
         dialog.resize(980, 420)
         layout = QVBoxLayout(dialog)
 
-        table = QTableWidget(len(rows), 4)
-        table.setHorizontalHeaderLabels(["Timestamp", "Action", "Initials", "Full Name"])
+        table = QTableWidget(len(rows), 5)
+        table.setHorizontalHeaderLabels(["Timestamp", "Action", "Revision", "Initials", "Full Name"])
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.setSelectionMode(QTableWidget.NoSelection)
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
 
         for row_idx, row_values in enumerate(rows):
             for col_idx, value in enumerate(row_values):
@@ -4512,7 +4846,7 @@ class DocumentControlApp(QMainWindow):
 
         table.resizeColumnsToContents()
         table.setColumnWidth(0, max(table.columnWidth(0), 320))
-        table.setColumnWidth(3, max(table.columnWidth(3), 220))
+        table.setColumnWidth(4, max(table.columnWidth(4), 220))
         layout.addWidget(table)
         dialog.exec()
 

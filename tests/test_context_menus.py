@@ -48,13 +48,21 @@ def test_records_context_actions_dispatch(app_env, monkeypatch):
 
     monkeypatch.setattr(app, "_open_selected_record_files", lambda: called.append("open"))
     monkeypatch.setattr(app, "_checkin_selected", lambda: called.append("checkin"))
+    monkeypatch.setattr(
+        app, "_create_revision_snapshot_for_selected_records", lambda: called.append("snapshot")
+    )
+    monkeypatch.setattr(
+        app, "_switch_selected_record_to_revision", lambda: called.append("switch_revision")
+    )
     monkeypatch.setattr(app, "_remove_selected_reference_records", lambda: called.append("remove_ref"))
 
     app._handle_records_context_action("open")
     app._handle_records_context_action("checkin")
+    app._handle_records_context_action("snapshot")
+    app._handle_records_context_action("switch_revision")
     app._handle_records_context_action("remove_ref")
 
-    assert called == ["open", "checkin", "remove_ref"]
+    assert called == ["open", "checkin", "snapshot", "switch_revision", "remove_ref"]
 
 
 def test_context_menu_policies_are_enabled(app_env):
