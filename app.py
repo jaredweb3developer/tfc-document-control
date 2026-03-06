@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from uuid import uuid4
 
 from PySide6.QtCore import QDir, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
-    QRadioButton,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -47,7 +46,7 @@ from PySide6.QtWidgets import (
 
 APP_ROOT = Path(__file__).resolve().parent
 APP_NAME = "TFC Document Control"
-APP_VERSION = "0.0.4"
+APP_VERSION = "0.1.0"
 USER_DATA_DIR_NAME = "TFC Project Control"
 SETTINGS_SCHEMA_VERSION = 1
 TRACKED_PROJECTS_SCHEMA_VERSION = 1
@@ -102,10 +101,18 @@ class DocumentControlApp(QMainWindow):
         self.show_configuration_tab_on_startup = True
         self.filter_presets: List[Dict[str, object]] = []
         self.main_section_toggles: List[QToolButton] = []
+        self.project_search_debounce = QTimer(self)
+        self.project_search_debounce.setSingleShot(True)
+        self.project_search_debounce.setInterval(300)
+        self.project_search_debounce.timeout.connect(self._refresh_tracked_projects_list)
         self.extension_filter_debounce = QTimer(self)
         self.extension_filter_debounce.setSingleShot(True)
         self.extension_filter_debounce.setInterval(2000)
         self.extension_filter_debounce.timeout.connect(self._apply_debounced_extension_filters)
+        self.file_search_debounce = QTimer(self)
+        self.file_search_debounce.setSingleShot(True)
+        self.file_search_debounce.setInterval(300)
+        self.file_search_debounce.timeout.connect(self._refresh_source_files)
 
         self._build_ui()
         self._load_settings()
@@ -271,10 +278,14 @@ class DocumentControlApp(QMainWindow):
 
         self.current_project_label = QLabel("Current Project: -")
         self.current_project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.project_search_edit = QLineEdit()
+        self.project_search_edit.setPlaceholderText("Search projects by name, client, or year")
+        self.project_search_edit.textChanged.connect(self._on_project_search_changed)
 
         tracked_panel = QWidget()
         tracked_layout = QVBoxLayout(tracked_panel)
         tracked_layout.addWidget(QLabel("Tracked Projects"))
+        tracked_layout.addWidget(self.project_search_edit)
         tracked_layout.addWidget(self.tracked_projects_list, stretch=1)
 
         tracked_controls = QGridLayout()
@@ -389,7 +400,13 @@ class DocumentControlApp(QMainWindow):
         files_panel = QWidget()
         files_layout = QVBoxLayout(files_panel)
         files_layout.addWidget(QLabel("Files"))
+        self.file_search_edit = QLineEdit()
+        self.file_search_edit.setPlaceholderText("Search files")
+        self.file_search_edit.textChanged.connect(self._on_file_search_changed)
+        files_layout.addWidget(self.file_search_edit)
 
+        extension_group = QGroupBox("Extension Filter")
+        extension_layout = QVBoxLayout(extension_group)
         filter_bar = QHBoxLayout()
         presets_btn = QPushButton("Presets")
         presets_btn.clicked.connect(self._show_filter_presets_dialog)
@@ -435,12 +452,13 @@ class DocumentControlApp(QMainWindow):
         filter_bar.addWidget(add_extension_btn)
         filter_bar.addWidget(remove_extension_btn)
         filter_bar.addWidget(clear_extensions_btn)
-        files_layout.addLayout(filter_bar)
+        extension_layout.addLayout(filter_bar)
         extension_list_bar = QHBoxLayout()
         extension_list_bar.addWidget(QLabel("Filter Mode"))
         extension_list_bar.addWidget(self.file_filter_mode_combo)
         extension_list_bar.addWidget(self.file_extension_list_edit, stretch=1)
-        files_layout.addLayout(extension_list_bar)
+        extension_layout.addLayout(extension_list_bar)
+        files_layout.addWidget(extension_group)
 
         self.files_list = QListWidget()
         self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
@@ -808,9 +826,16 @@ class DocumentControlApp(QMainWindow):
                     continue
                 name = str(entry.get("name", "")).strip()
                 project_dir = str(entry.get("project_dir", "")).strip()
+                client = str(entry.get("client", "")).strip()
+                year_started = str(entry.get("year_started", "")).strip()
                 if name and project_dir:
                     self.tracked_projects.append(
-                        {"name": name, "project_dir": project_dir}
+                        {
+                            "name": name,
+                            "project_dir": project_dir,
+                            "client": client,
+                            "year_started": year_started,
+                        }
                     )
 
         if not self.tracked_projects:
@@ -837,12 +862,19 @@ class DocumentControlApp(QMainWindow):
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
         selected_source: str = "",
+        source_ids: Optional[Dict[str, str]] = None,
+        client: str = "",
+        year_started: str = "",
     ) -> Dict[str, object]:
+        normalized_source_ids = self._normalize_source_ids(sources, source_ids)
         return {
             "schema_version": PROJECT_CONFIG_SCHEMA_VERSION,
             "app_version": APP_VERSION,
             "name": name,
+            "client": client,
+            "year_started": year_started,
             "sources": sources,
+            "source_ids": normalized_source_ids,
             "selected_source": selected_source,
             "extension_filters": extension_filters or [],
             "filter_mode": filter_mode,
@@ -867,7 +899,11 @@ class DocumentControlApp(QMainWindow):
         raw_favorites = data.get("favorites", [])
         raw_notes = data.get("notes", [])
         selected_source = str(data.get("selected_source", "")).strip()
+        client = str(data.get("client", "")).strip()
+        year_started = str(data.get("year_started", "")).strip()
+        raw_source_ids = data.get("source_ids", {})
         sources = [str(item) for item in raw_sources if str(item).strip()] if isinstance(raw_sources, list) else []
+        source_ids = dict(raw_source_ids) if isinstance(raw_source_ids, dict) else {}
         extension_filters = (
             [str(item) for item in raw_extension_filters if str(item).strip()]
             if isinstance(raw_extension_filters, list)
@@ -906,6 +942,9 @@ class DocumentControlApp(QMainWindow):
             favorites,
             notes,
             selected_source,
+            source_ids,
+            client,
+            year_started,
         )
 
     def _write_project_config(
@@ -918,6 +957,9 @@ class DocumentControlApp(QMainWindow):
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
         selected_source: str = "",
+        source_ids: Optional[Dict[str, str]] = None,
+        client: str = "",
+        year_started: str = "",
     ) -> None:
         project_dir.mkdir(parents=True, exist_ok=True)
         config_path = self._project_config_path(project_dir)
@@ -929,6 +971,9 @@ class DocumentControlApp(QMainWindow):
             favorites,
             notes,
             selected_source,
+            source_ids,
+            client,
+            year_started,
         )
         config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -943,12 +988,18 @@ class DocumentControlApp(QMainWindow):
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
         selected_source: Optional[str] = None,
+        source_ids: Optional[Dict[str, str]] = None,
+        client: Optional[str] = None,
+        year_started: Optional[str] = None,
     ) -> None:
         current = self._read_project_config(project_dir)
+        merged_sources = (
+            sources if sources is not None else list(current.get("sources", []))  # type: ignore[arg-type]
+        )
         self._write_project_config(
             project_dir,
             name or str(current.get("name", project_dir.name)),
-            sources if sources is not None else list(current.get("sources", [])),  # type: ignore[arg-type]
+            merged_sources,
             extension_filters
             if extension_filters is not None
             else list(current.get("extension_filters", [])),  # type: ignore[arg-type]
@@ -958,27 +1009,57 @@ class DocumentControlApp(QMainWindow):
             selected_source
             if selected_source is not None
             else str(current.get("selected_source", "")),
+            source_ids
+            if source_ids is not None
+            else dict(current.get("source_ids", {})),  # type: ignore[arg-type]
+            client if client is not None else str(current.get("client", "")),
+            year_started
+            if year_started is not None
+            else str(current.get("year_started", "")),
         )
 
     def _ensure_default_project(self) -> None:
         base_dir = self._ensure_base_projects_dir()
         default_dir = base_dir / DEFAULT_PROJECT_NAME
         if not self._project_config_path(default_dir).exists():
-            self._write_project_config(default_dir, DEFAULT_PROJECT_NAME, [], [], "No Filter", [], [])
+            self._write_project_config(
+                default_dir,
+                DEFAULT_PROJECT_NAME,
+                [],
+                [],
+                "No Filter",
+                [],
+                [],
+            )
         self._register_tracked_project(DEFAULT_PROJECT_NAME, default_dir)
         self._refresh_tracked_projects_list()
 
-    def _register_tracked_project(self, name: str, project_dir: Path) -> None:
+    def _register_tracked_project(
+        self,
+        name: str,
+        project_dir: Path,
+        client: str = "",
+        year_started: str = "",
+    ) -> None:
         project_dir_str = str(project_dir)
         updated = False
         for entry in self.tracked_projects:
             if entry["project_dir"] == project_dir_str:
                 entry["name"] = name
+                entry["client"] = client
+                entry["year_started"] = year_started
                 updated = True
                 break
 
         if not updated:
-            self.tracked_projects.append({"name": name, "project_dir": project_dir_str})
+            self.tracked_projects.append(
+                {
+                    "name": name,
+                    "project_dir": project_dir_str,
+                    "client": client,
+                    "year_started": year_started,
+                }
+            )
 
         self.tracked_projects.sort(key=lambda item: item["name"].lower())
         self._save_tracked_projects()
@@ -987,10 +1068,24 @@ class DocumentControlApp(QMainWindow):
     def _refresh_tracked_projects_list(self) -> None:
         self.tracked_projects_list.clear()
         current_item = None
+        search_term = self.project_search_edit.text().strip().lower()
         for entry in self.tracked_projects:
+            if search_term and search_term not in " ".join(
+                [
+                    str(entry.get("name", "")).lower(),
+                    str(entry.get("client", "")).lower(),
+                    str(entry.get("year_started", "")).lower(),
+                ]
+            ):
+                continue
             item = QListWidgetItem(entry["name"])
             item.setData(Qt.UserRole, entry["project_dir"])
-            item.setToolTip(entry["project_dir"])
+            tooltip_lines = [entry["project_dir"]]
+            if entry.get("client"):
+                tooltip_lines.append(f"Client: {entry['client']}")
+            if entry.get("year_started"):
+                tooltip_lines.append(f"Year Started: {entry['year_started']}")
+            item.setToolTip("\n".join(tooltip_lines))
             self.tracked_projects_list.addItem(item)
             if entry["project_dir"] == self.current_project_dir:
                 current_item = item
@@ -999,6 +1094,12 @@ class DocumentControlApp(QMainWindow):
             self.tracked_projects_list.setCurrentItem(current_item)
         elif self.tracked_projects_list.count() > 0:
             self.tracked_projects_list.setCurrentRow(0)
+
+    def _on_project_search_changed(self, _text: str) -> None:
+        self.project_search_debounce.start()
+
+    def _on_file_search_changed(self, _text: str) -> None:
+        self.file_search_debounce.start()
 
     def _load_last_or_default_project(self) -> None:
         if self.current_project_dir:
@@ -1020,45 +1121,76 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        client: str = "",
+        year_started: str = "",
     ) -> None:
         base_dir = self._ensure_base_projects_dir()
         _ = base_dir
 
+        source_list = sources or []
         self._write_project_config(
             project_dir,
             name,
-            sources or [],
+            source_list,
             extension_filters or [],
             filter_mode,
             favorites or [],
             notes or [],
-            (sources or [""])[0] if sources else "",
+            source_list[0] if source_list else "",
+            None,
+            client,
+            year_started,
         )
-        self.current_project_dir = str(project_dir)
-        self._register_tracked_project(name, project_dir)
+        self._register_tracked_project(name, project_dir, client, year_started)
+        self._load_project_from_dir(project_dir)
         self._save_settings()
         self._info(f"Project '{name}' saved.")
 
     def _show_new_project_dialog(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("New Project")
-        dialog.resize(460, 220)
+        dialog.resize(640, 280)
         layout = QVBoxLayout(dialog)
 
         form_layout = QGridLayout()
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Project name")
+        if self.current_directory and self.current_directory.name:
+            name_edit.setText(self.current_directory.name)
+        client_edit = QLineEdit()
+        client_edit.setPlaceholderText("Optional client name")
+        year_edit = QLineEdit()
+        year_edit.setValidator(QIntValidator(1900, 9999, dialog))
+        year_edit.setPlaceholderText("YYYY")
+        source_dir_edit = QLineEdit(str(self.current_directory) if self.current_directory else "")
+        source_dir_edit.setPlaceholderText("Optional source directory")
+        browse_source_btn = QPushButton("Browse")
+
+        def choose_source_dir() -> None:
+            start_dir = source_dir_edit.text().strip() or str(self.current_directory or Path.home())
+            selected = QFileDialog.getExistingDirectory(dialog, "Select Source Directory", start_dir)
+            if selected:
+                source_dir_edit.setText(selected)
+
+        browse_source_btn.clicked.connect(choose_source_dir)
         form_layout.addWidget(QLabel("Project Name:"), 0, 0)
         form_layout.addWidget(name_edit, 0, 1)
+        form_layout.addWidget(QLabel("Client:"), 1, 0)
+        form_layout.addWidget(client_edit, 1, 1)
+        form_layout.addWidget(QLabel("Year Started:"), 2, 0)
+        form_layout.addWidget(year_edit, 2, 1)
+        form_layout.addWidget(QLabel("Source Directory:"), 3, 0)
+        form_layout.addWidget(source_dir_edit, 3, 1)
+        form_layout.addWidget(browse_source_btn, 3, 2)
         layout.addLayout(form_layout)
 
-        keep_current_radio = QRadioButton("Create without changing the current directory")
-        root_radio = QRadioButton("Create starting from the root of the file system")
-        root_radio.setChecked(True)
-        clone_current_checkbox = QCheckBox("Copy sources and filter settings from current project")
-        layout.addWidget(keep_current_radio)
-        layout.addWidget(root_radio)
-        layout.addWidget(clone_current_checkbox)
+        track_source_checkbox = QCheckBox("Track selected source directory on create")
+        track_source_checkbox.setChecked(bool(source_dir_edit.text().strip()))
+        copy_sources_checkbox = QCheckBox("Copy tracked source directories from current project")
+        copy_filter_settings_checkbox = QCheckBox("Copy extension filter settings from current project")
+        layout.addWidget(track_source_checkbox)
+        layout.addWidget(copy_sources_checkbox)
+        layout.addWidget(copy_filter_settings_checkbox)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
@@ -1073,12 +1205,43 @@ class DocumentControlApp(QMainWindow):
             self._error("Project name is required.")
             return
 
+        client = client_edit.text().strip()
+        year_started = year_edit.text().strip()
+        source_dir = source_dir_edit.text().strip()
+        if year_started and len(year_started) != 4:
+            self._error("Year Started must be a 4-digit year.")
+            return
+
+        if source_dir:
+            source_path = Path(source_dir)
+            if not source_path.is_dir():
+                self._error("Selected source directory does not exist.")
+                return
+            suggested_name = source_path.name.strip()
+            if suggested_name and suggested_name != name:
+                answer = QMessageBox.question(
+                    self,
+                    "Project Name Suggestion",
+                    (
+                        f"Use source folder name '{suggested_name}' as the project name instead "
+                        f"of '{name}'?"
+                    ),
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer == QMessageBox.Yes:
+                    name = suggested_name
+
         project_dir = self._ensure_base_projects_dir() / self._safe_project_dir_name(name)
         sources: List[str] = []
         extension_filters: List[str] = []
         filter_mode = "No Filter"
-        if clone_current_checkbox.isChecked():
+        if copy_sources_checkbox.isChecked():
             sources = self._source_roots_from_list()
+        if track_source_checkbox.isChecked() and source_dir:
+            if source_dir not in sources:
+                sources.append(source_dir)
+        if copy_filter_settings_checkbox.isChecked():
             extension_filters = self._current_extension_filters()
             filter_mode = self.file_filter_mode_combo.currentText()
 
@@ -1088,10 +1251,9 @@ class DocumentControlApp(QMainWindow):
             sources=sources,
             extension_filters=extension_filters,
             filter_mode=filter_mode,
+            client=client,
+            year_started=year_started,
         )
-
-        if root_radio.isChecked():
-            self._set_directory_tree_root(None)
 
     def _source_roots_from_list(self) -> List[str]:
         roots: List[str] = []
@@ -1130,7 +1292,12 @@ class DocumentControlApp(QMainWindow):
 
         project_dir = config_path.parent
         config = self._read_project_config(project_dir)
-        self._register_tracked_project(str(config.get("name", project_dir.name)), project_dir)
+        self._register_tracked_project(
+            str(config.get("name", project_dir.name)),
+            project_dir,
+            str(config.get("client", "")),
+            str(config.get("year_started", "")),
+        )
         with self._busy_action("Loading project..."):
             self._load_project_from_dir(project_dir)
 
@@ -1145,6 +1312,22 @@ class DocumentControlApp(QMainWindow):
             return
 
         project_dir = Path(str(item.data(Qt.UserRole)))
+        active_project_records = [record for record in self.records if record.project_dir == str(project_dir)]
+        if active_project_records:
+            answer = QMessageBox.question(
+                self,
+                "Project Has Checked-Out Files",
+                (
+                    f"'{item.text()}' has {len(active_project_records)} checked-out file(s).\n\n"
+                    "Please check those files in before untracking this project.\n\n"
+                    "Keep project tracked?"
+                ),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                return
+
         prompt = QMessageBox(self)
         prompt.setWindowTitle("Untrack Project")
         prompt.setText(f"What would you like to do with '{item.text()}'?")
@@ -1199,6 +1382,8 @@ class DocumentControlApp(QMainWindow):
         favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
         notes = [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
         selected_source = str(config.get("selected_source", "")).strip()
+        client = str(config.get("client", "")).strip()
+        year_started = str(config.get("year_started", "")).strip()
 
         self.current_project_dir = str(project_dir)
         self.file_filter_mode_combo.blockSignals(True)
@@ -1206,10 +1391,12 @@ class DocumentControlApp(QMainWindow):
         self.file_filter_mode_combo.blockSignals(False)
         self._set_extension_filters(extension_filters)
         self.current_project_label.setText(f"Current Project: {name}")
-        self._register_tracked_project(name, project_dir)
+        self._register_tracked_project(name, project_dir, client, year_started)
         self._refresh_source_roots(sources, selected_source)
         self._refresh_favorites_list(favorites)
         self._refresh_notes_list(notes)
+        if not sources:
+            self._refresh_controlled_files()
         self._save_settings()
         self._render_records_tables()
 
@@ -1236,7 +1423,12 @@ class DocumentControlApp(QMainWindow):
         self._save_records()
 
     def _apply_project_edit(
-        self, old_project_dir: Path, new_project_name: str, destination_parent: Optional[Path]
+        self,
+        old_project_dir: Path,
+        new_project_name: str,
+        destination_parent: Optional[Path],
+        client: str,
+        year_started: str,
     ) -> Optional[Path]:
         config = self._read_project_config(old_project_dir)
         target_parent = destination_parent or old_project_dir.parent
@@ -1245,8 +1437,13 @@ class DocumentControlApp(QMainWindow):
         old_project_dir_resolved = old_project_dir.resolve()
 
         if target_project_dir == old_project_dir_resolved:
-            self._save_project_config(old_project_dir, name=new_project_name)
-            self._register_tracked_project(new_project_name, old_project_dir)
+            self._save_project_config(
+                old_project_dir,
+                name=new_project_name,
+                client=client,
+                year_started=year_started,
+            )
+            self._register_tracked_project(new_project_name, old_project_dir, client, year_started)
             self._update_project_record_paths(old_project_dir, old_project_dir, new_project_name)
             return old_project_dir
 
@@ -1276,8 +1473,16 @@ class DocumentControlApp(QMainWindow):
             filter_mode=str(config.get("filter_mode", "No Filter")),
             favorites=[str(item) for item in config.get("favorites", [])],  # type: ignore[arg-type]
             notes=[dict(item) for item in config.get("notes", [])],  # type: ignore[arg-type]
+            selected_source=str(config.get("selected_source", "")),
+            source_ids=(
+                dict(config.get("source_ids", {}))
+                if isinstance(config.get("source_ids", {}), dict)
+                else {}
+            ),
+            client=client,
+            year_started=year_started,
         )
-        self._register_tracked_project(new_project_name, target_project_dir)
+        self._register_tracked_project(new_project_name, target_project_dir, client, year_started)
         self._update_project_record_paths(old_project_dir_resolved, target_project_dir, new_project_name)
         return target_project_dir
 
@@ -1295,6 +1500,10 @@ class DocumentControlApp(QMainWindow):
 
         form = QGridLayout()
         name_edit = QLineEdit(str(config.get("name", project_dir.name)))
+        client_edit = QLineEdit(str(config.get("client", "")))
+        year_edit = QLineEdit(str(config.get("year_started", "")))
+        year_edit.setValidator(QIntValidator(1900, 9999, dialog))
+        year_edit.setPlaceholderText("YYYY")
         current_dir_label = QLineEdit(str(project_dir))
         current_dir_label.setReadOnly(True)
         config_path_label = QLineEdit(str(self._project_config_path(project_dir)))
@@ -1318,15 +1527,19 @@ class DocumentControlApp(QMainWindow):
 
         form.addWidget(QLabel("Project Name:"), 0, 0)
         form.addWidget(name_edit, 0, 1, 1, 2)
-        form.addWidget(QLabel("Current Directory:"), 1, 0)
-        form.addWidget(current_dir_label, 1, 1, 1, 2)
-        form.addWidget(QLabel("Project Config:"), 2, 0)
-        form.addWidget(config_path_label, 2, 1, 1, 2)
-        form.addWidget(QLabel("Tracked Sources:"), 3, 0)
-        form.addWidget(source_count_label, 3, 1, 1, 2)
-        form.addWidget(QLabel("Destination Parent:"), 4, 0)
-        form.addWidget(destination_edit, 4, 1)
-        form.addWidget(browse_destination_btn, 4, 2)
+        form.addWidget(QLabel("Client:"), 1, 0)
+        form.addWidget(client_edit, 1, 1, 1, 2)
+        form.addWidget(QLabel("Year Started:"), 2, 0)
+        form.addWidget(year_edit, 2, 1, 1, 2)
+        form.addWidget(QLabel("Current Directory:"), 3, 0)
+        form.addWidget(current_dir_label, 3, 1, 1, 2)
+        form.addWidget(QLabel("Project Config:"), 4, 0)
+        form.addWidget(config_path_label, 4, 1, 1, 2)
+        form.addWidget(QLabel("Tracked Sources:"), 5, 0)
+        form.addWidget(source_count_label, 5, 1, 1, 2)
+        form.addWidget(QLabel("Destination Parent:"), 6, 0)
+        form.addWidget(destination_edit, 6, 1)
+        form.addWidget(browse_destination_btn, 6, 2)
         layout.addLayout(form)
 
         layout.addWidget(
@@ -1348,10 +1561,21 @@ class DocumentControlApp(QMainWindow):
         if not new_project_name:
             self._error("Project name is required.")
             return
+        client = client_edit.text().strip()
+        year_started = year_edit.text().strip()
+        if year_started and len(year_started) != 4:
+            self._error("Year Started must be a 4-digit year.")
+            return
 
         destination_parent = Path(destination_edit.text().strip() or str(project_dir.parent))
         with self._busy_action("Updating project..."):
-            updated_project_dir = self._apply_project_edit(project_dir, new_project_name, destination_parent)
+            updated_project_dir = self._apply_project_edit(
+                project_dir,
+                new_project_name,
+                destination_parent,
+                client,
+                year_started,
+            )
         if not updated_project_dir:
             return
 
@@ -1499,10 +1723,13 @@ class DocumentControlApp(QMainWindow):
             self.controlled_files_list.clear()
             return
 
+        search_term = self.file_search_edit.text().strip().lower()
         history_lookup = self._history_lookup_for_directory(self.current_directory)
         for item in sorted(self.current_directory.iterdir()):
             if item.is_file() and item.name != HISTORY_FILE_NAME:
                 if not self._matches_extension_filter(item):
+                    continue
+                if search_term and search_term not in item.name.lower():
                     continue
                 list_item = QListWidgetItem(item.name)
                 list_item.setData(Qt.UserRole, str(item))
@@ -2150,10 +2377,36 @@ class DocumentControlApp(QMainWindow):
             return suffix not in extensions
         return True
 
-    def _source_key(self, source_root: Path) -> str:
-        raw = str(source_root.resolve())
-        cleaned = raw.replace(":", "").replace("\\", "_").replace("/", "_")
-        return cleaned.strip("_") or "source"
+    def _normalize_source_ids(
+        self, sources: List[str], source_ids: Optional[Dict[str, str]]
+    ) -> Dict[str, str]:
+        normalized: Dict[str, str] = {}
+        existing = source_ids or {}
+        for source in sources:
+            source_value = str(source).strip()
+            if not source_value:
+                continue
+            source_id = str(existing.get(source_value, "")).strip()
+            if not source_id:
+                source_id = str(uuid4())
+            normalized[source_value] = source_id
+        return normalized
+
+    def _source_key(self, project_dir: Path, source_root: Path) -> str:
+        config = self._read_project_config(project_dir)
+        sources = [str(item) for item in config.get("sources", [])]  # type: ignore[arg-type]
+        raw_source_ids = config.get("source_ids", {})
+        source_ids = dict(raw_source_ids) if isinstance(raw_source_ids, dict) else {}
+        normalized_source_ids = self._normalize_source_ids(sources, source_ids)
+        source_key = normalized_source_ids.get(str(source_root))
+        if not source_key:
+            source_key = str(uuid4())
+            normalized_source_ids[str(source_root)] = source_key
+            if str(source_root) not in sources:
+                sources.append(str(source_root))
+        if normalized_source_ids != source_ids or sources != list(config.get("sources", [])):
+            self._save_project_config(project_dir, sources=sources, source_ids=normalized_source_ids)
+        return source_key
 
     def _format_checkout_timestamp(self, raw_timestamp: str) -> str:
         if not raw_timestamp:
@@ -2327,7 +2580,7 @@ class DocumentControlApp(QMainWindow):
             return
 
         initials = self._normalize_initials()
-        project_checkout_dir = project_dir / "checked_out" / self._source_key(source_root)
+        project_checkout_dir = project_dir / "checked_out" / self._source_key(project_dir, source_root)
         errors: List[str] = []
         checked_out_at = datetime.now().astimezone().isoformat(timespec="seconds")
         # Refresh before checkout so the UI and history reflect any recent activity by other users.
