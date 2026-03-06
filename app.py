@@ -66,7 +66,9 @@ LEGACY_PROJECTS_FILE = APP_ROOT / "projects.json"
 LEGACY_RECORDS_FILE = APP_ROOT / ".checkout_records.json"
 LEGACY_FILTER_PRESETS_FILE = APP_ROOT / "filter_presets.json"
 PROJECT_CONFIG_FILE = "dctl.json"
-HISTORY_FILE_NAME = ".doc_control_history.csv"
+HISTORY_FILE_NAME = ".doc_control_history.json"
+LEGACY_HISTORY_FILE_NAME = ".doc_control_history.csv"
+HISTORY_SCHEMA_VERSION = 1
 DEFAULT_PROJECT_NAME = "Default"
 DEBUG_EVENTS_FILE = USER_DATA_ROOT / "debug_events.log"
 FILE_VERSIONS_FILE = "file_versions.json"
@@ -2181,7 +2183,10 @@ class DocumentControlApp(QMainWindow):
         entries: List[Path] = []
         try:
             for entry in directory.iterdir():
-                if entry.is_file() and entry.name != HISTORY_FILE_NAME:
+                if entry.is_file() and entry.name not in {
+                    HISTORY_FILE_NAME,
+                    LEGACY_HISTORY_FILE_NAME,
+                }:
                     entries.append(entry)
         except OSError:
             entries = []
@@ -3330,47 +3335,73 @@ class DocumentControlApp(QMainWindow):
     def _locked_name_for(self, source_file: Path, initials: str) -> Path:
         return source_file.with_name(f"{source_file.stem}-{initials}{source_file.suffix}")
 
+    def _history_json_file(self, source_dir: Path) -> Path:
+        return source_dir / HISTORY_FILE_NAME
+
+    def _history_legacy_csv_file(self, source_dir: Path) -> Path:
+        return source_dir / LEGACY_HISTORY_FILE_NAME
+
+    def _normalize_history_row(self, row: Dict[str, str]) -> Dict[str, str]:
+        revision_id = str(row.get("revision_id", "")).strip()
+        initials = str(row.get("user_initials", "")).strip()
+        full_name = str(row.get("user_full_name", "")).strip()
+        extras = row.get("__extras__", "")
+        if not revision_id and extras:
+            # Legacy CSV rows can become shifted when revision_id was written against old headers.
+            revision_id = initials
+            initials = full_name
+            full_name = extras
+        return {
+            "timestamp": str(row.get("timestamp", "")).strip(),
+            "action": str(row.get("action", "")).strip(),
+            "file_name": str(row.get("file_name", "")).strip(),
+            "revision_id": revision_id,
+            "user_initials": initials,
+            "user_full_name": full_name,
+        }
+
+    def _write_history_rows_json(self, source_dir: Path, rows: List[Dict[str, str]]) -> None:
+        history_file = self._history_json_file(source_dir)
+        self._ensure_parent_dir(history_file)
+        payload = {
+            "schema_version": HISTORY_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
+            "entries": rows,
+        }
+        history_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
     def _append_history(
         self, source_dir: Path, action: str, file_name: str, revision_id: str = ""
     ) -> None:
-        history_file = source_dir / HISTORY_FILE_NAME
-        if not history_file.exists():
-            with history_file.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(
-                    [
-                        "timestamp",
-                        "action",
-                        "file_name",
-                        "revision_id",
-                        "user_initials",
-                        "user_full_name",
-                    ]
-                )
-
-        with history_file.open("a", encoding="utf-8", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    datetime.now().astimezone().isoformat(timespec="seconds"),
-                    action,
-                    file_name,
-                    revision_id,
-                    self._normalize_initials(),
-                    self._current_full_name(),
-                ]
-            )
+        rows = self._read_history_rows(source_dir)
+        rows.append(
+            {
+                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "action": action,
+                "file_name": file_name,
+                "revision_id": revision_id,
+                "user_initials": self._normalize_initials(),
+                "user_full_name": self._current_full_name(),
+            }
+        )
+        self._write_history_rows_json(source_dir, rows)
         self._invalidate_directory_caches(source_dir)
 
     def _read_history_rows(self, source_dir: Path) -> List[Dict[str, str]]:
-        history_file = source_dir / HISTORY_FILE_NAME
-        if not history_file.exists():
-            self._history_rows_cache.pop(str(source_dir), None)
+        cache_key = str(source_dir)
+        history_json = self._history_json_file(source_dir)
+        history_csv = self._history_legacy_csv_file(source_dir)
+        active_file: Optional[Path] = None
+        if history_json.exists():
+            active_file = history_json
+        elif history_csv.exists():
+            active_file = history_csv
+        if active_file is None:
+            self._history_rows_cache.pop(cache_key, None)
             return []
 
-        cache_key = str(source_dir)
         try:
-            mtime_ns = history_file.stat().st_mtime_ns
+            mtime_ns = active_file.stat().st_mtime_ns
         except OSError:
             self._history_rows_cache.pop(cache_key, None)
             return []
@@ -3379,17 +3410,29 @@ class DocumentControlApp(QMainWindow):
         if cached and cached[0] == mtime_ns:
             return cached[1]
 
+        rows: List[Dict[str, str]] = []
         try:
-            with history_file.open("r", encoding="utf-8", newline="") as handle:
-                rows = [
-                    {key: str(value) for key, value in row.items()}
-                    for row in csv.DictReader(handle)
-                ]
-                self._history_rows_cache[cache_key] = (mtime_ns, rows)
-                return rows
-        except OSError:
+            if active_file == history_json:
+                raw = json.loads(history_json.read_text(encoding="utf-8"))
+                entries = raw.get("entries", raw) if isinstance(raw, dict) else raw
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        raw_row = {key: str(value) for key, value in entry.items()}
+                        rows.append(self._normalize_history_row(raw_row))
+            else:
+                with history_csv.open("r", encoding="utf-8", newline="") as handle:
+                    for row in csv.DictReader(handle):
+                        extras = row.get(None, [])
+                        raw_row = {key: str(value) for key, value in row.items() if key is not None}
+                        raw_row["__extras__"] = str(extras[0]) if extras else ""
+                        rows.append(self._normalize_history_row(raw_row))
+        except (OSError, ValueError, TypeError):
             self._history_rows_cache.pop(cache_key, None)
             return []
+        self._history_rows_cache[cache_key] = (mtime_ns, rows)
+        return rows
 
     def _latest_history_by_file(self, source_dir: Path) -> Dict[str, Dict[str, str]]:
         latest_by_file: Dict[str, Dict[str, str]] = {}
