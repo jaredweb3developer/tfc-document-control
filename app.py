@@ -336,6 +336,7 @@ class DocumentControlApp(QMainWindow):
                 [
                     ("New Project", self._show_new_project_dialog),
                     ("Load Selected", self._load_selected_tracked_project),
+                    ("Project Files Manager", self._open_project_files_manager_for_selected_project),
                     ("Track Existing", self._add_existing_project),
                     ("Edit Selected", self._edit_selected_project),
                     ("Open Location", self._open_selected_project_location),
@@ -403,33 +404,11 @@ class DocumentControlApp(QMainWindow):
         notes_controls.addStretch()
         notes_layout.addLayout(notes_controls)
 
-        milestones_panel = QWidget()
-        milestones_layout = QVBoxLayout(milestones_panel)
-        milestones_layout.addWidget(QLabel("Milestones"))
-        self.milestones_list = QListWidget()
-        self.milestones_list.itemDoubleClicked.connect(self._show_milestones_context_menu_for_item)
-        self.milestones_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.milestones_list.customContextMenuRequested.connect(self._show_milestones_context_menu)
-        milestones_layout.addWidget(self.milestones_list, stretch=1)
-        milestones_controls = QHBoxLayout()
-        milestones_controls.addWidget(
-            self._build_options_button(
-                [
-                    ("New Milestone", self._create_milestone),
-                    ("View Selected", self._view_selected_milestone),
-                    ("Remove Selected", self._remove_selected_milestone),
-                ]
-            )
-        )
-        milestones_controls.addStretch()
-        milestones_layout.addLayout(milestones_controls)
-
         content_splitter = QSplitter(Qt.Horizontal)
         content_splitter.addWidget(tracked_panel)
         content_splitter.addWidget(favorites_panel)
         content_splitter.addWidget(notes_panel)
-        content_splitter.addWidget(milestones_panel)
-        content_splitter.setSizes([260, 280, 280, 320])
+        content_splitter.setSizes([320, 360, 360])
 
         layout.addWidget(self.current_project_label)
         layout.addWidget(content_splitter, stretch=1)
@@ -1757,7 +1736,6 @@ class DocumentControlApp(QMainWindow):
             filter_mode = str(config.get("filter_mode", "No Filter"))
             favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
             notes = [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
-            milestones = [dict(item) for item in config.get("milestones", [])]  # type: ignore[arg-type]
             selected_source = str(config.get("selected_source", "")).strip()
             client = str(config.get("client", "")).strip()
             year_started = str(config.get("year_started", "")).strip()
@@ -1773,7 +1751,6 @@ class DocumentControlApp(QMainWindow):
             self._refresh_source_roots(sources, selected_source)
             self._refresh_favorites_list(favorites)
             self._refresh_notes_list(notes)
-            self._refresh_milestones_list(milestones)
             if not sources:
                 self._refresh_controlled_files()
             self._save_settings()
@@ -2041,6 +2018,219 @@ class DocumentControlApp(QMainWindow):
             self._error("Select a tracked project to open.")
             return
         self._open_paths([project_dir])
+
+    def _open_project_files_manager_for_selected_project(self) -> None:
+        project_dir = self._selected_tracked_project_dir()
+        if not project_dir or not project_dir.is_dir():
+            self._error("Select a tracked project first.")
+            return
+        self._show_project_files_manager(project_dir)
+
+    def _project_file_manager_rows(self, project_dir: Path, record_type: str) -> List[Dict[str, object]]:
+        rows: List[Dict[str, object]] = []
+        for idx, record in enumerate(self.records):
+            if record.project_dir != str(project_dir):
+                continue
+            if record_type != "all" and record.record_type != record_type:
+                continue
+            revision_count = len(self._revision_entries_for_record(record)) if record.record_type == "checked_out" else 0
+            rows.append(
+                {
+                    "record_idx": idx,
+                    "record_type": record.record_type,
+                    "file_name": Path(record.local_file).name or Path(record.source_file).name,
+                    "local_file": record.local_file,
+                    "source_file": record.source_file,
+                    "revisions": revision_count,
+                }
+            )
+        rows.sort(key=lambda item: str(item["file_name"]).lower())
+        return rows
+
+    def _apply_project_file_search(
+        self, rows: List[Dict[str, object]], search_term: str
+    ) -> List[Dict[str, object]]:
+        term = search_term.strip().lower()
+        if not term:
+            return rows
+        filtered: List[Dict[str, object]] = []
+        for row in rows:
+            haystack = " ".join(
+                [
+                    str(row.get("file_name", "")),
+                    str(row.get("local_file", "")),
+                    str(row.get("source_file", "")),
+                    str(row.get("record_type", "")),
+                ]
+            ).lower()
+            if term in haystack:
+                filtered.append(row)
+        return filtered
+
+    def _populate_project_files_manager_table(
+        self, table: QTableWidget, rows: List[Dict[str, object]], search_term: str
+    ) -> None:
+        visible_rows = self._apply_project_file_search(rows, search_term)
+        table.setRowCount(len(visible_rows))
+        for row_idx, row in enumerate(visible_rows):
+            values = [
+                str(row.get("file_name", "")),
+                "Checked Out" if row.get("record_type") == "checked_out" else "Reference Copy",
+                str(row.get("revisions", 0)),
+                self._short_path(str(row.get("local_file", ""))),
+                self._short_path(str(row.get("source_file", ""))),
+            ]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col_idx == 0:
+                    item.setData(Qt.UserRole, int(row.get("record_idx", -1)))
+                if col_idx == 3:
+                    item.setToolTip(str(row.get("local_file", "")))
+                elif col_idx == 4:
+                    item.setToolTip(str(row.get("source_file", "")))
+                else:
+                    item.setToolTip(value)
+                table.setItem(row_idx, col_idx, item)
+        table.resizeColumnsToContents()
+        table.setColumnWidth(0, max(table.columnWidth(0), 180))
+        table.setColumnWidth(1, max(table.columnWidth(1), 110))
+        table.setColumnWidth(2, max(table.columnWidth(2), 80))
+        table.setColumnWidth(3, max(table.columnWidth(3), 220))
+        table.setColumnWidth(4, max(table.columnWidth(4), 220))
+
+    def _selected_record_indexes_from_manager_table(self, table: QTableWidget) -> List[int]:
+        indexes: List[int] = []
+        for row in sorted({idx.row() for idx in table.selectedIndexes()}):
+            item = table.item(row, 0)
+            if not item:
+                continue
+            record_idx = item.data(Qt.UserRole)
+            if isinstance(record_idx, int):
+                indexes.append(record_idx)
+        return indexes
+
+    def _show_project_files_manager(self, project_dir: Path) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Project Files Manager - {project_dir.name}")
+        dialog.resize(1180, 680)
+        layout = QVBoxLayout(dialog)
+
+        search_edit = QLineEdit()
+        search_edit.setPlaceholderText("Search files")
+        layout.addWidget(search_edit)
+
+        tabs = QTabWidget()
+        all_table = QTableWidget(0, 5)
+        checked_table = QTableWidget(0, 5)
+        reference_table = QTableWidget(0, 5)
+        tables = [all_table, checked_table, reference_table]
+        for table in tables:
+            table.setHorizontalHeaderLabels(["File", "Type", "Revisions", "Local", "Source"])
+            table.setSelectionBehavior(QTableWidget.SelectRows)
+            table.setSelectionMode(QTableWidget.ExtendedSelection)
+            table.setEditTriggers(QTableWidget.NoEditTriggers)
+            table.setContextMenuPolicy(Qt.CustomContextMenu)
+        tabs.addTab(all_table, "All Files")
+        tabs.addTab(checked_table, "Checked Out Files")
+        tabs.addTab(reference_table, "Reference Copies")
+        layout.addWidget(tabs, stretch=1)
+
+        manager_rows: Dict[str, List[Dict[str, object]]] = {}
+
+        def refresh_tables() -> None:
+            manager_rows["all"] = self._project_file_manager_rows(project_dir, "all")
+            manager_rows["checked_out"] = self._project_file_manager_rows(project_dir, "checked_out")
+            manager_rows["reference_copy"] = self._project_file_manager_rows(project_dir, "reference_copy")
+            search_term = search_edit.text()
+            self._populate_project_files_manager_table(all_table, manager_rows["all"], search_term)
+            self._populate_project_files_manager_table(
+                checked_table, manager_rows["checked_out"], search_term
+            )
+            self._populate_project_files_manager_table(
+                reference_table, manager_rows["reference_copy"], search_term
+            )
+
+        def active_table() -> QTableWidget:
+            current = tabs.currentWidget()
+            return current if isinstance(current, QTableWidget) else all_table
+
+        def selected_indexes() -> List[int]:
+            return self._selected_record_indexes_from_manager_table(active_table())
+
+        def open_selected() -> None:
+            indexes = selected_indexes()
+            if not indexes:
+                self._error("Select at least one file.")
+                return
+            paths = [
+                Path(self.records[idx].local_file)
+                for idx in indexes
+                if 0 <= idx < len(self.records)
+            ]
+            self._open_paths(paths)
+
+        def create_snapshot() -> None:
+            indexes = [
+                idx
+                for idx in selected_indexes()
+                if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+            ]
+            if not indexes:
+                self._error("Select at least one checked-out file.")
+                return
+            accepted, note = self._prompt_revision_note("Create Revision Snapshot")
+            if not accepted:
+                return
+            with self._busy_action("Creating revision snapshot(s)..."):
+                for idx in indexes:
+                    self._create_revision_snapshot_for_record(self.records[idx], note=note)
+            refresh_tables()
+
+        def switch_revision() -> None:
+            indexes = [
+                idx
+                for idx in selected_indexes()
+                if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+            ]
+            if len(indexes) != 1:
+                self._error("Select exactly one checked-out file.")
+                return
+            record = self.records[indexes[0]]
+            revision = self._choose_revision_for_record(record)
+            if not revision:
+                return
+            with self._busy_action("Switching file revision..."):
+                switched = self._switch_record_to_revision(record, revision)
+            if switched:
+                refresh_tables()
+                self._info(f"Switched to revision {revision.get('id', '')}.")
+
+        for table in tables:
+            table.cellDoubleClicked.connect(lambda _r, _c: open_selected())
+
+        search_edit.textChanged.connect(lambda _text: refresh_tables())
+
+        button_bar = QHBoxLayout()
+        open_btn = QPushButton("Open Selected")
+        open_btn.clicked.connect(open_selected)
+        snapshot_btn = QPushButton("Create Snapshot")
+        snapshot_btn.clicked.connect(create_snapshot)
+        switch_btn = QPushButton("Switch Revision")
+        switch_btn.clicked.connect(switch_revision)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(refresh_tables)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        button_bar.addWidget(open_btn)
+        button_bar.addWidget(snapshot_btn)
+        button_bar.addWidget(switch_btn)
+        button_bar.addWidget(refresh_btn)
+        button_bar.addStretch()
+        button_bar.addWidget(close_btn)
+        layout.addLayout(button_bar)
+
+        refresh_tables()
+        dialog.exec()
 
     def _refresh_source_roots(self, sources: List[str], selected_source: str = "") -> None:
         self.source_roots_list.clear()
@@ -4663,6 +4853,7 @@ class DocumentControlApp(QMainWindow):
 
         menu = QMenu(self)
         load_action = menu.addAction("Load Selected")
+        files_action = menu.addAction("Project Files Manager")
         edit_action = menu.addAction("Edit Selected")
         open_loc_action = menu.addAction("Open Location")
         untrack_action = menu.addAction("Untrack Selected")
@@ -4673,6 +4864,8 @@ class DocumentControlApp(QMainWindow):
         chosen = menu.exec(self.tracked_projects_list.mapToGlobal(pos))
         if chosen == load_action:
             self._load_selected_tracked_project()
+        elif chosen == files_action:
+            self._open_project_files_manager_for_selected_project()
         elif chosen == edit_action:
             self._edit_selected_project()
         elif chosen == open_loc_action:
