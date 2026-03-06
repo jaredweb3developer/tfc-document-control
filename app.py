@@ -109,6 +109,7 @@ class DocumentControlApp(QMainWindow):
         self._dir_cache_ttl_seconds: Optional[float] = None
         self._remote_dir_cache_ttl_seconds = 60.0
         self._local_dir_cache_ttl_seconds = 5.0
+        self._busy_action_depth = 0
         self._startup_splash_dialog: Optional[QDialog] = None
         self._startup_splash_label: Optional[QLabel] = None
         self.project_search_debounce = QTimer(self)
@@ -795,6 +796,7 @@ class DocumentControlApp(QMainWindow):
     def _busy_action(self, message: str):
         self._debug_event("busy_action_start", message=message)
         started = perf_counter()
+        self._busy_action_depth += 1
         dialog = QDialog(self)
         dialog.setWindowTitle(APP_NAME)
         dialog.setWindowModality(Qt.ApplicationModal)
@@ -825,6 +827,7 @@ class DocumentControlApp(QMainWindow):
             dialog.close()
             dialog.deleteLater()
             QApplication.processEvents()
+            self._busy_action_depth = max(0, self._busy_action_depth - 1)
             duration_ms = round((perf_counter() - started) * 1000.0, 3)
             self._debug_event("busy_action_end", message=message, duration_ms=duration_ms)
 
@@ -1909,7 +1912,7 @@ class DocumentControlApp(QMainWindow):
 
         selected_path = Path(path)
         self._set_directory_tree_root(selected_path)
-        self._set_current_directory(selected_path)
+        self._set_current_directory_with_feedback(selected_path, "Loading directory...")
 
     def _view_current_directory_location(self) -> None:
         current_directory = self._validate_current_directory()
@@ -1926,7 +1929,7 @@ class DocumentControlApp(QMainWindow):
             self._save_project_config(project_dir, selected_source=str(current.data(Qt.UserRole)))
         root_path = Path(str(current.data(Qt.UserRole)))
         self._set_directory_tree_root(root_path)
-        self._set_current_directory(root_path)
+        self._set_current_directory_with_feedback(root_path, "Loading source directory...")
 
     def _set_current_directory(self, directory: Path) -> None:
         if self.current_directory is None or self.current_directory != directory:
@@ -1934,6 +1937,16 @@ class DocumentControlApp(QMainWindow):
         self.current_directory = directory
         self.current_folder_label.setText(f"Current folder: {directory}")
         self._refresh_source_files()
+
+    def _set_current_directory_with_feedback(self, directory: Path, message: str) -> None:
+        if self._busy_action_depth > 0:
+            self._set_current_directory(directory)
+            return
+        if self.current_directory is not None and self.current_directory == directory:
+            self._set_current_directory(directory)
+            return
+        with self._busy_action(message):
+            self._set_current_directory(directory)
 
     def _invalidate_directory_caches(self, directory: Path) -> None:
         key = str(directory)
@@ -1991,7 +2004,7 @@ class DocumentControlApp(QMainWindow):
         self._debug_event("directory_selected", directory=str(path_value))
         path = Path(path_value)
         if path.is_dir():
-            self._set_current_directory(path)
+            self._set_current_directory_with_feedback(path, "Loading directory...")
 
     def _refresh_source_files(self) -> None:
         current_dir = str(self.current_directory) if self.current_directory else ""
@@ -2063,17 +2076,18 @@ class DocumentControlApp(QMainWindow):
         source_path = Path(path)
         sources = self._source_roots_from_list()
         if str(source_path) not in sources:
-            sources.append(str(source_path))
-            self._save_project_config(
-                project_dir,
-                name=self._current_project_name(),
-                sources=sources,
-                extension_filters=self._current_extension_filters(),
-                filter_mode=self.file_filter_mode_combo.currentText(),
-                selected_source=str(source_path),
-            )
-            self._refresh_source_roots(sources, str(source_path))
-            self._save_settings()
+            with self._busy_action("Tracking directory..."):
+                sources.append(str(source_path))
+                self._save_project_config(
+                    project_dir,
+                    name=self._current_project_name(),
+                    sources=sources,
+                    extension_filters=self._current_extension_filters(),
+                    filter_mode=self.file_filter_mode_combo.currentText(),
+                    selected_source=str(source_path),
+                )
+                self._refresh_source_roots(sources, str(source_path))
+                self._save_settings()
 
     def _remove_source_directory(self) -> None:
         project_dir = self._validate_current_project()
@@ -2110,22 +2124,23 @@ class DocumentControlApp(QMainWindow):
             self._info("The current directory is already tracked.")
             return
 
-        sources.append(current_dir_str)
-        self._save_project_config(
-            project_dir,
-            name=self._current_project_name(),
-            sources=sources,
-            extension_filters=self._current_extension_filters(),
-            filter_mode=self.file_filter_mode_combo.currentText(),
-            selected_source=current_dir_str,
-        )
-        self._refresh_source_roots(sources, current_dir_str)
-        for row in range(self.source_roots_list.count()):
-            item = self.source_roots_list.item(row)
-            if item.data(Qt.UserRole) == current_dir_str:
-                self.source_roots_list.setCurrentItem(item)
-                break
-        self._save_settings()
+        with self._busy_action("Tracking directory..."):
+            sources.append(current_dir_str)
+            self._save_project_config(
+                project_dir,
+                name=self._current_project_name(),
+                sources=sources,
+                extension_filters=self._current_extension_filters(),
+                filter_mode=self.file_filter_mode_combo.currentText(),
+                selected_source=current_dir_str,
+            )
+            self._refresh_source_roots(sources, current_dir_str)
+            for row in range(self.source_roots_list.count()):
+                item = self.source_roots_list.item(row)
+                if item.data(Qt.UserRole) == current_dir_str:
+                    self.source_roots_list.setCurrentItem(item)
+                    break
+            self._save_settings()
 
     def _selected_source_file_paths(self) -> List[Path]:
         return [Path(item.data(Qt.UserRole)) for item in self.files_list.selectedItems()]

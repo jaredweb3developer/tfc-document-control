@@ -99,3 +99,74 @@ def test_load_project_clears_file_search(app_env):
     app.file_search_edit.setText("leftover query")
     app._load_project_from_dir(project_dir)
     assert app.file_search_edit.text() == ""
+
+
+def test_set_current_directory_with_feedback_uses_busy_when_idle(app_env, monkeypatch):
+    # Directory-switch helper should show busy feedback when not already busy.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+    directory = tmp / "busy-dir"
+    directory.mkdir(parents=True)
+
+    called = {"count": 0}
+
+    @contextmanager
+    def fake_busy(_message):
+        called["count"] += 1
+        yield
+
+    monkeypatch.setattr(app, "_busy_action", fake_busy)
+    app._set_current_directory_with_feedback(directory, "Loading directory...")
+
+    assert called["count"] == 1
+    assert app.current_directory == directory
+
+
+def test_set_current_directory_with_feedback_skips_nested_busy(app_env, monkeypatch):
+    # If already in a busy action, directory switch should not open another busy modal.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+    directory = tmp / "nested-busy-dir"
+    directory.mkdir(parents=True)
+
+    called = {"count": 0}
+
+    @contextmanager
+    def fake_busy(_message):
+        called["count"] += 1
+        yield
+
+    monkeypatch.setattr(app, "_busy_action", fake_busy)
+    app._busy_action_depth = 1
+    app._set_current_directory_with_feedback(directory, "Loading directory...")
+
+    assert called["count"] == 0
+    assert app.current_directory == directory
+
+
+def test_track_current_directory_uses_busy_feedback(app_env, monkeypatch):
+    # Tracking the currently selected directory should show busy feedback.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+    project_dir = tmp / "Projects" / "TrackBusy"
+    project_dir.mkdir(parents=True)
+    source_dir = tmp / "track-me"
+    source_dir.mkdir(parents=True)
+
+    app.current_project_dir = str(project_dir)
+    app.current_directory = source_dir
+    app.source_roots_list.clear()
+    app.current_project_label.setText("Current Project: TrackBusy")
+
+    called = {"count": 0}
+
+    @contextmanager
+    def fake_busy(_message):
+        called["count"] += 1
+        yield
+
+    monkeypatch.setattr(app, "_busy_action", fake_busy)
+    app._track_current_directory()
+
+    assert called["count"] == 1
+from contextlib import contextmanager
