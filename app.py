@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from PySide6.QtCore import QDir, Qt, QTimer, QUrl
@@ -103,6 +103,9 @@ class DocumentControlApp(QMainWindow):
         self.show_configuration_tab_on_startup = True
         self.filter_presets: List[Dict[str, object]] = []
         self.main_section_toggles: List[QToolButton] = []
+        self._dir_files_cache: Dict[str, Tuple[float, List[Path]]] = {}
+        self._history_rows_cache: Dict[str, Tuple[int, List[Dict[str, str]]]] = {}
+        self._dir_cache_ttl_seconds = 2.0
         self.project_search_debounce = QTimer(self)
         self.project_search_debounce.setSingleShot(True)
         self.project_search_debounce.setInterval(300)
@@ -1145,16 +1148,23 @@ class DocumentControlApp(QMainWindow):
         year_started: str = "",
     ) -> None:
         project_dir_str = str(project_dir)
-        updated = False
+        changed = False
+        found = False
         for entry in self.tracked_projects:
             if entry["project_dir"] == project_dir_str:
-                entry["name"] = name
-                entry["client"] = client
-                entry["year_started"] = year_started
-                updated = True
+                found = True
+                if (
+                    entry.get("name") != name
+                    or entry.get("client", "") != client
+                    or entry.get("year_started", "") != year_started
+                ):
+                    entry["name"] = name
+                    entry["client"] = client
+                    entry["year_started"] = year_started
+                    changed = True
                 break
 
-        if not updated:
+        if not found:
             self.tracked_projects.append(
                 {
                     "name": name,
@@ -1163,9 +1173,11 @@ class DocumentControlApp(QMainWindow):
                     "year_started": year_started,
                 }
             )
+            changed = True
 
-        self.tracked_projects.sort(key=lambda item: item["name"].lower())
-        self._save_tracked_projects()
+        if changed:
+            self.tracked_projects.sort(key=lambda item: item["name"].lower())
+            self._save_tracked_projects()
         self._refresh_tracked_projects_list()
 
     def _refresh_tracked_projects_list(self) -> None:
@@ -1838,6 +1850,29 @@ class DocumentControlApp(QMainWindow):
         self.current_folder_label.setText(f"Current folder: {directory}")
         self._refresh_source_files()
 
+    def _invalidate_directory_caches(self, directory: Path) -> None:
+        key = str(directory)
+        self._dir_files_cache.pop(key, None)
+        self._history_rows_cache.pop(key, None)
+
+    def _cached_directory_files(self, directory: Path) -> List[Path]:
+        key = str(directory)
+        now = perf_counter()
+        cached = self._dir_files_cache.get(key)
+        if cached and (now - cached[0]) <= self._dir_cache_ttl_seconds:
+            return cached[1]
+
+        entries: List[Path] = []
+        try:
+            for entry in directory.iterdir():
+                if entry.is_file() and entry.name != HISTORY_FILE_NAME:
+                    entries.append(entry)
+        except OSError:
+            entries = []
+        entries.sort(key=lambda item: item.name.lower())
+        self._dir_files_cache[key] = (now, entries)
+        return entries
+
     def _on_tree_item_expanded(self, item: QTreeWidgetItem) -> None:
         self._debug_event("directory_tree_expanded", directory=str(item.data(0, Qt.UserRole) or ""))
         self._populate_directory_children(item)
@@ -1862,22 +1897,21 @@ class DocumentControlApp(QMainWindow):
             search_term = self.file_search_edit.text().strip().lower()
             history_lookup = self._history_lookup_for_directory(self.current_directory)
             shown_count = 0
-            for item in sorted(self.current_directory.iterdir()):
-                if item.is_file() and item.name != HISTORY_FILE_NAME:
-                    if not self._matches_extension_filter(item):
-                        continue
-                    if search_term and search_term not in item.name.lower():
-                        continue
-                    list_item = QListWidgetItem(item.name)
-                    list_item.setData(Qt.UserRole, str(item))
-                    history_row = history_lookup.get(item.name)
-                    original_name = (
-                        history_row.get("original_file_name", item.name) if history_row else item.name
-                    )
-                    list_item.setData(Qt.UserRole + 1, original_name)
-                    self._apply_file_history_style(list_item, item, history_row)
-                    self.files_list.addItem(list_item)
-                    shown_count += 1
+            for item in self._cached_directory_files(self.current_directory):
+                if not self._matches_extension_filter(item):
+                    continue
+                if search_term and search_term not in item.name.lower():
+                    continue
+                list_item = QListWidgetItem(item.name)
+                list_item.setData(Qt.UserRole, str(item))
+                history_row = history_lookup.get(item.name)
+                original_name = (
+                    history_row.get("original_file_name", item.name) if history_row else item.name
+                )
+                list_item.setData(Qt.UserRole + 1, original_name)
+                self._apply_file_history_style(list_item, item, history_row)
+                self.files_list.addItem(list_item)
+                shown_count += 1
 
             self._refresh_controlled_files()
             self._debug_event(
@@ -2597,19 +2631,35 @@ class DocumentControlApp(QMainWindow):
                     self._current_full_name(),
                 ]
             )
+        self._invalidate_directory_caches(source_dir)
 
     def _read_history_rows(self, source_dir: Path) -> List[Dict[str, str]]:
         history_file = source_dir / HISTORY_FILE_NAME
         if not history_file.exists():
+            self._history_rows_cache.pop(str(source_dir), None)
             return []
+
+        cache_key = str(source_dir)
+        try:
+            mtime_ns = history_file.stat().st_mtime_ns
+        except OSError:
+            self._history_rows_cache.pop(cache_key, None)
+            return []
+
+        cached = self._history_rows_cache.get(cache_key)
+        if cached and cached[0] == mtime_ns:
+            return cached[1]
 
         try:
             with history_file.open("r", encoding="utf-8", newline="") as handle:
-                return [
+                rows = [
                     {key: str(value) for key, value in row.items()}
                     for row in csv.DictReader(handle)
                 ]
+                self._history_rows_cache[cache_key] = (mtime_ns, rows)
+                return rows
         except OSError:
+            self._history_rows_cache.pop(cache_key, None)
             return []
 
     def _latest_history_by_file(self, source_dir: Path) -> Dict[str, Dict[str, str]]:
@@ -2790,12 +2840,12 @@ class DocumentControlApp(QMainWindow):
                             )
                         )
                         self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
+                        self._invalidate_directory_caches(source_file.parent)
                     except OSError as exc:
                         errors.append(f"{source_file.name}: {exc}")
 
                 self._save_records()
                 self._refresh_source_files()
-                self._refresh_controlled_files()
                 self._render_records_tables()
 
         if errors:
@@ -2900,6 +2950,7 @@ class DocumentControlApp(QMainWindow):
                     self._history_action_for_checkin(action, workflow),
                     source_file.name,
                 )
+                self._invalidate_directory_caches(source_file.parent)
                 if action.record_idx >= 0:
                     completed_indexes.append(action.record_idx)
             except OSError as exc:
@@ -3209,7 +3260,6 @@ class DocumentControlApp(QMainWindow):
             with self._busy_action("Checking in file(s)..."):
                 errors = self._perform_pending_checkin_actions(actions, "standard")
                 self._refresh_source_files()
-                self._refresh_controlled_files()
                 self._render_records_tables()
 
         if errors:
@@ -3248,11 +3298,11 @@ class DocumentControlApp(QMainWindow):
                 try:
                     shutil.copy2(local_file, target_file)
                     self._append_history(current_directory, "ADD_FILE", target_file.name)
+                    self._invalidate_directory_caches(current_directory)
                 except OSError as exc:
                     errors.append(f"{local_file.name}: {exc}")
 
             self._refresh_source_files()
-            self._refresh_controlled_files()
 
         if errors:
             self._error("Some files failed to add:\n" + "\n".join(errors))
@@ -3357,7 +3407,6 @@ class DocumentControlApp(QMainWindow):
             with self._busy_action("Force checking in file(s)..."):
                 errors = self._perform_pending_checkin_actions(actions, "force")
                 self._refresh_source_files()
-                self._refresh_controlled_files()
                 self._render_records_tables()
 
         if errors:
