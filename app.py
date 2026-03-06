@@ -397,11 +397,33 @@ class DocumentControlApp(QMainWindow):
         notes_controls.addStretch()
         notes_layout.addLayout(notes_controls)
 
+        milestones_panel = QWidget()
+        milestones_layout = QVBoxLayout(milestones_panel)
+        milestones_layout.addWidget(QLabel("Milestones"))
+        self.milestones_list = QListWidget()
+        self.milestones_list.itemDoubleClicked.connect(self._show_milestones_context_menu_for_item)
+        self.milestones_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.milestones_list.customContextMenuRequested.connect(self._show_milestones_context_menu)
+        milestones_layout.addWidget(self.milestones_list, stretch=1)
+        milestones_controls = QHBoxLayout()
+        milestones_controls.addWidget(
+            self._build_options_button(
+                [
+                    ("New Milestone", self._create_milestone),
+                    ("View Selected", self._view_selected_milestone),
+                    ("Remove Selected", self._remove_selected_milestone),
+                ]
+            )
+        )
+        milestones_controls.addStretch()
+        milestones_layout.addLayout(milestones_controls)
+
         content_splitter = QSplitter(Qt.Horizontal)
         content_splitter.addWidget(tracked_panel)
         content_splitter.addWidget(favorites_panel)
         content_splitter.addWidget(notes_panel)
-        content_splitter.setSizes([280, 320, 320])
+        content_splitter.addWidget(milestones_panel)
+        content_splitter.setSizes([260, 280, 280, 320])
 
         layout.addWidget(self.current_project_label)
         layout.addWidget(content_splitter, stretch=1)
@@ -1091,6 +1113,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        milestones: Optional[List[Dict[str, object]]] = None,
         selected_source: str = "",
         source_ids: Optional[Dict[str, str]] = None,
         client: str = "",
@@ -1110,6 +1133,7 @@ class DocumentControlApp(QMainWindow):
             "filter_mode": filter_mode,
             "favorites": favorites or [],
             "notes": notes or [],
+            "milestones": milestones or [],
         }
 
     def _read_project_config(self, project_dir: Path) -> Dict[str, object]:
@@ -1128,6 +1152,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode = str(data.get("filter_mode", "No Filter")).strip() or "No Filter"
         raw_favorites = data.get("favorites", [])
         raw_notes = data.get("notes", [])
+        raw_milestones = data.get("milestones", [])
         selected_source = str(data.get("selected_source", "")).strip()
         client = str(data.get("client", "")).strip()
         year_started = str(data.get("year_started", "")).strip()
@@ -1162,6 +1187,12 @@ class DocumentControlApp(QMainWindow):
                         "updated_at": str(entry.get("updated_at", "")).strip(),
                     }
                 )
+        milestones: List[Dict[str, object]] = []
+        if isinstance(raw_milestones, list):
+            for entry in raw_milestones:
+                normalized = self._normalize_milestone_entry(entry)
+                if normalized:
+                    milestones.append(normalized)
         if filter_mode not in {"No Filter", "Include Only", "Exclude"}:
             filter_mode = "No Filter"
         return self._project_payload(
@@ -1171,6 +1202,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites,
             notes,
+            milestones,
             selected_source,
             source_ids,
             client,
@@ -1186,6 +1218,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        milestones: Optional[List[Dict[str, object]]] = None,
         selected_source: str = "",
         source_ids: Optional[Dict[str, str]] = None,
         client: str = "",
@@ -1200,6 +1233,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites,
             notes,
+            milestones,
             selected_source,
             source_ids,
             client,
@@ -1217,6 +1251,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: Optional[str] = None,
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        milestones: Optional[List[Dict[str, object]]] = None,
         selected_source: Optional[str] = None,
         source_ids: Optional[Dict[str, str]] = None,
         client: Optional[str] = None,
@@ -1236,6 +1271,9 @@ class DocumentControlApp(QMainWindow):
             filter_mode or str(current.get("filter_mode", "No Filter")),
             favorites if favorites is not None else list(current.get("favorites", [])),  # type: ignore[arg-type]
             notes if notes is not None else list(current.get("notes", [])),  # type: ignore[arg-type]
+            milestones
+            if milestones is not None
+            else list(current.get("milestones", [])),  # type: ignore[arg-type]
             selected_source
             if selected_source is not None
             else str(current.get("selected_source", "")),
@@ -1421,6 +1459,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        milestones: Optional[List[Dict[str, object]]] = None,
         client: str = "",
         year_started: str = "",
     ) -> None:
@@ -1431,17 +1470,18 @@ class DocumentControlApp(QMainWindow):
         with self._debug_timed("create_or_update_project", project_name=name):
             with self._busy_action("Creating project..."):
                 self._write_project_config(
-                    project_dir,
-                    name,
-                    source_list,
-                    extension_filters or [],
-                    filter_mode,
-                    favorites or [],
-                    notes or [],
-                    source_list[0] if source_list else "",
-                    None,
-                    client,
-                    year_started,
+                    project_dir=project_dir,
+                    name=name,
+                    sources=source_list,
+                    extension_filters=extension_filters or [],
+                    filter_mode=filter_mode,
+                    favorites=favorites or [],
+                    notes=notes or [],
+                    milestones=milestones or [],
+                    selected_source=source_list[0] if source_list else "",
+                    source_ids=None,
+                    client=client,
+                    year_started=year_started,
                 )
                 self._register_tracked_project(name, project_dir, client, year_started)
                 self._load_project_from_dir(project_dir)
@@ -1709,6 +1749,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode = str(config.get("filter_mode", "No Filter"))
             favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
             notes = [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
+            milestones = [dict(item) for item in config.get("milestones", [])]  # type: ignore[arg-type]
             selected_source = str(config.get("selected_source", "")).strip()
             client = str(config.get("client", "")).strip()
             year_started = str(config.get("year_started", "")).strip()
@@ -1724,6 +1765,7 @@ class DocumentControlApp(QMainWindow):
             self._refresh_source_roots(sources, selected_source)
             self._refresh_favorites_list(favorites)
             self._refresh_notes_list(notes)
+            self._refresh_milestones_list(milestones)
             if not sources:
                 self._refresh_controlled_files()
             self._save_settings()
@@ -1868,6 +1910,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode=str(config.get("filter_mode", "No Filter")),
             favorites=[str(item) for item in config.get("favorites", [])],  # type: ignore[arg-type]
             notes=[dict(item) for item in config.get("notes", [])],  # type: ignore[arg-type]
+            milestones=[dict(item) for item in config.get("milestones", [])],  # type: ignore[arg-type]
             selected_source=str(config.get("selected_source", "")),
             source_ids=(
                 dict(config.get("source_ids", {}))
@@ -2691,6 +2734,206 @@ class DocumentControlApp(QMainWindow):
 
     def _move_selected_note_bottom(self) -> None:
         self._move_selected_note_to(self.notes_list.count() - 1)
+
+    def _normalize_milestone_entry(self, entry: object) -> Optional[Dict[str, object]]:
+        if not isinstance(entry, dict):
+            return None
+        name = str(entry.get("name", "")).strip()
+        if not name:
+            return None
+        snapshot = entry.get("snapshot", {})
+        normalized_snapshot: Dict[str, object] = {}
+        if isinstance(snapshot, dict):
+            records = snapshot.get("records", [])
+            sources = snapshot.get("sources", [])
+            extensions = snapshot.get("extension_filters", [])
+            normalized_snapshot = {
+                "record_count": int(snapshot.get("record_count", len(records) if isinstance(records, list) else 0)),
+                "records": [dict(item) for item in records if isinstance(item, dict)]
+                if isinstance(records, list)
+                else [],
+                "sources": [str(item) for item in sources if str(item).strip()]
+                if isinstance(sources, list)
+                else [],
+                "extension_filters": [str(item) for item in extensions if str(item).strip()]
+                if isinstance(extensions, list)
+                else [],
+                "filter_mode": str(snapshot.get("filter_mode", "No Filter")),
+            }
+        return {
+            "id": str(entry.get("id", "")).strip() or str(uuid4()),
+            "name": name,
+            "description": str(entry.get("description", "")).strip(),
+            "created_at": str(entry.get("created_at", "")).strip(),
+            "updated_at": str(entry.get("updated_at", "")).strip(),
+            "snapshot": normalized_snapshot,
+        }
+
+    def _current_project_milestones(self) -> List[Dict[str, object]]:
+        config = self._current_project_config()
+        if not config:
+            return []
+        raw = config.get("milestones", [])
+        if not isinstance(raw, list):
+            return []
+        milestones: List[Dict[str, object]] = []
+        for entry in raw:
+            normalized = self._normalize_milestone_entry(entry)
+            if normalized:
+                milestones.append(normalized)
+        return milestones
+
+    def _milestone_tooltip(self, milestone: Dict[str, object]) -> str:
+        snapshot = milestone.get("snapshot", {})
+        record_count = 0
+        if isinstance(snapshot, dict):
+            record_count = int(snapshot.get("record_count", 0) or 0)
+        created_at = str(milestone.get("created_at", "")).strip() or "-"
+        description = str(milestone.get("description", "")).strip() or "(No description)"
+        return f"Created: {created_at}\nChecked-out records tracked: {record_count}\n{description}"
+
+    def _refresh_milestones_list(self, milestones: List[Dict[str, object]]) -> None:
+        self.milestones_list.clear()
+        for milestone in milestones:
+            item = QListWidgetItem(str(milestone.get("name", "(Unnamed Milestone)")))
+            item.setData(Qt.UserRole, str(milestone.get("id", "")))
+            item.setToolTip(self._milestone_tooltip(milestone))
+            self.milestones_list.addItem(item)
+
+    def _set_project_milestones(self, milestones: List[Dict[str, object]]) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        normalized: List[Dict[str, object]] = []
+        for milestone in milestones:
+            clean = self._normalize_milestone_entry(milestone)
+            if clean:
+                normalized.append(clean)
+        self._save_project_config(project_dir, milestones=normalized)
+        self._refresh_milestones_list(normalized)
+
+    def _selected_milestone_id(self) -> str:
+        item = self.milestones_list.currentItem()
+        return str(item.data(Qt.UserRole)).strip() if item else ""
+
+    def _collect_milestone_snapshot(self) -> Dict[str, object]:
+        project_dir = self._current_project_path()
+        project_dir_str = str(project_dir) if project_dir else ""
+        project_records = [
+            {
+                "source_file": record.source_file,
+                "locked_source_file": record.locked_source_file,
+                "local_file": record.local_file,
+                "initials": record.initials,
+                "checked_out_at": record.checked_out_at,
+            }
+            for record in self.records
+            if record.record_type == "checked_out" and record.project_dir == project_dir_str
+        ]
+        return {
+            "record_count": len(project_records),
+            "records": project_records,
+            "sources": self._source_roots_from_list(),
+            "extension_filters": self._current_extension_filters(),
+            "filter_mode": self.file_filter_mode_combo.currentText(),
+        }
+
+    def _show_milestone_dialog(self) -> Optional[Dict[str, object]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("New Milestone")
+        dialog.resize(620, 380)
+        layout = QVBoxLayout(dialog)
+
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("Milestone name")
+        description_edit = QPlainTextEdit()
+        description_edit.setPlaceholderText("Milestone notes (optional)")
+        include_snapshot_box = QCheckBox("Capture current checked-out file snapshot")
+        include_snapshot_box.setChecked(True)
+
+        layout.addWidget(QLabel("Name:"))
+        layout.addWidget(name_edit)
+        layout.addWidget(QLabel("Description:"))
+        layout.addWidget(description_edit, stretch=1)
+        layout.addWidget(include_snapshot_box)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        name = name_edit.text().strip()
+        if not name:
+            self._error("Milestone name is required.")
+            return None
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        return {
+            "id": str(uuid4()),
+            "name": name,
+            "description": description_edit.toPlainText().strip(),
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "snapshot": self._collect_milestone_snapshot() if include_snapshot_box.isChecked() else {},
+        }
+
+    def _create_milestone(self) -> None:
+        if not self._validate_current_project():
+            return
+        milestone = self._show_milestone_dialog()
+        if not milestone:
+            return
+        milestones = self._current_project_milestones()
+        milestones.append(milestone)
+        self._set_project_milestones(milestones)
+
+    def _view_selected_milestone(self) -> None:
+        milestone_id = self._selected_milestone_id()
+        if not milestone_id:
+            self._error("Select a milestone to view.")
+            return
+        milestone = None
+        for entry in self._current_project_milestones():
+            if str(entry.get("id", "")) == milestone_id:
+                milestone = entry
+                break
+        if not milestone:
+            self._error("Selected milestone could not be found.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Milestone - {milestone.get('name', '')}")
+        dialog.resize(760, 520)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"Name: {milestone.get('name', '')}"))
+        layout.addWidget(QLabel(f"Created: {milestone.get('created_at', '') or '-'}"))
+        layout.addWidget(QLabel(f"Last Updated: {milestone.get('updated_at', '') or '-'}"))
+        description = str(milestone.get("description", "")).strip() or "(No description)"
+        layout.addWidget(QLabel(f"Description: {description}"))
+        snapshot_text = QPlainTextEdit()
+        snapshot_text.setReadOnly(True)
+        snapshot_text.setPlainText(
+            json.dumps(milestone.get("snapshot", {}), indent=2, ensure_ascii=False)
+        )
+        layout.addWidget(snapshot_text, stretch=1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def _remove_selected_milestone(self) -> None:
+        milestone_id = self._selected_milestone_id()
+        if not milestone_id:
+            self._error("Select a milestone to remove.")
+            return
+        milestones = [
+            milestone
+            for milestone in self._current_project_milestones()
+            if str(milestone.get("id", "")) != milestone_id
+        ]
+        self._set_project_milestones(milestones)
 
     def _normalize_filter_preset(self, preset: Dict[str, object]) -> Optional[Dict[str, object]]:
         name = str(preset.get("name", "")).strip()
@@ -4105,6 +4348,31 @@ class DocumentControlApp(QMainWindow):
             self._move_selected_note_top()
         elif chosen == move_bottom_action:
             self._move_selected_note_bottom()
+
+    def _show_milestones_context_menu_for_item(self, item: QListWidgetItem) -> None:
+        self.milestones_list.setCurrentItem(item)
+        item.setSelected(True)
+        rect = self.milestones_list.visualItemRect(item)
+        self._show_milestones_context_menu(rect.center())
+
+    def _show_milestones_context_menu(self, pos: QPoint) -> None:
+        item = self.milestones_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.milestones_list.clearSelection()
+            item.setSelected(True)
+            self.milestones_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        new_action = menu.addAction("New Milestone")
+        view_action = menu.addAction("View Selected")
+        remove_action = menu.addAction("Remove Selected")
+        chosen = menu.exec(self.milestones_list.mapToGlobal(pos))
+        if chosen == new_action:
+            self._create_milestone()
+        elif chosen == view_action:
+            self._view_selected_milestone()
+        elif chosen == remove_action:
+            self._remove_selected_milestone()
 
     def _show_source_roots_context_menu(self, pos: QPoint) -> None:
         item = self.source_roots_list.itemAt(pos)
