@@ -106,6 +106,8 @@ class DocumentControlApp(QMainWindow):
         self._dir_files_cache: Dict[str, Tuple[float, List[Path]]] = {}
         self._history_rows_cache: Dict[str, Tuple[int, List[Dict[str, str]]]] = {}
         self._dir_cache_ttl_seconds = 2.0
+        self._startup_splash_dialog: Optional[QDialog] = None
+        self._startup_splash_label: Optional[QLabel] = None
         self.project_search_debounce = QTimer(self)
         self.project_search_debounce.setSingleShot(True)
         self.project_search_debounce.setInterval(300)
@@ -120,11 +122,21 @@ class DocumentControlApp(QMainWindow):
         self.file_search_debounce.timeout.connect(self._refresh_source_files)
 
         self._build_ui()
-        self._load_settings()
-        self._load_filter_presets()
-        self._load_tracked_projects()
-        self._load_records()
-        self._load_last_or_default_project()
+        self._show_startup_splash("Starting TFC Document Control...")
+        try:
+            self._update_startup_splash("Loading settings...")
+            self._load_settings()
+            self._update_startup_splash("Loading filter presets...")
+            self._load_filter_presets()
+            self._update_startup_splash("Loading tracked projects...")
+            self._load_tracked_projects()
+            self._update_startup_splash("Loading checkout records...")
+            self._load_records()
+            self._update_startup_splash("Loading current project...")
+            self._load_last_or_default_project()
+            self._update_startup_splash("Finalizing startup...")
+        finally:
+            self._close_startup_splash()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -813,6 +825,52 @@ class DocumentControlApp(QMainWindow):
             duration_ms = round((perf_counter() - started) * 1000.0, 3)
             self._debug_event("busy_action_end", message=message, duration_ms=duration_ms)
 
+    def _show_startup_splash(self, message: str) -> None:
+        dialog = QDialog(None, Qt.SplashScreen | Qt.FramelessWindowHint)
+        dialog.setModal(False)
+        dialog.setMinimumWidth(520)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        title = QLabel(APP_NAME)
+        title.setStyleSheet("font-size: 16px; font-weight: 600;")
+        label = QLabel(message)
+        label.setWordWrap(True)
+        progress = QProgressBar()
+        progress.setRange(0, 0)
+        progress.setTextVisible(False)
+        layout.addWidget(title)
+        layout.addWidget(label)
+        layout.addWidget(progress)
+        dialog.adjustSize()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        dialog.repaint()
+        QApplication.processEvents()
+        self._startup_splash_dialog = dialog
+        self._startup_splash_label = label
+        self._debug_event("startup_splash_show", message=message)
+
+    def _update_startup_splash(self, message: str) -> None:
+        if self._startup_splash_label is None:
+            return
+        self._startup_splash_label.setText(message)
+        if self._startup_splash_dialog is not None:
+            self._startup_splash_dialog.repaint()
+        self._startup_splash_label.repaint()
+        QApplication.processEvents()
+        self._debug_event("startup_splash_update", message=message)
+
+    def _close_startup_splash(self) -> None:
+        if self._startup_splash_dialog is not None:
+            self._startup_splash_dialog.close()
+            self._startup_splash_dialog.deleteLater()
+        self._startup_splash_dialog = None
+        self._startup_splash_label = None
+        QApplication.processEvents()
+        self._debug_event("startup_splash_closed")
+
     def _validate_identity(self) -> bool:
         if not self._normalize_initials():
             self._error("Enter user initials.")
@@ -1243,22 +1301,24 @@ class DocumentControlApp(QMainWindow):
         _ = base_dir
 
         source_list = sources or []
-        self._write_project_config(
-            project_dir,
-            name,
-            source_list,
-            extension_filters or [],
-            filter_mode,
-            favorites or [],
-            notes or [],
-            source_list[0] if source_list else "",
-            None,
-            client,
-            year_started,
-        )
-        self._register_tracked_project(name, project_dir, client, year_started)
-        self._load_project_from_dir(project_dir)
-        self._save_settings()
+        with self._debug_timed("create_or_update_project", project_name=name):
+            with self._busy_action("Creating project..."):
+                self._write_project_config(
+                    project_dir,
+                    name,
+                    source_list,
+                    extension_filters or [],
+                    filter_mode,
+                    favorites or [],
+                    notes or [],
+                    source_list[0] if source_list else "",
+                    None,
+                    client,
+                    year_started,
+                )
+                self._register_tracked_project(name, project_dir, client, year_started)
+                self._load_project_from_dir(project_dir)
+                self._save_settings()
         self._info(f"Project '{name}' saved.")
 
     def _resolve_new_project_name(self, entered_name: str, source_dir: str) -> str:
@@ -2786,9 +2846,7 @@ class DocumentControlApp(QMainWindow):
         project_checkout_dir = project_dir / "checked_out" / self._source_key(project_dir, source_root)
         errors: List[str] = []
         checked_out_at = datetime.now().astimezone().isoformat(timespec="seconds")
-        # Refresh before checkout so the UI and history reflect any recent activity by other users.
-        self._refresh_source_files()
-        history_lookup = self._history_lookup_for_directory(current_directory)
+        history_lookup: Dict[str, Dict[str, str]] = {}
 
         with self._debug_timed(
             "checkout_selected",
@@ -2797,6 +2855,9 @@ class DocumentControlApp(QMainWindow):
             source_root=str(source_root),
         ):
             with self._busy_action("Checking out file(s)..."):
+                # Refresh before checkout so UI/history reflect recent activity by other users.
+                self._refresh_source_files()
+                history_lookup = self._history_lookup_for_directory(current_directory)
                 for source_file in selected_files:
                     latest_row = history_lookup.get(source_file.name)
                     if latest_row and latest_row.get("action") == "CHECK_OUT":
