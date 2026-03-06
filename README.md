@@ -33,6 +33,14 @@ pip install -r requirements.txt
 python app.py
 ```
 
+## Tests
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
+
 ## Data Layout
 - `settings.json`: user identity, base projects directory, last loaded project
 - `projects.json`: tracked project list
