@@ -12,8 +12,8 @@ from time import perf_counter
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from PySide6.QtCore import QDir, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QIntValidator
+from PySide6.QtCore import QDir, QPoint, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -319,7 +320,11 @@ class DocumentControlApp(QMainWindow):
         open_location_btn.clicked.connect(self._open_selected_project_location)
 
         self.tracked_projects_list = QListWidget()
-        self.tracked_projects_list.itemDoubleClicked.connect(self._load_tracked_project_item)
+        self.tracked_projects_list.itemDoubleClicked.connect(self._show_tracked_projects_context_menu_for_item)
+        self.tracked_projects_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tracked_projects_list.customContextMenuRequested.connect(
+            self._show_tracked_projects_context_menu
+        )
 
         self.current_project_label = QLabel("Current Project: -")
         self.current_project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -346,7 +351,9 @@ class DocumentControlApp(QMainWindow):
         favorites_layout = QVBoxLayout(favorites_panel)
         favorites_layout.addWidget(QLabel("Favorite Files"))
         self.favorites_list = QListWidget()
-        self.favorites_list.itemDoubleClicked.connect(self._open_favorite_item)
+        self.favorites_list.itemDoubleClicked.connect(self._show_favorites_context_menu_for_item)
+        self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.favorites_list.customContextMenuRequested.connect(self._show_favorites_context_menu)
         favorites_layout.addWidget(self.favorites_list, stretch=1)
         favorites_controls = QGridLayout()
         add_favorite_btn = QPushButton("Add Favorite")
@@ -364,7 +371,9 @@ class DocumentControlApp(QMainWindow):
         notes_layout = QVBoxLayout(notes_panel)
         notes_layout.addWidget(QLabel("Notes"))
         self.notes_list = QListWidget()
-        self.notes_list.itemDoubleClicked.connect(self._edit_note_item)
+        self.notes_list.itemDoubleClicked.connect(self._show_notes_context_menu_for_item)
+        self.notes_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.notes_list.customContextMenuRequested.connect(self._show_notes_context_menu)
         notes_layout.addWidget(self.notes_list, stretch=1)
         notes_controls = QGridLayout()
         new_note_btn = QPushButton("New Note")
@@ -404,6 +413,8 @@ class DocumentControlApp(QMainWindow):
         tracked_layout.addWidget(QLabel("Tracked Source Directories"))
         self.source_roots_list = QListWidget()
         self.source_roots_list.currentItemChanged.connect(self._on_source_root_changed)
+        self.source_roots_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.source_roots_list.customContextMenuRequested.connect(self._show_source_roots_context_menu)
         self.source_roots_list.setMinimumWidth(220)
         tracked_layout.addWidget(self.source_roots_list)
 
@@ -507,7 +518,9 @@ class DocumentControlApp(QMainWindow):
 
         self.files_list = QListWidget()
         self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.files_list.itemDoubleClicked.connect(self._open_source_item)
+        self.files_list.itemDoubleClicked.connect(self._show_source_file_context_menu_for_item)
+        self.files_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.files_list.customContextMenuRequested.connect(self._show_source_file_context_menu)
         files_layout.addWidget(self.files_list, stretch=1)
 
         file_button_bar = QHBoxLayout()
@@ -540,6 +553,10 @@ class DocumentControlApp(QMainWindow):
         controlled_layout.addWidget(QLabel("Directory's Controlled Files"))
         self.controlled_files_list = QListWidget()
         self.controlled_files_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.controlled_files_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.controlled_files_list.customContextMenuRequested.connect(
+            self._show_controlled_files_context_menu
+        )
         controlled_layout.addWidget(self.controlled_files_list, stretch=1)
 
         controlled_button_bar = QHBoxLayout()
@@ -597,7 +614,9 @@ class DocumentControlApp(QMainWindow):
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setSelectionMode(QTableWidget.ExtendedSelection)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.cellDoubleClicked.connect(self._open_record_row)
+        table.cellDoubleClicked.connect(self._show_records_context_menu_for_row)
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        table.customContextMenuRequested.connect(self._show_records_context_menu)
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -613,7 +632,9 @@ class DocumentControlApp(QMainWindow):
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setSelectionMode(QTableWidget.ExtendedSelection)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.cellDoubleClicked.connect(self._open_record_row)
+        table.cellDoubleClicked.connect(self._show_records_context_menu_for_row)
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        table.customContextMenuRequested.connect(self._show_records_context_menu)
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -3555,6 +3576,56 @@ class DocumentControlApp(QMainWindow):
     def _open_source_item(self, item: QListWidgetItem) -> None:
         self._open_paths([Path(item.data(Qt.UserRole))])
 
+    def _show_source_file_context_menu_for_item(self, item: QListWidgetItem) -> None:
+        self.files_list.setCurrentItem(item)
+        item.setSelected(True)
+        rect = self.files_list.visualItemRect(item)
+        self._show_source_file_context_menu(rect.center())
+
+    def _show_source_file_context_menu(self, pos: QPoint) -> None:
+        item = self.files_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.files_list.clearSelection()
+            item.setSelected(True)
+            self.files_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        actions = [
+            ("Open Selected", "open"),
+            ("Check Out Selected", "checkout"),
+            ("Copy As Reference", "reference"),
+            ("View History", "history"),
+            ("Add Selected To Favorites", "favorite"),
+            ("Refresh", "refresh"),
+        ]
+        action_map: Dict[QAction, str] = {}
+        for label, action_id in actions:
+            action = menu.addAction(label)
+            action_map[action] = action_id
+        chosen = menu.exec(self.files_list.mapToGlobal(pos))
+        if chosen in action_map:
+            self._handle_source_file_context_action(action_map[chosen])
+
+    def _handle_source_file_context_action(self, action_id: str) -> None:
+        if action_id == "open":
+            self._open_selected_source_files()
+            return
+        if action_id == "checkout":
+            self._checkout_selected()
+            return
+        if action_id == "reference":
+            self._copy_selected_as_reference()
+            return
+        if action_id == "history":
+            self._show_selected_file_history()
+            return
+        if action_id == "favorite":
+            self._add_selected_source_files_to_favorites()
+            return
+        if action_id == "refresh":
+            self._refresh_source_files()
+            return
+
     def _open_selected_source_files(self) -> None:
         selected_files = self._selected_source_file_paths()
         if not selected_files:
@@ -3572,6 +3643,54 @@ class DocumentControlApp(QMainWindow):
         record_idx = item.data(Qt.UserRole)
         if isinstance(record_idx, int) and 0 <= record_idx < len(self.records):
             self._open_paths([Path(self.records[record_idx].local_file)])
+
+    def _show_records_context_menu_for_row(self, row: int, _column: int) -> None:
+        table = self.sender()
+        if not isinstance(table, QTableWidget):
+            return
+        if row < 0:
+            return
+        table.selectRow(row)
+        item = table.item(row, 0)
+        if not item:
+            return
+        pos = table.visualItemRect(item).center()
+        self._show_records_context_menu(pos)
+
+    def _show_records_context_menu(self, pos: QPoint) -> None:
+        table = self.sender()
+        if not isinstance(table, QTableWidget):
+            return
+
+        row = table.rowAt(pos.y())
+        if row >= 0 and (not table.item(row, 0) or not table.item(row, 0).isSelected()):
+            table.clearSelection()
+            table.selectRow(row)
+
+        menu = QMenu(self)
+        action_map: Dict[QAction, str] = {}
+        open_action = menu.addAction("Open Selected")
+        action_map[open_action] = "open"
+        if table is self.reference_records_table:
+            remove_ref_action = menu.addAction("Remove Selected Ref")
+            action_map[remove_ref_action] = "remove_ref"
+        else:
+            checkin_action = menu.addAction("Check In Selected")
+            action_map[checkin_action] = "checkin"
+        chosen = menu.exec(table.viewport().mapToGlobal(pos))
+        if chosen in action_map:
+            self._handle_records_context_action(action_map[chosen])
+
+    def _handle_records_context_action(self, action_id: str) -> None:
+        if action_id == "open":
+            self._open_selected_record_files()
+            return
+        if action_id == "checkin":
+            self._checkin_selected()
+            return
+        if action_id == "remove_ref":
+            self._remove_selected_reference_records()
+            return
 
     def _open_selected_record_files(self) -> None:
         indexes = self._selected_record_indexes()
@@ -3600,6 +3719,116 @@ class DocumentControlApp(QMainWindow):
             self._remove_record_indexes(removable_indexes)
             self._save_records()
             self._render_records_tables()
+
+    def _show_controlled_files_context_menu(self, pos: QPoint) -> None:
+        item = self.controlled_files_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.controlled_files_list.clearSelection()
+            item.setSelected(True)
+            self.controlled_files_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        refresh_action = menu.addAction("Refresh")
+        force_action = menu.addAction("Force Check In Selected")
+        chosen = menu.exec(self.controlled_files_list.mapToGlobal(pos))
+        if chosen == refresh_action:
+            self._refresh_controlled_files()
+        elif chosen == force_action:
+            self._force_checkin_selected()
+
+    def _show_tracked_projects_context_menu_for_item(self, item: QListWidgetItem) -> None:
+        self.tracked_projects_list.setCurrentItem(item)
+        item.setSelected(True)
+        rect = self.tracked_projects_list.visualItemRect(item)
+        self._show_tracked_projects_context_menu(rect.center())
+
+    def _show_tracked_projects_context_menu(self, pos: QPoint) -> None:
+        item = self.tracked_projects_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.tracked_projects_list.clearSelection()
+            item.setSelected(True)
+            self.tracked_projects_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        load_action = menu.addAction("Load Selected")
+        edit_action = menu.addAction("Edit Selected")
+        open_loc_action = menu.addAction("Open Location")
+        untrack_action = menu.addAction("Untrack Selected")
+        chosen = menu.exec(self.tracked_projects_list.mapToGlobal(pos))
+        if chosen == load_action:
+            self._load_selected_tracked_project()
+        elif chosen == edit_action:
+            self._edit_selected_project()
+        elif chosen == open_loc_action:
+            self._open_selected_project_location()
+        elif chosen == untrack_action:
+            self._remove_selected_project()
+
+    def _show_favorites_context_menu_for_item(self, item: QListWidgetItem) -> None:
+        self.favorites_list.setCurrentItem(item)
+        item.setSelected(True)
+        rect = self.favorites_list.visualItemRect(item)
+        self._show_favorites_context_menu(rect.center())
+
+    def _show_favorites_context_menu(self, pos: QPoint) -> None:
+        item = self.favorites_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.favorites_list.clearSelection()
+            item.setSelected(True)
+            self.favorites_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        open_action = menu.addAction("Open Selected")
+        remove_action = menu.addAction("Remove Favorite")
+        chosen = menu.exec(self.favorites_list.mapToGlobal(pos))
+        if chosen == open_action:
+            self._open_selected_favorites()
+        elif chosen == remove_action:
+            self._remove_selected_favorites()
+
+    def _show_notes_context_menu_for_item(self, item: QListWidgetItem) -> None:
+        self.notes_list.setCurrentItem(item)
+        item.setSelected(True)
+        rect = self.notes_list.visualItemRect(item)
+        self._show_notes_context_menu(rect.center())
+
+    def _show_notes_context_menu(self, pos: QPoint) -> None:
+        item = self.notes_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.notes_list.clearSelection()
+            item.setSelected(True)
+            self.notes_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        new_action = menu.addAction("New Note")
+        edit_action = menu.addAction("Edit Selected")
+        remove_action = menu.addAction("Remove Selected")
+        chosen = menu.exec(self.notes_list.mapToGlobal(pos))
+        if chosen == new_action:
+            self._create_note()
+        elif chosen == edit_action:
+            self._edit_selected_note()
+        elif chosen == remove_action:
+            self._remove_selected_note()
+
+    def _show_source_roots_context_menu(self, pos: QPoint) -> None:
+        item = self.source_roots_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.source_roots_list.clearSelection()
+            item.setSelected(True)
+            self.source_roots_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        track_browse_action = menu.addAction("Track Dir (Browse)")
+        track_current_action = menu.addAction("Track Directory")
+        untrack_action = menu.addAction("Untrack Dir")
+        chosen = menu.exec(self.source_roots_list.mapToGlobal(pos))
+        if chosen == track_browse_action:
+            self._add_source_directory()
+        elif chosen == track_current_action:
+            self._track_current_directory()
+        elif chosen == untrack_action:
+            self._remove_source_directory()
 
     def _open_paths(self, paths: List[Path]) -> None:
         errors: List[str] = []
