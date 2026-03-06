@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Dict, List, Optional
 from uuid import uuid4
 
@@ -62,6 +63,7 @@ LEGACY_FILTER_PRESETS_FILE = APP_ROOT / "filter_presets.json"
 PROJECT_CONFIG_FILE = "dctl.json"
 HISTORY_FILE_NAME = ".doc_control_history.csv"
 DEFAULT_PROJECT_NAME = "Default"
+DEBUG_EVENTS_FILE = USER_DATA_ROOT / "debug_events.log"
 
 
 @dataclass
@@ -232,10 +234,22 @@ class DocumentControlApp(QMainWindow):
         self.records_file_edit = QLineEdit(str(self._default_records_file()))
         browse_records_file_btn = QPushButton("Browse")
         browse_records_file_btn.clicked.connect(self._choose_records_file)
+        self.debug_log_file_edit = QLineEdit(str(self._default_debug_events_file()))
+        browse_debug_log_btn = QPushButton("Browse")
+        browse_debug_log_btn.clicked.connect(self._choose_debug_log_file)
+        open_debug_log_btn = QPushButton("Open")
+        open_debug_log_btn.clicked.connect(self._open_debug_log_file)
+        clear_debug_log_btn = QPushButton("Clear")
+        clear_debug_log_btn.clicked.connect(self._clear_debug_log_file)
+        self.debug_enabled_checkbox = QCheckBox("Enable Debug Event Logging")
+        self.debug_enabled_checkbox.toggled.connect(self._on_debug_logging_toggled)
         config_divider = QFrame()
         config_divider.setFrameShape(QFrame.HLine)
         config_divider.setFrameShadow(QFrame.Sunken)
         config_divider_label = QLabel("Application Data File Locations")
+        debug_divider = QFrame()
+        debug_divider.setFrameShape(QFrame.HLine)
+        debug_divider.setFrameShadow(QFrame.Sunken)
 
         layout.addWidget(QLabel("User:"), 0, 0)
         layout.addLayout(identity_bar, 0, 1, 1, 2)
@@ -253,6 +267,16 @@ class DocumentControlApp(QMainWindow):
         layout.addWidget(QLabel("Checkout Records File:"), 6, 0)
         layout.addWidget(self.records_file_edit, 6, 1)
         layout.addWidget(browse_records_file_btn, 6, 2)
+        layout.addWidget(debug_divider, 7, 0, 1, 3)
+        layout.addWidget(self.debug_enabled_checkbox, 8, 0, 1, 3)
+        layout.addWidget(QLabel("Debug Events Log:"), 9, 0)
+        layout.addWidget(self.debug_log_file_edit, 9, 1)
+        layout.addWidget(browse_debug_log_btn, 9, 2)
+        debug_btn_row = QHBoxLayout()
+        debug_btn_row.addWidget(open_debug_log_btn)
+        debug_btn_row.addWidget(clear_debug_log_btn)
+        debug_btn_row.addStretch()
+        layout.addLayout(debug_btn_row, 10, 1, 1, 2)
 
         return group
 
@@ -566,6 +590,9 @@ class DocumentControlApp(QMainWindow):
     def _default_records_file(self) -> Path:
         return USER_DATA_ROOT / "checkout_records.json"
 
+    def _default_debug_events_file(self) -> Path:
+        return DEBUG_EVENTS_FILE
+
     def _base_projects_dir(self) -> Path:
         return Path(self.local_path_edit.text().strip() or self._default_projects_dir())
 
@@ -579,6 +606,9 @@ class DocumentControlApp(QMainWindow):
 
     def _records_file_path(self) -> Path:
         return Path(self.records_file_edit.text().strip() or self._default_records_file())
+
+    def _debug_events_file_path(self) -> Path:
+        return Path(self.debug_log_file_edit.text().strip() or self._default_debug_events_file())
 
     def _ensure_parent_dir(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -691,8 +721,62 @@ class DocumentControlApp(QMainWindow):
         self._save_settings()
         self._load_records()
 
+    def _choose_debug_log_file(self) -> None:
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select Debug Events Log File",
+            str(self._debug_events_file_path()),
+            "Log Files (*.log *.txt);;All Files (*)",
+        )
+        if not file_path:
+            return
+        self.debug_log_file_edit.setText(file_path)
+        self._save_settings()
+        self._debug_event("debug_log_file_changed", path=file_path)
+
+    def _open_debug_log_file(self) -> None:
+        self._open_paths([self._debug_events_file_path()])
+
+    def _clear_debug_log_file(self) -> None:
+        log_path = self._debug_events_file_path()
+        self._ensure_parent_dir(log_path)
+        log_path.write_text("", encoding="utf-8")
+        self._debug_event("debug_log_cleared")
+        self._info("Debug events log cleared.")
+
+    def _debug_enabled(self) -> bool:
+        return bool(self.debug_enabled_checkbox.isChecked())
+
+    def _debug_event(self, event: str, **data: object) -> None:
+        if not self._debug_enabled():
+            return
+        payload = {
+            "timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            "event": event,
+            "data": data,
+        }
+        log_path = self._debug_events_file_path()
+        self._ensure_parent_dir(log_path)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+    @contextmanager
+    def _debug_timed(self, event: str, **data: object):
+        started = perf_counter()
+        try:
+            yield
+        finally:
+            duration_ms = round((perf_counter() - started) * 1000.0, 3)
+            self._debug_event(event, duration_ms=duration_ms, **data)
+
+    def _on_debug_logging_toggled(self, enabled: bool) -> None:
+        self._save_settings()
+        self._debug_event("debug_logging_toggled", enabled=bool(enabled))
+
     @contextmanager
     def _busy_action(self, message: str):
+        self._debug_event("busy_action_start", message=message)
+        started = perf_counter()
         dialog = QDialog(self)
         dialog.setWindowTitle(APP_NAME)
         dialog.setWindowModality(Qt.ApplicationModal)
@@ -723,6 +807,8 @@ class DocumentControlApp(QMainWindow):
             dialog.close()
             dialog.deleteLater()
             QApplication.processEvents()
+            duration_ms = round((perf_counter() - started) * 1000.0, 3)
+            self._debug_event("busy_action_end", message=message, duration_ms=duration_ms)
 
     def _validate_identity(self) -> bool:
         if not self._normalize_initials():
@@ -755,6 +841,8 @@ class DocumentControlApp(QMainWindow):
             "tracked_projects_file": str(self._projects_registry_path()),
             "filter_presets_file": str(self._filter_presets_path()),
             "records_file": str(self._records_file_path()),
+            "debug_events_file": str(self._debug_events_file_path()),
+            "debug_events_enabled": self._debug_enabled(),
         }
 
     def _has_user_configuration(self) -> bool:
@@ -764,6 +852,8 @@ class DocumentControlApp(QMainWindow):
         projects_file = self.projects_file_edit.text().strip()
         filter_presets_file = self.filter_presets_file_edit.text().strip()
         records_file = self.records_file_edit.text().strip()
+        debug_file = self.debug_log_file_edit.text().strip()
+        debug_enabled = self._debug_enabled()
         return bool(
             initials
             or full_name
@@ -771,6 +861,8 @@ class DocumentControlApp(QMainWindow):
             or (projects_file and Path(projects_file) != self._default_projects_registry_file())
             or (filter_presets_file and Path(filter_presets_file) != self._default_filter_presets_file())
             or (records_file and Path(records_file) != self._default_records_file())
+            or (debug_file and Path(debug_file) != self._default_debug_events_file())
+            or debug_enabled
         )
 
     def _apply_startup_tab(self) -> None:
@@ -781,6 +873,10 @@ class DocumentControlApp(QMainWindow):
         self.projects_file_edit.setText(str(self._default_projects_registry_file()))
         self.filter_presets_file_edit.setText(str(self._default_filter_presets_file()))
         self.records_file_edit.setText(str(self._default_records_file()))
+        self.debug_log_file_edit.setText(str(self._default_debug_events_file()))
+        self.debug_enabled_checkbox.blockSignals(True)
+        self.debug_enabled_checkbox.setChecked(False)
+        self.debug_enabled_checkbox.blockSignals(False)
         data = self._read_json_candidates([SETTINGS_FILE, LEGACY_SETTINGS_FILE])
         if data is None or not isinstance(data, dict):
             self.show_configuration_tab_on_startup = True
@@ -801,6 +897,13 @@ class DocumentControlApp(QMainWindow):
         records_file = str(data.get("records_file", "")).strip()
         if records_file:
             self.records_file_edit.setText(records_file)
+        debug_events_file = str(data.get("debug_events_file", "")).strip()
+        if debug_events_file:
+            self.debug_log_file_edit.setText(debug_events_file)
+        debug_events_enabled = bool(data.get("debug_events_enabled", False))
+        self.debug_enabled_checkbox.blockSignals(True)
+        self.debug_enabled_checkbox.setChecked(debug_events_enabled)
+        self.debug_enabled_checkbox.blockSignals(False)
         self.current_project_dir = str(data.get("current_project_dir", "")).strip()
         self.show_configuration_tab_on_startup = not self._has_user_configuration()
         self._apply_startup_tab()
@@ -1397,33 +1500,34 @@ class DocumentControlApp(QMainWindow):
         self._save_settings()
 
     def _load_project_from_dir(self, project_dir: Path) -> None:
-        config = self._read_project_config(project_dir)
-        name = str(config.get("name", project_dir.name))
-        sources = [str(item) for item in config.get("sources", [])]  # type: ignore[arg-type]
-        extension_filters = [
-            str(item) for item in config.get("extension_filters", [])
-        ]  # type: ignore[arg-type]
-        filter_mode = str(config.get("filter_mode", "No Filter"))
-        favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
-        notes = [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
-        selected_source = str(config.get("selected_source", "")).strip()
-        client = str(config.get("client", "")).strip()
-        year_started = str(config.get("year_started", "")).strip()
+        with self._debug_timed("load_project", project_dir=str(project_dir)):
+            config = self._read_project_config(project_dir)
+            name = str(config.get("name", project_dir.name))
+            sources = [str(item) for item in config.get("sources", [])]  # type: ignore[arg-type]
+            extension_filters = [
+                str(item) for item in config.get("extension_filters", [])
+            ]  # type: ignore[arg-type]
+            filter_mode = str(config.get("filter_mode", "No Filter"))
+            favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
+            notes = [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
+            selected_source = str(config.get("selected_source", "")).strip()
+            client = str(config.get("client", "")).strip()
+            year_started = str(config.get("year_started", "")).strip()
 
-        self.current_project_dir = str(project_dir)
-        self.file_filter_mode_combo.blockSignals(True)
-        self.file_filter_mode_combo.setCurrentText(filter_mode)
-        self.file_filter_mode_combo.blockSignals(False)
-        self._set_extension_filters(extension_filters)
-        self.current_project_label.setText(f"Current Project: {name}")
-        self._register_tracked_project(name, project_dir, client, year_started)
-        self._refresh_source_roots(sources, selected_source)
-        self._refresh_favorites_list(favorites)
-        self._refresh_notes_list(notes)
-        if not sources:
-            self._refresh_controlled_files()
-        self._save_settings()
-        self._render_records_tables()
+            self.current_project_dir = str(project_dir)
+            self.file_filter_mode_combo.blockSignals(True)
+            self.file_filter_mode_combo.setCurrentText(filter_mode)
+            self.file_filter_mode_combo.blockSignals(False)
+            self._set_extension_filters(extension_filters)
+            self.current_project_label.setText(f"Current Project: {name}")
+            self._register_tracked_project(name, project_dir, client, year_started)
+            self._refresh_source_roots(sources, selected_source)
+            self._refresh_favorites_list(favorites)
+            self._refresh_notes_list(notes)
+            if not sources:
+                self._refresh_controlled_files()
+            self._save_settings()
+            self._render_records_tables()
 
     def _selected_tracked_project_dir(self) -> Optional[Path]:
         item = self.tracked_projects_list.currentItem()
@@ -1655,21 +1759,23 @@ class DocumentControlApp(QMainWindow):
         if item.childCount() != 1 or item.child(0).data(0, Qt.UserRole) is not None:
             return
 
-        item.takeChildren()
         path_value = item.data(0, Qt.UserRole)
-        if not path_value:
-            return
+        with self._debug_timed("populate_directory_children", directory=str(path_value or "")):
+            item.takeChildren()
+            if not path_value:
+                return
 
-        try:
-            children = sorted(
-                [entry for entry in Path(path_value).iterdir() if entry.is_dir()],
-                key=lambda entry: entry.name.lower(),
-            )
-        except OSError:
-            children = []
+            try:
+                children = sorted(
+                    [entry for entry in Path(path_value).iterdir() if entry.is_dir()],
+                    key=lambda entry: entry.name.lower(),
+                )
+            except OSError:
+                children = []
 
-        for child_path in children:
-            item.addChild(self._create_directory_item(child_path))
+            for child_path in children:
+                item.addChild(self._create_directory_item(child_path))
+            self._debug_event("directory_children_loaded", directory=str(path_value), count=len(children))
 
     def _populate_system_roots(self) -> None:
         drives = QDir.drives()
@@ -1719,6 +1825,7 @@ class DocumentControlApp(QMainWindow):
     def _on_source_root_changed(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
         if not current:
             return
+        self._debug_event("source_root_changed", source=str(current.data(Qt.UserRole)))
         project_dir = self._current_project_path()
         if project_dir and project_dir.is_dir():
             self._save_project_config(project_dir, selected_source=str(current.data(Qt.UserRole)))
@@ -1732,58 +1839,75 @@ class DocumentControlApp(QMainWindow):
         self._refresh_source_files()
 
     def _on_tree_item_expanded(self, item: QTreeWidgetItem) -> None:
+        self._debug_event("directory_tree_expanded", directory=str(item.data(0, Qt.UserRole) or ""))
         self._populate_directory_children(item)
 
     def _on_directory_selected(self, item: QTreeWidgetItem, _column: int) -> None:
         path_value = item.data(0, Qt.UserRole)
         if not path_value:
             return
+        self._debug_event("directory_selected", directory=str(path_value))
         path = Path(path_value)
         if path.is_dir():
             self._set_current_directory(path)
 
     def _refresh_source_files(self) -> None:
-        self.files_list.clear()
-        if not self.current_directory or not self.current_directory.is_dir():
-            self.controlled_files_list.clear()
-            return
+        current_dir = str(self.current_directory) if self.current_directory else ""
+        with self._debug_timed("refresh_source_files", directory=current_dir):
+            self.files_list.clear()
+            if not self.current_directory or not self.current_directory.is_dir():
+                self.controlled_files_list.clear()
+                return
 
-        search_term = self.file_search_edit.text().strip().lower()
-        history_lookup = self._history_lookup_for_directory(self.current_directory)
-        for item in sorted(self.current_directory.iterdir()):
-            if item.is_file() and item.name != HISTORY_FILE_NAME:
-                if not self._matches_extension_filter(item):
-                    continue
-                if search_term and search_term not in item.name.lower():
-                    continue
-                list_item = QListWidgetItem(item.name)
-                list_item.setData(Qt.UserRole, str(item))
-                history_row = history_lookup.get(item.name)
-                original_name = (
-                    history_row.get("original_file_name", item.name) if history_row else item.name
-                )
-                list_item.setData(Qt.UserRole + 1, original_name)
-                self._apply_file_history_style(list_item, item, history_row)
-                self.files_list.addItem(list_item)
+            search_term = self.file_search_edit.text().strip().lower()
+            history_lookup = self._history_lookup_for_directory(self.current_directory)
+            shown_count = 0
+            for item in sorted(self.current_directory.iterdir()):
+                if item.is_file() and item.name != HISTORY_FILE_NAME:
+                    if not self._matches_extension_filter(item):
+                        continue
+                    if search_term and search_term not in item.name.lower():
+                        continue
+                    list_item = QListWidgetItem(item.name)
+                    list_item.setData(Qt.UserRole, str(item))
+                    history_row = history_lookup.get(item.name)
+                    original_name = (
+                        history_row.get("original_file_name", item.name) if history_row else item.name
+                    )
+                    list_item.setData(Qt.UserRole + 1, original_name)
+                    self._apply_file_history_style(list_item, item, history_row)
+                    self.files_list.addItem(list_item)
+                    shown_count += 1
 
-        self._refresh_controlled_files()
+            self._refresh_controlled_files()
+            self._debug_event(
+                "source_files_refreshed",
+                directory=current_dir,
+                search=search_term,
+                shown_count=shown_count,
+            )
 
     def _refresh_controlled_files(self) -> None:
-        self.controlled_files_list.clear()
-        if not self.current_directory or not self.current_directory.is_dir():
-            return
+        current_dir = str(self.current_directory) if self.current_directory else ""
+        with self._debug_timed("refresh_controlled_files", directory=current_dir):
+            self.controlled_files_list.clear()
+            if not self.current_directory or not self.current_directory.is_dir():
+                return
 
-        for entry in self._checked_out_files_for_directory(self.current_directory):
-            label = entry["file_name"]
-            if entry["initials"]:
-                label = f"{label} ({entry['initials']})"
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, entry)
-            tooltip = entry["locked_source_file"]
-            if entry["full_name"]:
-                tooltip = f"{tooltip}\n{entry['full_name']}"
-            item.setToolTip(tooltip)
-            self.controlled_files_list.addItem(item)
+            count = 0
+            for entry in self._checked_out_files_for_directory(self.current_directory):
+                label = entry["file_name"]
+                if entry["initials"]:
+                    label = f"{label} ({entry['initials']})"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, entry)
+                tooltip = entry["locked_source_file"]
+                if entry["full_name"]:
+                    tooltip = f"{tooltip}\n{entry['full_name']}"
+                item.setToolTip(tooltip)
+                self.controlled_files_list.addItem(item)
+                count += 1
+            self._debug_event("controlled_files_refreshed", directory=current_dir, count=count)
 
     def _add_source_directory(self) -> None:
         project_dir = self._validate_current_project()
@@ -2089,25 +2213,29 @@ class DocumentControlApp(QMainWindow):
         return {"name": name, "filter_mode": filter_mode, "extensions": extensions}
 
     def _load_filter_presets(self) -> None:
-        self.filter_presets = []
-        data = self._read_json_candidates(
-            [self._filter_presets_path(), LEGACY_FILTER_PRESETS_FILE]
-        )
-        if data is None:
-            return
+        with self._debug_timed("load_filter_presets"):
+            self.filter_presets = []
+            data = self._read_json_candidates(
+                [self._filter_presets_path(), LEGACY_FILTER_PRESETS_FILE]
+            )
+            if data is None:
+                self._debug_event("filter_presets_loaded", count=0)
+                return
 
-        raw_presets = data
-        if isinstance(data, dict):
-            raw_presets = data.get("presets", [])
-        if not isinstance(raw_presets, list):
-            return
-        for preset in raw_presets:
-            if not isinstance(preset, dict):
-                continue
-            normalized = self._normalize_filter_preset(preset)
-            if normalized:
-                self.filter_presets.append(normalized)
-        self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+            raw_presets = data
+            if isinstance(data, dict):
+                raw_presets = data.get("presets", [])
+            if not isinstance(raw_presets, list):
+                self._debug_event("filter_presets_loaded", count=0)
+                return
+            for preset in raw_presets:
+                if not isinstance(preset, dict):
+                    continue
+                normalized = self._normalize_filter_preset(preset)
+                if normalized:
+                    self.filter_presets.append(normalized)
+            self.filter_presets.sort(key=lambda item: str(item["name"]).lower())
+            self._debug_event("filter_presets_loaded", count=len(self.filter_presets))
 
     def _save_filter_presets(self) -> None:
         presets_path = self._filter_presets_path()
@@ -2612,57 +2740,63 @@ class DocumentControlApp(QMainWindow):
         self._refresh_source_files()
         history_lookup = self._history_lookup_for_directory(current_directory)
 
-        with self._busy_action("Checking out file(s)..."):
-            for source_file in selected_files:
-                latest_row = history_lookup.get(source_file.name)
-                if latest_row and latest_row.get("action") == "CHECK_OUT":
-                    original_name = latest_row.get("original_file_name", source_file.name)
-                    checked_out_by = latest_row.get("user_initials", "")
-                    if checked_out_by == initials:
-                        errors.append(f"Already checked out by you: {original_name}")
-                    else:
-                        who = latest_row.get("user_full_name", "") or checked_out_by or "another user"
-                        errors.append(f"Already checked out by {who}: {original_name}")
-                    continue
+        with self._debug_timed(
+            "checkout_selected",
+            selected_count=len(selected_files),
+            directory=str(current_directory),
+            source_root=str(source_root),
+        ):
+            with self._busy_action("Checking out file(s)..."):
+                for source_file in selected_files:
+                    latest_row = history_lookup.get(source_file.name)
+                    if latest_row and latest_row.get("action") == "CHECK_OUT":
+                        original_name = latest_row.get("original_file_name", source_file.name)
+                        checked_out_by = latest_row.get("user_initials", "")
+                        if checked_out_by == initials:
+                            errors.append(f"Already checked out by you: {original_name}")
+                        else:
+                            who = latest_row.get("user_full_name", "") or checked_out_by or "another user"
+                            errors.append(f"Already checked out by {who}: {original_name}")
+                        continue
 
-                locked_source_file = self._locked_name_for(source_file, initials)
-                try:
-                    relative_path = source_file.relative_to(source_root)
-                except ValueError:
-                    relative_path = Path(source_file.name)
-                local_file = project_checkout_dir / relative_path
+                    locked_source_file = self._locked_name_for(source_file, initials)
+                    try:
+                        relative_path = source_file.relative_to(source_root)
+                    except ValueError:
+                        relative_path = Path(source_file.name)
+                    local_file = project_checkout_dir / relative_path
 
-                if not source_file.exists():
-                    errors.append(f"Missing source file: {source_file.name}")
-                    continue
-                if locked_source_file.exists():
-                    errors.append(f"Already checked out: {locked_source_file.name}")
-                    continue
+                    if not source_file.exists():
+                        errors.append(f"Missing source file: {source_file.name}")
+                        continue
+                    if locked_source_file.exists():
+                        errors.append(f"Already checked out: {locked_source_file.name}")
+                        continue
 
-                try:
-                    local_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_file, local_file)
-                    source_file.rename(locked_source_file)
-                    self.records.append(
-                        CheckoutRecord(
-                            source_file=str(source_file),
-                            locked_source_file=str(locked_source_file),
-                            local_file=str(local_file),
-                            initials=initials,
-                            project_name=self._current_project_name(),
-                            project_dir=str(project_dir),
-                            source_root=str(source_root),
-                            checked_out_at=checked_out_at,
+                    try:
+                        local_file.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source_file, local_file)
+                        source_file.rename(locked_source_file)
+                        self.records.append(
+                            CheckoutRecord(
+                                source_file=str(source_file),
+                                locked_source_file=str(locked_source_file),
+                                local_file=str(local_file),
+                                initials=initials,
+                                project_name=self._current_project_name(),
+                                project_dir=str(project_dir),
+                                source_root=str(source_root),
+                                checked_out_at=checked_out_at,
+                            )
                         )
-                    )
-                    self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
-                except OSError as exc:
-                    errors.append(f"{source_file.name}: {exc}")
+                        self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
+                    except OSError as exc:
+                        errors.append(f"{source_file.name}: {exc}")
 
-            self._save_records()
-            self._refresh_source_files()
-            self._refresh_controlled_files()
-            self._render_records_tables()
+                self._save_records()
+                self._refresh_source_files()
+                self._refresh_controlled_files()
+                self._render_records_tables()
 
         if errors:
             self._error("Some files failed:\n" + "\n".join(errors))
@@ -3071,11 +3205,12 @@ class DocumentControlApp(QMainWindow):
                 )
             )
 
-        with self._busy_action("Checking in file(s)..."):
-            errors = self._perform_pending_checkin_actions(actions, "standard")
-            self._refresh_source_files()
-            self._refresh_controlled_files()
-            self._render_records_tables()
+        with self._debug_timed("checkin_selected", selected_count=len(actions)):
+            with self._busy_action("Checking in file(s)..."):
+                errors = self._perform_pending_checkin_actions(actions, "standard")
+                self._refresh_source_files()
+                self._refresh_controlled_files()
+                self._render_records_tables()
 
         if errors:
             self._error("Some files failed to check in:\n" + "\n".join(errors))
@@ -3155,13 +3290,14 @@ class DocumentControlApp(QMainWindow):
 
     def _open_paths(self, paths: List[Path]) -> None:
         errors: List[str] = []
-        with self._busy_action("Opening file(s)..."):
-            for path in paths:
-                if not path.exists():
-                    errors.append(f"Missing file: {path}")
-                    continue
-                if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
-                    errors.append(f"Could not open: {path}")
+        with self._debug_timed("open_paths", path_count=len(paths)):
+            with self._busy_action("Opening file(s)..."):
+                for path in paths:
+                    if not path.exists():
+                        errors.append(f"Missing file: {path}")
+                        continue
+                    if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+                        errors.append(f"Could not open: {path}")
         if errors:
             self._error("Some files could not be opened:\n" + "\n".join(errors))
 
@@ -3189,38 +3325,40 @@ class DocumentControlApp(QMainWindow):
                 continue
             entries.append(entry)
 
-        actions: Optional[List[PendingCheckinAction]]
-        if choice == "unchanged":
-            actions = []
-            for entry in entries:
-                file_name = str(entry.get("file_name", ""))
-                if not file_name:
-                    continue
-                actions.append(
-                    PendingCheckinAction(
-                        file_name=file_name,
-                        source_file=str(current_directory / file_name),
-                        locked_source_file=str(entry.get("locked_source_file", "")),
-                        action_mode="unchanged",
-                        record_idx=self._record_index_for_controlled_file(entry),
-                        reason="Force release the locked source file without copying a local file.",
+        with self._debug_timed("force_checkin_selected_plan", choice=choice, selected_count=len(entries)):
+            actions: Optional[List[PendingCheckinAction]]
+            if choice == "unchanged":
+                actions = []
+                for entry in entries:
+                    file_name = str(entry.get("file_name", ""))
+                    if not file_name:
+                        continue
+                    actions.append(
+                        PendingCheckinAction(
+                            file_name=file_name,
+                            source_file=str(current_directory / file_name),
+                            locked_source_file=str(entry.get("locked_source_file", "")),
+                            action_mode="unchanged",
+                            record_idx=self._record_index_for_controlled_file(entry),
+                            reason="Force release the locked source file without copying a local file.",
+                        )
                     )
+                review = self._show_pending_actions_dialog(
+                    "Review Force Check-In Actions", actions, allow_modify=False
                 )
-            review = self._show_pending_actions_dialog(
-                "Review Force Check-In Actions", actions, allow_modify=False
-            )
-            if review != "commit":
-                return
-        else:
-            actions = self._plan_force_checkin_actions(entries)
-            if actions is None:
-                return
+                if review != "commit":
+                    return
+            else:
+                actions = self._plan_force_checkin_actions(entries)
+                if actions is None:
+                    return
 
-        with self._busy_action("Force checking in file(s)..."):
-            errors = self._perform_pending_checkin_actions(actions, "force")
-            self._refresh_source_files()
-            self._refresh_controlled_files()
-            self._render_records_tables()
+        with self._debug_timed("force_checkin_selected_apply", action_count=len(actions)):
+            with self._busy_action("Force checking in file(s)..."):
+                errors = self._perform_pending_checkin_actions(actions, "force")
+                self._refresh_source_files()
+                self._refresh_controlled_files()
+                self._render_records_tables()
 
         if errors:
             self._error("Some files failed to force check in:\n" + "\n".join(errors))
@@ -3278,14 +3416,15 @@ class DocumentControlApp(QMainWindow):
         return Path(local_path).name
 
     def _render_records_tables(self) -> None:
-        self._populate_records_table(self.all_records_table, list(enumerate(self.records)))
-        current_project = self.current_project_dir
-        filtered = [
-            (idx, record)
-            for idx, record in enumerate(self.records)
-            if record.project_dir == current_project
-        ]
-        self._populate_records_table(self.project_records_table, filtered)
+        with self._debug_timed("render_records_tables", record_count=len(self.records)):
+            self._populate_records_table(self.all_records_table, list(enumerate(self.records)))
+            current_project = self.current_project_dir
+            filtered = [
+                (idx, record)
+                for idx, record in enumerate(self.records)
+                if record.project_dir == current_project
+            ]
+            self._populate_records_table(self.project_records_table, filtered)
 
     def _populate_records_table(
         self, table: QTableWidget, items: List[tuple[int, CheckoutRecord]]
@@ -3325,37 +3464,40 @@ class DocumentControlApp(QMainWindow):
         table.setColumnWidth(5, max(table.columnWidth(5), 150))
 
     def _load_records(self) -> None:
-        data = self._read_json_candidates(
-            [self._records_file_path(), LEGACY_RECORDS_FILE]
-        )
-        raw_records = data
-        if isinstance(data, dict):
-            raw_records = data.get("records", [])
-        if not isinstance(raw_records, list):
-            self._render_records_tables()
-            return
+        with self._debug_timed("load_records"):
+            data = self._read_json_candidates(
+                [self._records_file_path(), LEGACY_RECORDS_FILE]
+            )
+            raw_records = data
+            if isinstance(data, dict):
+                raw_records = data.get("records", [])
+            if not isinstance(raw_records, list):
+                self._render_records_tables()
+                self._debug_event("records_loaded", count=0)
+                return
 
-        try:
-            self.records = []
-            for entry in raw_records:
-                if not isinstance(entry, dict):
-                    continue
-                self.records.append(
-                    CheckoutRecord(
-                        source_file=str(entry.get("source_file", "")),
-                        locked_source_file=str(entry.get("locked_source_file", "")),
-                        local_file=str(entry.get("local_file", "")),
-                        initials=str(entry.get("initials", "")),
-                        project_name=str(entry.get("project_name", "")),
-                        project_dir=str(entry.get("project_dir", "")),
-                        source_root=str(entry.get("source_root", "")),
-                        checked_out_at=str(entry.get("checked_out_at", "")),
+            try:
+                self.records = []
+                for entry in raw_records:
+                    if not isinstance(entry, dict):
+                        continue
+                    self.records.append(
+                        CheckoutRecord(
+                            source_file=str(entry.get("source_file", "")),
+                            locked_source_file=str(entry.get("locked_source_file", "")),
+                            local_file=str(entry.get("local_file", "")),
+                            initials=str(entry.get("initials", "")),
+                            project_name=str(entry.get("project_name", "")),
+                            project_dir=str(entry.get("project_dir", "")),
+                            source_root=str(entry.get("source_root", "")),
+                            checked_out_at=str(entry.get("checked_out_at", "")),
+                        )
                     )
-                )
-        except (OSError, ValueError, TypeError):
-            self.records = []
+            except (OSError, ValueError, TypeError):
+                self.records = []
 
-        self._render_records_tables()
+            self._render_records_tables()
+            self._debug_event("records_loaded", count=len(self.records))
 
     def _save_records(self) -> None:
         records_path = self._records_file_path()

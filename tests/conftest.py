@@ -31,6 +31,7 @@ def app_env(tmp_path, monkeypatch, qapp):
         "projects": data_root / "projects.json",
         "records": data_root / "checkout_records.json",
         "presets": data_root / "filter_presets.json",
+        "debug_log": data_root / "debug_events.log",
         "legacy_settings": tmp_path / "legacy-settings.json",
         "legacy_projects": tmp_path / "legacy-projects.json",
         "legacy_records": tmp_path / "legacy-records.json",
@@ -65,6 +66,12 @@ def app_env(tmp_path, monkeypatch, qapp):
         app_module.DocumentControlApp,
         "_default_records_file",
         lambda _self: paths["records"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        app_module.DocumentControlApp,
+        "_default_debug_events_file",
+        lambda _self: paths["debug_log"],
         raising=False,
     )
 

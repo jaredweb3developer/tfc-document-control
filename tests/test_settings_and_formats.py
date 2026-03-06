@@ -10,6 +10,8 @@ def test_settings_payload_contains_config_paths(app_env):
     assert payload["tracked_projects_file"].endswith("projects.json")
     assert payload["filter_presets_file"].endswith("filter_presets.json")
     assert payload["records_file"].endswith("checkout_records.json")
+    assert payload["debug_events_file"].endswith("debug_events.log")
+    assert payload["debug_events_enabled"] is False
 
 
 def test_load_records_supports_legacy_list_format(app_env):
