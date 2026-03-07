@@ -3734,15 +3734,21 @@ class DocumentControlApp(QMainWindow):
 
         group_frame = QGroupBox("Groups")
         group_layout = QVBoxLayout(group_frame)
+        group_search_edit = QLineEdit()
+        group_search_edit.setPlaceholderText("Search groups")
+        group_layout.addWidget(group_search_edit)
         groups_list = QListWidget()
+        groups_list.setContextMenuPolicy(Qt.CustomContextMenu)
         group_layout.addWidget(groups_list, stretch=1)
         group_buttons = QHBoxLayout()
         add_group_btn = QPushButton("Add Group")
         rename_group_btn = QPushButton("Rename Group")
         remove_group_btn = QPushButton("Remove Group")
+        apply_group_color_btn = QPushButton("Apply Group Color")
         group_buttons.addWidget(add_group_btn)
         group_buttons.addWidget(rename_group_btn)
         group_buttons.addWidget(remove_group_btn)
+        group_buttons.addWidget(apply_group_color_btn)
         group_layout.addLayout(group_buttons)
 
         group_color_layout = QGridLayout()
@@ -3780,8 +3786,7 @@ class DocumentControlApp(QMainWindow):
         clear_font_btn = QPushButton("Clear")
         auto_contrast_checkbox = QCheckBox("Auto-contrast font color")
         auto_contrast_checkbox.setChecked(True)
-        use_group_colors_checkbox = QCheckBox("Apply selected group's colors to item(s)")
-        use_group_colors_checkbox.setChecked(False)
+        group_color_source_label = QLabel("Group colors source: None")
         preview = QLabel("Preview")
         preview.setFrameShape(QFrame.StyledPanel)
         preview.setAlignment(Qt.AlignCenter)
@@ -3795,7 +3800,7 @@ class DocumentControlApp(QMainWindow):
         color_layout.addWidget(pick_font_btn, 1, 2)
         color_layout.addWidget(clear_font_btn, 1, 3)
         color_layout.addWidget(auto_contrast_checkbox, 2, 0, 1, 4)
-        color_layout.addWidget(use_group_colors_checkbox, 3, 0, 1, 4)
+        color_layout.addWidget(group_color_source_label, 3, 0, 1, 4)
         color_layout.addWidget(preview, 4, 0, 1, 4)
         layout.addWidget(color_frame)
 
@@ -3819,47 +3824,51 @@ class DocumentControlApp(QMainWindow):
         common_font = ""
         common_auto = True
         common_use_group_colors = False
+        common_group_color_source = ""
         if existing:
             background_values = {str(custom.get("background", "")).strip() for custom in existing}
             font_values = {str(custom.get("font", "")).strip() for custom in existing}
             auto_values = {bool(custom.get("auto_contrast", True)) for custom in existing}
             use_group_values = {bool(custom.get("use_group_colors", False)) for custom in existing}
+            group_source_values = {
+                self._normalize_group_name(custom.get("group_color_source", ""))
+                for custom in existing
+                if bool(custom.get("use_group_colors", False))
+            }
             common_background = next(iter(background_values)) if len(background_values) == 1 else ""
             common_font = next(iter(font_values)) if len(font_values) == 1 else ""
             common_auto = auto_values == {True}
             common_use_group_colors = use_group_values == {True}
+            if len(group_source_values) == 1:
+                common_group_color_source = next(iter(group_source_values))
 
         had_groups_initially = any(bool(custom.get("groups", [])) for custom in existing)
         manual_font_selected = bool(common_font)
         use_group_colors_touched = False
-        suppress_use_group_colors_touched = False
-
-        def sync_selected_groups_from_widget() -> None:
-            selected_group_names.clear()
-            for row in range(groups_list.count()):
-                item = groups_list.item(row)
-                if item.checkState() == Qt.Checked:
-                    group_name = self._normalize_group_name(item.text())
-                    if group_name:
-                        selected_group_names.add(group_name)
-
-        def set_use_group_colors_checkbox(checked: bool) -> None:
-            nonlocal suppress_use_group_colors_touched
-            suppress_use_group_colors_touched = True
-            use_group_colors_checkbox.setChecked(checked)
-            suppress_use_group_colors_touched = False
+        requested_use_group_colors = common_use_group_colors
+        selected_group_for_colors = common_group_color_source
 
         def refresh_groups_widget(selected_groups: Optional[set] = None) -> None:
+            current_name = current_group_name()
             groups_list.clear()
             selected_lookup = selected_groups if selected_groups is not None else set()
+            search_text = group_search_edit.text().strip().lower()
             for group_name in self.item_customization_groups:
+                if search_text and search_text not in group_name.lower():
+                    continue
                 item = QListWidgetItem(group_name)
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(
                     Qt.Checked if group_name in selected_lookup else Qt.Unchecked
                 )
                 groups_list.addItem(item)
-            sync_selected_groups_from_widget()
+            if current_name:
+                for row in range(groups_list.count()):
+                    if self._normalize_group_name(groups_list.item(row).text()) == current_name:
+                        groups_list.setCurrentRow(row)
+                        break
+            elif groups_list.count() > 0:
+                groups_list.setCurrentRow(0)
 
         def current_group_name() -> str:
             current = groups_list.currentItem()
@@ -3872,19 +3881,29 @@ class DocumentControlApp(QMainWindow):
             group_font_edit.setText(str(style.get("font", "")))
             group_auto_checkbox.setChecked(bool(style.get("auto_contrast", True)))
 
+        def resolved_group_for_preview() -> str:
+            if selected_group_for_colors and selected_group_for_colors in selected_group_names:
+                return selected_group_for_colors
+            current_name = current_group_name()
+            if current_name and current_name in selected_group_names:
+                return current_name
+            for group_name_candidate in self.item_customization_groups:
+                if group_name_candidate in selected_group_names:
+                    return group_name_candidate
+            return ""
+
+        def refresh_group_color_source_label() -> None:
+            group_name = resolved_group_for_preview() if requested_use_group_colors else ""
+            group_color_source_label.setText(
+                f"Group colors source: {group_name or 'None'}"
+            )
+
         def update_preview() -> None:
             background = self._normalize_hex_color(background_edit.text())
             font = self._normalize_hex_color(font_edit.text())
             auto_for_preview = auto_contrast_checkbox.isChecked()
-            if use_group_colors_checkbox.isChecked():
-                group_name = current_group_name()
-                if group_name and group_name not in selected_group_names:
-                    group_name = ""
-                if not group_name:
-                    for group_name_candidate in self.item_customization_groups:
-                        if group_name_candidate in selected_group_names:
-                            group_name = group_name_candidate
-                            break
+            if requested_use_group_colors:
+                group_name = resolved_group_for_preview()
                 if group_name:
                     group_style = self._group_style_for_name(group_name)
                     background = self._normalize_hex_color(group_style.get("background", background))
@@ -3900,16 +3919,30 @@ class DocumentControlApp(QMainWindow):
             foreground_css = f"color: {effective_font};" if effective_font else ""
             preview.setStyleSheet(f"padding: 8px; {background_css} {foreground_css}")
             preview.setText("Preview")
+            refresh_group_color_source_label()
 
         refresh_groups_widget(selected_group_names)
         background_edit.setText(common_background)
         font_edit.setText(common_font)
         auto_contrast_checkbox.setChecked(common_auto)
-        set_use_group_colors_checkbox(common_use_group_colors)
-        if groups_list.count() > 0:
-            groups_list.setCurrentRow(0)
+        if not selected_group_for_colors and common_use_group_colors:
+            selected_group_for_colors = resolved_group_for_preview()
         refresh_selected_group_style()
         update_preview()
+
+        def apply_selected_group_color(mark_touched: bool = True) -> None:
+            nonlocal selected_group_for_colors, requested_use_group_colors, use_group_colors_touched
+            group_name = current_group_name()
+            if not group_name or group_name not in selected_group_names:
+                group_name = resolved_group_for_preview()
+            if not group_name:
+                self._error("Select and check a group first.")
+                return
+            selected_group_for_colors = group_name
+            requested_use_group_colors = True
+            if mark_touched:
+                use_group_colors_touched = True
+            update_preview()
 
         def on_add_group() -> None:
             name, accepted = QInputDialog.getText(dialog, "Add Group", "Group name:")
@@ -4108,8 +4141,15 @@ class DocumentControlApp(QMainWindow):
         clear_group_font_btn.clicked.connect(on_clear_group_font)
         group_auto_checkbox.toggled.connect(on_group_auto_toggled)
         def on_groups_item_changed(_item: QListWidgetItem) -> None:
+            nonlocal selected_group_for_colors
+            group_name = self._normalize_group_name(_item.text())
             previous_count = len(selected_group_names)
-            sync_selected_groups_from_widget()
+            if _item.checkState() == Qt.Checked and group_name:
+                selected_group_names.add(group_name)
+            else:
+                selected_group_names.discard(group_name)
+                if selected_group_for_colors == group_name:
+                    selected_group_for_colors = ""
             new_count = len(selected_group_names)
             if self._should_auto_enable_group_colors_checkbox(
                 had_groups_initially,
@@ -4117,45 +4157,47 @@ class DocumentControlApp(QMainWindow):
                 new_count,
                 use_group_colors_touched,
             ):
-                set_use_group_colors_checkbox(True)
+                apply_selected_group_color(mark_touched=False)
             update_preview()
 
         groups_list.itemChanged.connect(on_groups_item_changed)
         groups_list.currentItemChanged.connect(
             lambda _current, _prev: (refresh_selected_group_style(), update_preview())
         )
+        group_search_edit.textChanged.connect(
+            lambda _text: refresh_groups_widget(set(selected_group_names))
+        )
+
+        def show_groups_context_menu(pos: QPoint) -> None:
+            item = groups_list.itemAt(pos)
+            if item is not None:
+                groups_list.setCurrentItem(item)
+            menu = QMenu(dialog)
+            apply_action = menu.addAction("Apply Selected Group Color To Item(s)")
+            chosen = menu.exec(groups_list.mapToGlobal(pos))
+            if chosen == apply_action:
+                apply_selected_group_color(mark_touched=True)
+
+        groups_list.customContextMenuRequested.connect(show_groups_context_menu)
         pick_background_btn.clicked.connect(on_pick_background)
         clear_background_btn.clicked.connect(on_clear_background)
         pick_font_btn.clicked.connect(on_pick_font)
         clear_font_btn.clicked.connect(on_clear_font)
         auto_contrast_checkbox.toggled.connect(lambda _checked: update_preview())
-        use_group_colors_checkbox.toggled.connect(lambda _checked: update_preview())
-
-        def on_use_group_colors_toggled(_checked: bool) -> None:
-            nonlocal use_group_colors_touched, suppress_use_group_colors_touched
-            if suppress_use_group_colors_touched:
-                return
-            use_group_colors_touched = True
-            update_preview()
-
-        use_group_colors_checkbox.toggled.connect(on_use_group_colors_toggled)
+        apply_group_color_btn.clicked.connect(lambda: apply_selected_group_color(mark_touched=True))
 
         if dialog.exec() != QDialog.Accepted:
             return
 
-        chosen_groups: List[str] = []
-        for row in range(groups_list.count()):
-            item = groups_list.item(row)
-            if item.checkState() == Qt.Checked:
-                group_name = self._normalize_group_name(item.text())
-                if group_name and group_name not in chosen_groups:
-                    chosen_groups.append(group_name)
+        chosen_groups: List[str] = [
+            group_name
+            for group_name in self.item_customization_groups
+            if group_name in selected_group_names
+        ]
 
         background = self._normalize_hex_color(background_edit.text())
         font = self._normalize_hex_color(font_edit.text()) if manual_font_selected else ""
         auto_contrast = bool(auto_contrast_checkbox.isChecked())
-        requested_use_group_colors = bool(use_group_colors_checkbox.isChecked())
-        selected_group_for_colors = current_group_name()
         for item_key, _label in targets:
             existing_item = existing_by_key.get(item_key, {})
             payload: Dict[str, object] = {}
