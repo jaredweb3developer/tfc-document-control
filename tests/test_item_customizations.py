@@ -1,11 +1,10 @@
-from pathlib import Path
+import json
 
 
 def test_item_customizations_persist_to_config_file(app_env):
     # Persist a customization, then reopen the app and confirm it loads back.
     app = app_env["app"]
     paths = app_env["paths"]
-    create_app = app_env["create_app"]
 
     app.item_customization_groups = ["Priority"]
     app._set_item_customization(
@@ -17,18 +16,31 @@ def test_item_customizations_persist_to_config_file(app_env):
             "auto_contrast": True,
         },
     )
+    assert app.item_customizations == {
+        "tracked_projects": {
+            "/tmp/project-a": {
+                "groups": ["Priority"],
+                "background": "#102030",
+                "auto_contrast": True,
+            }
+        }
+    }
+    assert app._default_item_customizations_file() == paths["item_customizations"]
+    payload = json.loads(paths["item_customizations"].read_text(encoding="utf-8"))
+    assert payload["scopes"]["tracked_projects"]["/tmp/project-a"]["background"] == "#102030"
+    assert app._normalize_item_customization(
+        payload["scopes"]["tracked_projects"]["/tmp/project-a"]
+    ).get("background") == "#102030"
 
     assert paths["item_customizations"].exists()
-
-    reloaded = create_app()
-    try:
-        assert "Priority" in reloaded.item_customization_groups
-        custom = reloaded._item_customization_for("tracked_projects", "/tmp/project-a")
-        assert custom.get("background") == "#102030"
-        assert custom.get("groups") == ["Priority"]
-    finally:
-        reloaded.close()
-        reloaded.deleteLater()
+    app.item_customization_groups = []
+    app.item_customizations = {}
+    app.item_customization_group_styles = {}
+    app._load_item_customizations()
+    assert "Priority" in app.item_customization_groups
+    custom = app._item_customization_for("tracked_projects", "/tmp/project-a")
+    assert custom.get("background") == "#102030"
+    assert custom.get("groups") == ["Priority"]
 
 
 def test_tracked_project_list_item_uses_saved_color_and_group(app_env):
@@ -68,3 +80,47 @@ def test_effective_font_color_prefers_manual_and_falls_back_to_contrast(app_env)
     assert app._effective_font_color("#111111", "#00FF00", True) == "#00FF00"
     assert app._effective_font_color("#111111", "", True) == "#FFFFFF"
     assert app._effective_font_color("#F0F0F0", "", True) == "#000000"
+
+
+def test_group_colors_can_drive_item_style_when_enabled(app_env):
+    # If use_group_colors is enabled, the first group's colors should style the item.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "GroupStyle"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    app.tracked_projects = [
+        {
+            "name": "GroupStyle",
+            "project_dir": str(project_dir),
+            "client": "",
+            "year_started": "",
+        }
+    ]
+    app.item_customization_groups = ["QA"]
+    app.item_customization_group_styles["QA"] = {
+        "background": "#224466",
+        "font": "#F8F8F8",
+        "auto_contrast": True,
+    }
+    app._set_item_customization(
+        "tracked_projects",
+        str(project_dir),
+        {"groups": ["QA"], "use_group_colors": True},
+    )
+    app._refresh_tracked_projects_list()
+
+    item = app.tracked_projects_list.item(0)
+    assert item is not None
+    assert item.background().color().name().upper() == "#224466"
+    assert item.foreground().color().name().upper() == "#F8F8F8"
+    assert "Using Group Colors: QA" in item.toolTip()
+
+
+def test_first_group_assignment_defaults_to_group_colors(app_env):
+    # New group assignment should default use_group_colors on unless user overrides it.
+    app = app_env["app"]
+
+    assert app._resolve_use_group_colors({}, ["Alpha"], False, False) is True
+    assert app._resolve_use_group_colors({}, ["Alpha"], False, True) is False
+    assert app._resolve_use_group_colors({"groups": ["Alpha"]}, ["Alpha"], False, False) is False
