@@ -14,10 +14,11 @@ from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from PySide6.QtCore import QDir, QPoint, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIntValidator
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QInputDialog,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -77,6 +79,8 @@ FILE_VERSIONS_FILE = "file_versions.json"
 FILE_VERSIONS_DIR = "file_versions"
 GLOBAL_FAVORITES_FILE = USER_DATA_ROOT / "global_favorites.json"
 GLOBAL_NOTES_FILE = USER_DATA_ROOT / "global_notes.json"
+ITEM_CUSTOMIZATIONS_FILE = USER_DATA_ROOT / "item_customizations.json"
+ITEM_CUSTOMIZATIONS_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -127,6 +131,8 @@ class DocumentControlApp(QMainWindow):
         self._startup_splash_label: Optional[QLabel] = None
         self.global_favorites: List[str] = []
         self.global_notes: List[Dict[str, str]] = []
+        self.item_customization_groups: List[str] = []
+        self.item_customizations: Dict[str, Dict[str, Dict[str, object]]] = {}
         self.project_search_debounce = QTimer(self)
         self.project_search_debounce.setSingleShot(True)
         self.project_search_debounce.setInterval(300)
@@ -147,6 +153,8 @@ class DocumentControlApp(QMainWindow):
             self._load_settings()
             self._update_startup_splash("Loading filter presets...")
             self._load_filter_presets()
+            self._update_startup_splash("Loading item customizations...")
+            self._load_item_customizations()
             self._update_startup_splash("Loading tracked projects...")
             self._load_tracked_projects()
             self._update_startup_splash("Loading checkout records...")
@@ -387,6 +395,12 @@ class DocumentControlApp(QMainWindow):
         self.favorites_tabs = QTabWidget()
         project_favorites_tab = QWidget()
         project_favorites_layout = QVBoxLayout(project_favorites_tab)
+        self.project_favorites_search_edit = QLineEdit()
+        self.project_favorites_search_edit.setPlaceholderText("Search project favorites")
+        self.project_favorites_search_edit.textChanged.connect(
+            lambda _text: self._refresh_favorites_list(self._current_project_favorites())
+        )
+        project_favorites_layout.addWidget(self.project_favorites_search_edit)
         self.favorites_list = QListWidget()
         self.favorites_list.itemDoubleClicked.connect(self._show_favorites_context_menu_for_item)
         self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -811,6 +825,9 @@ class DocumentControlApp(QMainWindow):
 
     def _default_global_notes_file(self) -> Path:
         return GLOBAL_NOTES_FILE
+
+    def _default_item_customizations_file(self) -> Path:
+        return ITEM_CUSTOMIZATIONS_FILE
 
     def _base_projects_dir(self) -> Path:
         return Path(self.local_path_edit.text().strip() or self._default_projects_dir())
@@ -1480,7 +1497,8 @@ class DocumentControlApp(QMainWindow):
                 tooltip_lines.append(f"Client: {entry['client']}")
             if entry.get("year_started"):
                 tooltip_lines.append(f"Year Started: {entry['year_started']}")
-            item.setToolTip("\n".join(tooltip_lines))
+            self._set_projects_item_base_tooltip(item, "\n".join(tooltip_lines))
+            self._apply_projects_list_item_style(item, "tracked_projects", str(entry["project_dir"]))
             self.tracked_projects_list.addItem(item)
             if entry["project_dir"] == self.current_project_dir:
                 current_item = item
@@ -3138,10 +3156,15 @@ class DocumentControlApp(QMainWindow):
 
     def _refresh_favorites_list(self, favorites: List[str]) -> None:
         self.favorites_list.clear()
+        search = self.project_favorites_search_edit.text().strip().lower()
         for favorite in favorites:
-            item = QListWidgetItem(self._favorite_display_name(favorite))
+            display_name = self._favorite_display_name(favorite)
+            if search and search not in display_name.lower() and search not in favorite.lower():
+                continue
+            item = QListWidgetItem(display_name)
             item.setData(Qt.UserRole, favorite)
-            item.setToolTip(favorite)
+            self._set_projects_item_base_tooltip(item, favorite)
+            self._apply_projects_list_item_style(item, "project_favorites", str(favorite))
             self.favorites_list.addItem(item)
 
     def _set_project_favorites(self, favorites: List[str]) -> None:
@@ -3309,7 +3332,8 @@ class DocumentControlApp(QMainWindow):
                 continue
             item = QListWidgetItem(Path(favorite).name or favorite)
             item.setData(Qt.UserRole, favorite)
-            item.setToolTip(favorite)
+            self._set_projects_item_base_tooltip(item, favorite)
+            self._apply_projects_list_item_style(item, "global_favorites", str(favorite))
             self.global_favorites_list.addItem(item)
 
     def _browse_and_add_global_favorites(self) -> None:
@@ -3365,6 +3389,7 @@ class DocumentControlApp(QMainWindow):
         add_project_action = menu.addAction("Add Selected To Project Favorites")
         open_action = menu.addAction("Open Selected")
         remove_action = menu.addAction("Remove Selected")
+        customize_action = menu.addAction("Customize/Organize")
         chosen = menu.exec(self.global_favorites_list.mapToGlobal(pos))
         if chosen == add_action:
             self._browse_and_add_global_favorites()
@@ -3374,6 +3399,8 @@ class DocumentControlApp(QMainWindow):
             self._open_selected_global_favorites()
         elif chosen == remove_action:
             self._remove_selected_global_favorites()
+        elif chosen == customize_action:
+            self._customize_organize_selected(self.global_favorites_list)
 
     def _load_global_notes(self) -> None:
         data = self._read_json_candidates([self._default_global_notes_file()])
@@ -3406,6 +3433,457 @@ class DocumentControlApp(QMainWindow):
             "notes": self.global_notes,
         }
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _normalize_group_name(self, value: object) -> str:
+        return " ".join(str(value or "").strip().split())
+
+    def _normalize_hex_color(self, value: object) -> str:
+        text = str(value or "").strip()
+        color = QColor(text)
+        if not color.isValid():
+            return ""
+        return color.name().upper()
+
+    def _best_contrast_font_color(self, background_hex: str) -> str:
+        color = QColor(background_hex)
+        if not color.isValid():
+            return "#000000"
+        luminance = (
+            (0.299 * color.red()) + (0.587 * color.green()) + (0.114 * color.blue())
+        ) / 255.0
+        return "#000000" if luminance >= 0.5 else "#FFFFFF"
+
+    def _effective_font_color(
+        self,
+        background_hex: str,
+        configured_font_hex: str,
+        auto_contrast: bool,
+    ) -> str:
+        bg = self._normalize_hex_color(background_hex)
+        fg = self._normalize_hex_color(configured_font_hex)
+        if fg:
+            return fg
+        if auto_contrast and bg:
+            return self._best_contrast_font_color(bg)
+        return ""
+
+    def _normalize_item_customization(self, value: object) -> Dict[str, object]:
+        if not isinstance(value, dict):
+            return {}
+        groups: List[str] = []
+        for group in value.get("groups", []) if isinstance(value.get("groups", []), list) else []:
+            group_name = self._normalize_group_name(group)
+            if group_name and group_name not in groups:
+                groups.append(group_name)
+        background = self._normalize_hex_color(value.get("background", ""))
+        font = self._normalize_hex_color(value.get("font", ""))
+        auto_contrast = bool(value.get("auto_contrast", True))
+        normalized: Dict[str, object] = {}
+        if groups:
+            normalized["groups"] = groups
+        if background:
+            normalized["background"] = background
+        if font:
+            normalized["font"] = font
+        if background:
+            normalized["auto_contrast"] = auto_contrast
+        return normalized
+
+    def _load_item_customizations(self) -> None:
+        path = self._default_item_customizations_file()
+        data = self._read_json_candidates([path])
+        self.item_customization_groups = []
+        self.item_customizations = {}
+        if not isinstance(data, dict):
+            return
+
+        raw_groups = data.get("groups", [])
+        if isinstance(raw_groups, list):
+            for group in raw_groups:
+                group_name = self._normalize_group_name(group)
+                if group_name and group_name not in self.item_customization_groups:
+                    self.item_customization_groups.append(group_name)
+
+        raw_scopes = data.get("scopes", {})
+        if isinstance(raw_scopes, dict):
+            for scope, scope_value in raw_scopes.items():
+                if not isinstance(scope_value, dict):
+                    continue
+                normalized_scope: Dict[str, Dict[str, object]] = {}
+                for item_key, item_value in scope_value.items():
+                    key = str(item_key).strip()
+                    if not key:
+                        continue
+                    normalized = self._normalize_item_customization(item_value)
+                    if normalized:
+                        normalized_scope[key] = normalized
+                        for group in normalized.get("groups", []):
+                            if group not in self.item_customization_groups:
+                                self.item_customization_groups.append(str(group))
+                if normalized_scope:
+                    self.item_customizations[str(scope)] = normalized_scope
+
+    def _save_item_customizations(self) -> None:
+        path = self._default_item_customizations_file()
+        self._ensure_parent_dir(path)
+        payload = {
+            "schema_version": ITEM_CUSTOMIZATIONS_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
+            "groups": self.item_customization_groups,
+            "scopes": self.item_customizations,
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _projects_customization_scope(self, list_widget: QListWidget) -> str:
+        if list_widget is self.tracked_projects_list:
+            return "tracked_projects"
+        if list_widget is self.favorites_list:
+            return "project_favorites"
+        if list_widget is self.global_favorites_list:
+            return "global_favorites"
+        if list_widget is self.notes_list:
+            return "project_notes"
+        return ""
+
+    def _item_customization_for(self, scope: str, item_key: str) -> Dict[str, object]:
+        if not scope or not item_key:
+            return {}
+        raw = self.item_customizations.get(scope, {}).get(item_key, {})
+        return self._normalize_item_customization(raw)
+
+    def _set_item_customization(self, scope: str, item_key: str, value: Dict[str, object]) -> None:
+        if not scope or not item_key:
+            return
+        normalized = self._normalize_item_customization(value)
+        if normalized:
+            self.item_customizations.setdefault(scope, {})[item_key] = normalized
+            for group in normalized.get("groups", []):
+                group_name = self._normalize_group_name(group)
+                if group_name and group_name not in self.item_customization_groups:
+                    self.item_customization_groups.append(group_name)
+        else:
+            scope_map = self.item_customizations.get(scope, {})
+            scope_map.pop(item_key, None)
+            if not scope_map and scope in self.item_customizations:
+                self.item_customizations.pop(scope, None)
+        self._save_item_customizations()
+
+    def _set_projects_item_base_tooltip(self, item: QListWidgetItem, tooltip: str) -> None:
+        item.setData(Qt.UserRole + 40, tooltip)
+        item.setToolTip(tooltip)
+
+    def _apply_projects_list_item_style(
+        self, item: QListWidgetItem, scope: str, item_key: str
+    ) -> None:
+        item.setBackground(QBrush())
+        item.setForeground(QBrush())
+        base_tooltip = str(item.data(Qt.UserRole + 40) or item.toolTip() or "")
+        custom = self._item_customization_for(scope, item_key)
+        if not custom:
+            item.setToolTip(base_tooltip)
+            return
+
+        groups = [str(group) for group in custom.get("groups", []) if str(group).strip()]
+        background = self._normalize_hex_color(custom.get("background", ""))
+        configured_font = self._normalize_hex_color(custom.get("font", ""))
+        auto_contrast = bool(custom.get("auto_contrast", True))
+        if background:
+            item.setBackground(QBrush(QColor(background)))
+            effective_font = self._effective_font_color(background, configured_font, auto_contrast)
+            if effective_font:
+                item.setForeground(QBrush(QColor(effective_font)))
+        elif configured_font:
+            item.setForeground(QBrush(QColor(configured_font)))
+
+        tooltip_lines = [line for line in [base_tooltip.strip()] if line]
+        if groups:
+            tooltip_lines.append(f"Groups: {', '.join(groups)}")
+        item.setToolTip("\n".join(tooltip_lines))
+
+    def _refresh_projects_customization_scope(self, scope: str) -> None:
+        if scope == "tracked_projects":
+            self._refresh_tracked_projects_list()
+            return
+        if scope == "project_favorites":
+            self._refresh_favorites_list(self._current_project_favorites())
+            return
+        if scope == "global_favorites":
+            self._refresh_global_favorites_list()
+            return
+        if scope == "project_notes":
+            self._refresh_notes_list(self._current_project_notes())
+
+    def _customize_organize_selected(self, list_widget: QListWidget) -> None:
+        scope = self._projects_customization_scope(list_widget)
+        if not scope:
+            return
+        selected_items = list_widget.selectedItems()
+        if not selected_items:
+            current = list_widget.currentItem()
+            if current:
+                selected_items = [current]
+        if not selected_items:
+            self._error("Select at least one item to customize.")
+            return
+
+        targets: List[Tuple[str, str]] = []
+        for selected in selected_items:
+            key = str(selected.data(Qt.UserRole)).strip()
+            if not key:
+                continue
+            targets.append((key, selected.text().strip() or key))
+        if not targets:
+            self._error("Selected item does not support customization.")
+            return
+        self._show_customize_organize_dialog(scope, targets)
+
+    def _show_customize_organize_dialog(self, scope: str, targets: List[Tuple[str, str]]) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Customize / Organize")
+        dialog.resize(640, 560)
+        layout = QVBoxLayout(dialog)
+
+        target_label = QLabel(
+            targets[0][1] if len(targets) == 1 else f"{len(targets)} selected items"
+        )
+        target_label.setWordWrap(True)
+        layout.addWidget(target_label)
+
+        group_frame = QGroupBox("Groups")
+        group_layout = QVBoxLayout(group_frame)
+        groups_list = QListWidget()
+        group_layout.addWidget(groups_list, stretch=1)
+        group_buttons = QHBoxLayout()
+        add_group_btn = QPushButton("Add Group")
+        rename_group_btn = QPushButton("Rename Group")
+        remove_group_btn = QPushButton("Remove Group")
+        group_buttons.addWidget(add_group_btn)
+        group_buttons.addWidget(rename_group_btn)
+        group_buttons.addWidget(remove_group_btn)
+        group_layout.addLayout(group_buttons)
+        layout.addWidget(group_frame, stretch=1)
+
+        color_frame = QGroupBox("Color Highlighting")
+        color_layout = QGridLayout(color_frame)
+        background_edit = QLineEdit()
+        background_edit.setReadOnly(True)
+        pick_background_btn = QPushButton("Pick Highlight")
+        clear_background_btn = QPushButton("Clear")
+        font_edit = QLineEdit()
+        font_edit.setReadOnly(True)
+        pick_font_btn = QPushButton("Pick Font Color")
+        clear_font_btn = QPushButton("Clear")
+        auto_contrast_checkbox = QCheckBox("Auto-contrast font color")
+        auto_contrast_checkbox.setChecked(True)
+        preview = QLabel("Preview")
+        preview.setFrameShape(QFrame.StyledPanel)
+        preview.setAlignment(Qt.AlignCenter)
+        preview.setMinimumHeight(44)
+        color_layout.addWidget(QLabel("Highlight:"), 0, 0)
+        color_layout.addWidget(background_edit, 0, 1)
+        color_layout.addWidget(pick_background_btn, 0, 2)
+        color_layout.addWidget(clear_background_btn, 0, 3)
+        color_layout.addWidget(QLabel("Font:"), 1, 0)
+        color_layout.addWidget(font_edit, 1, 1)
+        color_layout.addWidget(pick_font_btn, 1, 2)
+        color_layout.addWidget(clear_font_btn, 1, 3)
+        color_layout.addWidget(auto_contrast_checkbox, 2, 0, 1, 4)
+        color_layout.addWidget(preview, 3, 0, 1, 4)
+        layout.addWidget(color_frame)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        layout.addWidget(buttons)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        existing = [self._item_customization_for(scope, item_key) for item_key, _ in targets]
+        selected_group_names = set()
+        if existing:
+            group_candidates = [
+                set(str(group) for group in custom.get("groups", []))
+                for custom in existing
+            ]
+            selected_group_names = set.intersection(*group_candidates) if group_candidates else set()
+        common_background = ""
+        common_font = ""
+        common_auto = True
+        if existing:
+            background_values = {str(custom.get("background", "")).strip() for custom in existing}
+            font_values = {str(custom.get("font", "")).strip() for custom in existing}
+            auto_values = {bool(custom.get("auto_contrast", True)) for custom in existing}
+            common_background = next(iter(background_values)) if len(background_values) == 1 else ""
+            common_font = next(iter(font_values)) if len(font_values) == 1 else ""
+            common_auto = auto_values == {True}
+
+        manual_font_selected = bool(common_font)
+
+        def refresh_groups_widget(selected_groups: Optional[set] = None) -> None:
+            groups_list.clear()
+            selected_lookup = selected_groups if selected_groups is not None else set()
+            for group_name in self.item_customization_groups:
+                item = QListWidgetItem(group_name)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(
+                    Qt.Checked if group_name in selected_lookup else Qt.Unchecked
+                )
+                groups_list.addItem(item)
+
+        def update_preview() -> None:
+            background = self._normalize_hex_color(background_edit.text())
+            font = self._normalize_hex_color(font_edit.text())
+            effective_font = self._effective_font_color(
+                background,
+                font if manual_font_selected else "",
+                auto_contrast_checkbox.isChecked(),
+            )
+            background_css = f"background-color: {background};" if background else ""
+            foreground_css = f"color: {effective_font};" if effective_font else ""
+            preview.setStyleSheet(f"padding: 8px; {background_css} {foreground_css}")
+            preview.setText("Preview")
+
+        refresh_groups_widget(selected_group_names)
+        background_edit.setText(common_background)
+        font_edit.setText(common_font)
+        auto_contrast_checkbox.setChecked(common_auto)
+        update_preview()
+
+        def on_add_group() -> None:
+            name, accepted = QInputDialog.getText(dialog, "Add Group", "Group name:")
+            if not accepted:
+                return
+            group_name = self._normalize_group_name(name)
+            if not group_name:
+                return
+            if group_name not in self.item_customization_groups:
+                self.item_customization_groups.append(group_name)
+            selected_group_names.add(group_name)
+            refresh_groups_widget(selected_group_names)
+
+        def on_rename_group() -> None:
+            current_item = groups_list.currentItem()
+            if current_item is None:
+                self._error("Select a group to rename.")
+                return
+            current_name = current_item.text().strip()
+            new_name, accepted = QInputDialog.getText(
+                dialog, "Rename Group", "New group name:", text=current_name
+            )
+            if not accepted:
+                return
+            normalized_new = self._normalize_group_name(new_name)
+            if not normalized_new:
+                return
+            if normalized_new != current_name and normalized_new in self.item_customization_groups:
+                self._error("A group with this name already exists.")
+                return
+            for idx, group_name in enumerate(self.item_customization_groups):
+                if group_name == current_name:
+                    self.item_customization_groups[idx] = normalized_new
+            for scope_items in self.item_customizations.values():
+                for custom in scope_items.values():
+                    groups = custom.get("groups", [])
+                    if not isinstance(groups, list):
+                        continue
+                    updated = [
+                        normalized_new if str(group) == current_name else str(group)
+                        for group in groups
+                    ]
+                    deduped: List[str] = []
+                    for group in updated:
+                        if group and group not in deduped:
+                            deduped.append(group)
+                    custom["groups"] = deduped
+            if current_name in selected_group_names:
+                selected_group_names.remove(current_name)
+                selected_group_names.add(normalized_new)
+            refresh_groups_widget(selected_group_names)
+
+        def on_remove_group() -> None:
+            current_item = groups_list.currentItem()
+            if current_item is None:
+                self._error("Select a group to remove.")
+                return
+            group_name = current_item.text().strip()
+            self.item_customization_groups = [
+                name for name in self.item_customization_groups if name != group_name
+            ]
+            selected_group_names.discard(group_name)
+            for scope_items in self.item_customizations.values():
+                for custom in scope_items.values():
+                    groups = custom.get("groups", [])
+                    if not isinstance(groups, list):
+                        continue
+                    custom["groups"] = [
+                        str(group) for group in groups if str(group).strip() and str(group) != group_name
+                    ]
+            refresh_groups_widget(selected_group_names)
+
+        def on_pick_background() -> None:
+            current = QColor(background_edit.text()) if background_edit.text().strip() else QColor()
+            chosen = QColorDialog.getColor(current, dialog, "Select Highlight Color")
+            if not chosen.isValid():
+                return
+            background_edit.setText(chosen.name().upper())
+            update_preview()
+
+        def on_clear_background() -> None:
+            background_edit.clear()
+            update_preview()
+
+        def on_pick_font() -> None:
+            nonlocal manual_font_selected
+            current = QColor(font_edit.text()) if font_edit.text().strip() else QColor()
+            chosen = QColorDialog.getColor(current, dialog, "Select Font Color")
+            if not chosen.isValid():
+                return
+            manual_font_selected = True
+            font_edit.setText(chosen.name().upper())
+            update_preview()
+
+        def on_clear_font() -> None:
+            nonlocal manual_font_selected
+            manual_font_selected = False
+            font_edit.clear()
+            update_preview()
+
+        add_group_btn.clicked.connect(on_add_group)
+        rename_group_btn.clicked.connect(on_rename_group)
+        remove_group_btn.clicked.connect(on_remove_group)
+        pick_background_btn.clicked.connect(on_pick_background)
+        clear_background_btn.clicked.connect(on_clear_background)
+        pick_font_btn.clicked.connect(on_pick_font)
+        clear_font_btn.clicked.connect(on_clear_font)
+        auto_contrast_checkbox.toggled.connect(lambda _checked: update_preview())
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        chosen_groups: List[str] = []
+        for row in range(groups_list.count()):
+            item = groups_list.item(row)
+            if item.checkState() == Qt.Checked:
+                group_name = self._normalize_group_name(item.text())
+                if group_name and group_name not in chosen_groups:
+                    chosen_groups.append(group_name)
+
+        background = self._normalize_hex_color(background_edit.text())
+        font = self._normalize_hex_color(font_edit.text()) if manual_font_selected else ""
+        auto_contrast = bool(auto_contrast_checkbox.isChecked())
+        for item_key, _label in targets:
+            payload: Dict[str, object] = {}
+            if chosen_groups:
+                payload["groups"] = list(chosen_groups)
+            if background:
+                payload["background"] = background
+                payload["auto_contrast"] = auto_contrast
+                if font:
+                    payload["font"] = font
+            elif font:
+                payload["font"] = font
+            self._set_item_customization(scope, item_key, payload)
+
+        self._save_item_customizations()
+        self._refresh_projects_customization_scope(scope)
 
     def _refresh_global_notes_list(self) -> None:
         if not hasattr(self, "global_notes_list"):
@@ -3495,7 +3973,8 @@ class DocumentControlApp(QMainWindow):
         for note in notes:
             item = QListWidgetItem(note.get("subject", "(Untitled)"))
             item.setData(Qt.UserRole, note.get("id", ""))
-            item.setToolTip(self._note_tooltip(note))
+            self._set_projects_item_base_tooltip(item, self._note_tooltip(note))
+            self._apply_projects_list_item_style(item, "project_notes", str(note.get("id", "")))
             self.notes_list.addItem(item)
 
     def _set_project_notes(self, notes: List[Dict[str, str]]) -> None:
@@ -5911,6 +6390,7 @@ class DocumentControlApp(QMainWindow):
         move_down_action = menu.addAction("Move Down")
         move_top_action = menu.addAction("Move to Top")
         move_bottom_action = menu.addAction("Move to Bottom")
+        customize_action = menu.addAction("Customize/Organize")
         chosen = menu.exec(self.tracked_projects_list.mapToGlobal(pos))
         if chosen == load_action:
             self._load_selected_tracked_project()
@@ -5930,6 +6410,8 @@ class DocumentControlApp(QMainWindow):
             self._move_selected_project_top()
         elif chosen == move_bottom_action:
             self._move_selected_project_bottom()
+        elif chosen == customize_action:
+            self._customize_organize_selected(self.tracked_projects_list)
 
     def _show_favorites_context_menu_for_item(self, item: QListWidgetItem) -> None:
         self.favorites_list.setCurrentItem(item)
@@ -5953,6 +6435,7 @@ class DocumentControlApp(QMainWindow):
         move_down_action = menu.addAction("Move Down")
         move_top_action = menu.addAction("Move to Top")
         move_bottom_action = menu.addAction("Move to Bottom")
+        customize_action = menu.addAction("Customize/Organize")
         chosen = menu.exec(self.favorites_list.mapToGlobal(pos))
         if chosen == add_action:
             self._browse_and_add_favorites()
@@ -5970,6 +6453,8 @@ class DocumentControlApp(QMainWindow):
             self._move_selected_favorite_top()
         elif chosen == move_bottom_action:
             self._move_selected_favorite_bottom()
+        elif chosen == customize_action:
+            self._customize_organize_selected(self.favorites_list)
 
     def _show_notes_context_menu_for_item(self, item: QListWidgetItem) -> None:
         self.notes_list.setCurrentItem(item)
@@ -5992,6 +6477,7 @@ class DocumentControlApp(QMainWindow):
         move_down_action = menu.addAction("Move Down")
         move_top_action = menu.addAction("Move to Top")
         move_bottom_action = menu.addAction("Move to Bottom")
+        customize_action = menu.addAction("Customize/Organize")
         chosen = menu.exec(self.notes_list.mapToGlobal(pos))
         if chosen == new_action:
             self._create_note()
@@ -6007,6 +6493,8 @@ class DocumentControlApp(QMainWindow):
             self._move_selected_note_top()
         elif chosen == move_bottom_action:
             self._move_selected_note_bottom()
+        elif chosen == customize_action:
+            self._customize_organize_selected(self.notes_list)
 
     def _show_milestones_context_menu_for_item(self, item: QListWidgetItem) -> None:
         self.milestones_list.setCurrentItem(item)
@@ -6347,6 +6835,7 @@ class DocumentControlApp(QMainWindow):
         self._save_records()
         self._save_global_favorites()
         self._save_global_notes()
+        self._save_item_customizations()
         super().closeEvent(event)
 
 

@@ -107,3 +107,28 @@ def test_favorites_can_be_added_between_project_and_global(app_env):
     app.global_favorites_list.item(0).setSelected(True)
     app._add_selected_global_favorites_to_project()
     assert str(tmp / "b.dwg") in app._current_project_favorites()
+
+
+def test_project_favorites_search_filters_list(app_env):
+    # Project favorites tab should support text filtering like global favorites.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "FavSearch"
+    source_dir = tmp / "src"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    app._write_project_config(
+        project_dir,
+        "FavSearch",
+        [str(source_dir)],
+        favorites=[str(tmp / "alpha.dwg"), str(tmp / "beta.pdf")],
+    )
+    app._load_project_from_dir(project_dir)
+
+    app.project_favorites_search_edit.setText("alpha")
+    assert app.favorites_list.count() == 1
+    assert app.favorites_list.item(0).text() == "alpha.dwg"
+
+    app.project_favorites_search_edit.setText("")
+    assert app.favorites_list.count() == 2

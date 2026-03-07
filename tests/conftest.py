@@ -33,6 +33,7 @@ def app_env(tmp_path, monkeypatch, qapp):
         "presets": data_root / "filter_presets.json",
         "global_favorites": data_root / "global_favorites.json",
         "global_notes": data_root / "global_notes.json",
+        "item_customizations": data_root / "item_customizations.json",
         "debug_log": data_root / "debug_events.log",
         "legacy_settings": tmp_path / "legacy-settings.json",
         "legacy_projects": tmp_path / "legacy-projects.json",
@@ -49,6 +50,9 @@ def app_env(tmp_path, monkeypatch, qapp):
         app_module, "GLOBAL_FAVORITES_FILE", paths["global_favorites"], raising=False
     )
     monkeypatch.setattr(app_module, "GLOBAL_NOTES_FILE", paths["global_notes"], raising=False)
+    monkeypatch.setattr(
+        app_module, "ITEM_CUSTOMIZATIONS_FILE", paths["item_customizations"], raising=False
+    )
     # Override default locations used when creating a fresh app instance.
     monkeypatch.setattr(
         app_module.DocumentControlApp,
@@ -90,6 +94,12 @@ def app_env(tmp_path, monkeypatch, qapp):
         app_module.DocumentControlApp,
         "_default_global_notes_file",
         lambda _self: paths["global_notes"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        app_module.DocumentControlApp,
+        "_default_item_customizations_file",
+        lambda _self: paths["item_customizations"],
         raising=False,
     )
 
