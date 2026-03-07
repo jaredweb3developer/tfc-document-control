@@ -109,13 +109,13 @@ def test_loading_project_without_sources_clears_controlled_files(app_env):
     app = app_env["app"]
     tmp = app_env["tmp"]
 
-    app.controlled_files_list.addItem(QListWidgetItem("stale-item"))
+    app.controlled_files_table.setRowCount(1)
 
     empty_project = tmp / "Projects" / "Empty"
     app._write_project_config(empty_project, "Empty", [])
     app._load_project_from_dir(empty_project)
 
-    assert app.controlled_files_list.count() == 0
+    assert app.controlled_files_table.rowCount() == 0
 
 
 def test_untrack_project_with_checked_out_files_stays_tracked(app_env, monkeypatch):

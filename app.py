@@ -69,6 +69,8 @@ PROJECT_CONFIG_FILE = "dctl.json"
 HISTORY_FILE_NAME = ".doc_control_history.json"
 LEGACY_HISTORY_FILE_NAME = ".doc_control_history.csv"
 HISTORY_SCHEMA_VERSION = 1
+DIRECTORY_NOTES_FILE = ".doc_file_notes.json"
+DIRECTORY_NOTES_SCHEMA_VERSION = 1
 DEFAULT_PROJECT_NAME = "Default"
 DEBUG_EVENTS_FILE = USER_DATA_ROOT / "debug_events.log"
 FILE_VERSIONS_FILE = "file_versions.json"
@@ -183,18 +185,8 @@ class DocumentControlApp(QMainWindow):
         checked_out_layout = QVBoxLayout(checked_out_tab)
         checked_out_layout.addWidget(self._build_checked_out_group(), stretch=1)
 
-        global_favorites_tab = QWidget()
-        global_favorites_layout = QVBoxLayout(global_favorites_tab)
-        global_favorites_layout.addWidget(self._build_global_favorites_group(), stretch=1)
-
-        global_notes_tab = QWidget()
-        global_notes_layout = QVBoxLayout(global_notes_tab)
-        global_notes_layout.addWidget(self._build_global_notes_group(), stretch=1)
-
         self.main_tabs.addTab(main_tab, "Main")
         self.main_tabs.addTab(checked_out_tab, "Checked Out Files")
-        self.main_tabs.addTab(global_favorites_tab, "Global Favorites")
-        self.main_tabs.addTab(global_notes_tab, "Global Notes")
         self.main_tabs.addTab(configuration_tab, "Configuration")
 
         layout.addWidget(self.main_tabs)
@@ -372,19 +364,46 @@ class DocumentControlApp(QMainWindow):
         favorites_panel = QWidget()
         favorites_layout = QVBoxLayout(favorites_panel)
         favorites_layout.addWidget(QLabel("Favorite Files"))
+
+        self.favorites_tabs = QTabWidget()
+        project_favorites_tab = QWidget()
+        project_favorites_layout = QVBoxLayout(project_favorites_tab)
         self.favorites_list = QListWidget()
         self.favorites_list.itemDoubleClicked.connect(self._show_favorites_context_menu_for_item)
         self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.favorites_list.customContextMenuRequested.connect(self._show_favorites_context_menu)
-        favorites_layout.addWidget(self.favorites_list, stretch=1)
+        project_favorites_layout.addWidget(self.favorites_list, stretch=1)
+        self.favorites_tabs.addTab(project_favorites_tab, "Project Favorites")
+
+        global_favorites_tab = QWidget()
+        global_favorites_layout = QVBoxLayout(global_favorites_tab)
+        self.global_favorites_search_edit = QLineEdit()
+        self.global_favorites_search_edit.setPlaceholderText("Search global favorites")
+        self.global_favorites_search_edit.textChanged.connect(self._refresh_global_favorites_list)
+        global_favorites_layout.addWidget(self.global_favorites_search_edit)
+        self.global_favorites_list = QListWidget()
+        self.global_favorites_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.global_favorites_list.itemDoubleClicked.connect(
+            self._show_global_favorites_context_menu_for_item
+        )
+        self.global_favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.global_favorites_list.customContextMenuRequested.connect(
+            self._show_global_favorites_context_menu
+        )
+        global_favorites_layout.addWidget(self.global_favorites_list, stretch=1)
+        self.favorites_tabs.addTab(global_favorites_tab, "Global Favorites")
+        favorites_layout.addWidget(self.favorites_tabs, stretch=1)
+
         favorites_controls = QHBoxLayout()
         favorites_controls.addWidget(
             self._build_options_button(
                 [
-                    ("Add Favorite", self._browse_and_add_favorites),
-                    ("Open Selected", self._open_selected_favorites),
-                    ("Remove Favorite", self._remove_selected_favorites),
-                    ("---", self._open_selected_favorites),
+                    ("Add Project Favorite", self._browse_and_add_favorites),
+                    ("Add Global Favorite", self._browse_and_add_global_favorites),
+                    ("Add Selected Global -> Project", self._add_selected_global_favorites_to_project),
+                    ("Open Selected", self._open_selected_favorites_from_active_tab),
+                    ("Remove Selected", self._remove_selected_favorites_from_active_tab),
+                    ("---", self._open_selected_favorites_from_active_tab),
                     ("Move Up", self._move_selected_favorite_up),
                     ("Move Down", self._move_selected_favorite_down),
                     ("Move to Top", self._move_selected_favorite_top),
@@ -587,14 +606,39 @@ class DocumentControlApp(QMainWindow):
 
         controlled_panel = QWidget()
         controlled_layout = QVBoxLayout(controlled_panel)
-        controlled_layout.addWidget(QLabel("Directory's Controlled Files"))
-        self.controlled_files_list = QListWidget()
-        self.controlled_files_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.controlled_files_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.controlled_files_list.customContextMenuRequested.connect(
+        controlled_layout.addWidget(QLabel("Directory"))
+        self.directory_tabs = QTabWidget()
+        self.controlled_files_table = QTableWidget(0, 3)
+        self.controlled_files_table.setHorizontalHeaderLabels(["File Name", "Initials", "Checked Out"])
+        self.controlled_files_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.controlled_files_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.controlled_files_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.controlled_files_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.controlled_files_table.customContextMenuRequested.connect(
             self._show_controlled_files_context_menu
         )
-        controlled_layout.addWidget(self.controlled_files_list, stretch=1)
+        controlled_header = self.controlled_files_table.horizontalHeader()
+        controlled_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        controlled_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        controlled_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
+        self.directory_notes_table = QTableWidget(0, 3)
+        self.directory_notes_table.setHorizontalHeaderLabels(["File Name", "Notes", "Last Modified"])
+        self.directory_notes_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.directory_notes_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.directory_notes_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.directory_notes_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.directory_notes_table.customContextMenuRequested.connect(
+            self._show_directory_notes_context_menu
+        )
+        notes_header = self.directory_notes_table.horizontalHeader()
+        notes_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        notes_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        notes_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
+        self.directory_tabs.addTab(self.controlled_files_table, "Controlled Files")
+        self.directory_tabs.addTab(self.directory_notes_table, "File Notes")
+        controlled_layout.addWidget(self.directory_tabs, stretch=1)
 
         controlled_button_bar = QHBoxLayout()
         controlled_button_bar.addWidget(
@@ -602,6 +646,7 @@ class DocumentControlApp(QMainWindow):
                 [
                     ("Refresh", self._refresh_controlled_files),
                     ("Force Check In", self._force_checkin_selected),
+                    ("View File Notes", self._open_notes_for_selected_source_file),
                 ]
             )
         )
@@ -2817,7 +2862,8 @@ class DocumentControlApp(QMainWindow):
         with self._debug_timed("refresh_source_files", directory=current_dir):
             self.files_list.clear()
             if not self.current_directory or not self.current_directory.is_dir():
-                self.controlled_files_list.clear()
+                self.controlled_files_table.setRowCount(0)
+                self.directory_notes_table.setRowCount(0)
                 return
 
             search_term = self.file_search_edit.text().strip().lower()
@@ -2850,23 +2896,33 @@ class DocumentControlApp(QMainWindow):
     def _refresh_controlled_files(self) -> None:
         current_dir = str(self.current_directory) if self.current_directory else ""
         with self._debug_timed("refresh_controlled_files", directory=current_dir):
-            self.controlled_files_list.clear()
+            self.controlled_files_table.setRowCount(0)
+            self.directory_notes_table.setRowCount(0)
             if not self.current_directory or not self.current_directory.is_dir():
                 return
 
             count = 0
             for entry in self._checked_out_files_for_directory(self.current_directory):
-                label = entry["file_name"]
-                if entry["initials"]:
-                    label = f"{label} ({entry['initials']})"
-                item = QListWidgetItem(label)
-                item.setData(Qt.UserRole, entry)
-                tooltip = entry["locked_source_file"]
-                if entry["full_name"]:
-                    tooltip = f"{tooltip}\n{entry['full_name']}"
-                item.setToolTip(tooltip)
-                self.controlled_files_list.addItem(item)
+                row_idx = self.controlled_files_table.rowCount()
+                self.controlled_files_table.insertRow(row_idx)
+                file_item = QTableWidgetItem(entry["file_name"])
+                file_item.setData(Qt.UserRole, entry)
+                file_item.setToolTip(entry["locked_source_file"])
+                initials_item = QTableWidgetItem(entry["initials"])
+                initials_item.setToolTip(entry["full_name"] or entry["initials"])
+                checked_out_item = QTableWidgetItem(
+                    self._format_checkout_timestamp(str(entry.get("checked_out_at", "")))
+                )
+                checked_out_item.setToolTip(str(entry.get("checked_out_at", "")))
+                self.controlled_files_table.setItem(row_idx, 0, file_item)
+                self.controlled_files_table.setItem(row_idx, 1, initials_item)
+                self.controlled_files_table.setItem(row_idx, 2, checked_out_item)
                 count += 1
+            self.controlled_files_table.resizeColumnsToContents()
+            self.controlled_files_table.setColumnWidth(
+                0, max(self.controlled_files_table.columnWidth(0), 200)
+            )
+            self._refresh_directory_notes_summary()
             self._debug_event("controlled_files_refreshed", directory=current_dir, count=count)
 
     def _add_source_directory(self) -> None:
@@ -3153,11 +3209,17 @@ class DocumentControlApp(QMainWindow):
         return ordered
 
     def _move_selected_favorite(self, delta: int) -> None:
+        if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() != 0:
+            self._error("Switch to 'Project Favorites' to reorder favorites.")
+            return
         if not self._move_list_widget_item(self.favorites_list, delta):
             return
         self._set_project_favorites(self._favorites_from_ui_order())
 
     def _move_selected_favorite_to(self, target_index: int) -> None:
+        if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() != 0:
+            self._error("Switch to 'Project Favorites' to reorder favorites.")
+            return
         if not self._move_list_widget_item_to(self.favorites_list, target_index):
             return
         self._set_project_favorites(self._favorites_from_ui_order())
@@ -3183,6 +3245,25 @@ class DocumentControlApp(QMainWindow):
             self._error("Select at least one favorite to open.")
             return
         self._open_paths([Path(str(item.data(Qt.UserRole))) for item in selected_items])
+
+    def _open_selected_favorites_from_active_tab(self) -> None:
+        if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 1:
+            self._open_selected_global_favorites()
+            return
+        self._open_selected_favorites()
+
+    def _remove_selected_favorites_from_active_tab(self) -> None:
+        if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 1:
+            self._remove_selected_global_favorites()
+            return
+        self._remove_selected_favorites()
+
+    def _add_selected_global_favorites_to_project(self) -> None:
+        selected_items = self.global_favorites_list.selectedItems()
+        if not selected_items:
+            self._error("Select at least one global favorite.")
+            return
+        self._add_favorite_paths([Path(str(item.data(Qt.UserRole))) for item in selected_items])
 
     def _load_global_favorites(self) -> None:
         data = self._read_json_candidates([self._default_global_favorites_file()])
@@ -4278,6 +4359,334 @@ class DocumentControlApp(QMainWindow):
         rows.reverse()
         return rows
 
+    def _directory_notes_path(self, source_dir: Path) -> Path:
+        return source_dir / DIRECTORY_NOTES_FILE
+
+    def _read_directory_notes(self, source_dir: Path) -> List[Dict[str, str]]:
+        notes_file = self._directory_notes_path(source_dir)
+        if not notes_file.exists():
+            return []
+        try:
+            raw = json.loads(notes_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return []
+        entries = raw.get("entries", raw) if isinstance(raw, dict) else raw
+        if not isinstance(entries, list):
+            return []
+        notes: List[Dict[str, str]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            notes.append(
+                {
+                    "id": str(entry.get("id", "")).strip() or str(uuid4()),
+                    "file_name": str(entry.get("file_name", "")).strip(),
+                    "parent_id": str(entry.get("parent_id", "")).strip(),
+                    "subject": str(entry.get("subject", "")).strip(),
+                    "body": str(entry.get("body", "")),
+                    "created_by_initials": str(entry.get("created_by_initials", "")).strip(),
+                    "created_by_name": str(entry.get("created_by_name", "")).strip(),
+                    "created_at": str(entry.get("created_at", "")).strip(),
+                    "updated_at": str(entry.get("updated_at", "")).strip(),
+                }
+            )
+        return notes
+
+    def _write_directory_notes(self, source_dir: Path, notes: List[Dict[str, str]]) -> None:
+        notes_file = self._directory_notes_path(source_dir)
+        self._ensure_parent_dir(notes_file)
+        payload = {
+            "schema_version": DIRECTORY_NOTES_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
+            "entries": notes,
+        }
+        tmp_file = notes_file.with_suffix(notes_file.suffix + ".tmp")
+        tmp_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp_file, notes_file)
+
+    def _note_preview(self, body: str, limit: int = 80) -> str:
+        collapsed = " ".join(body.split())
+        if len(collapsed) <= limit:
+            return collapsed
+        return collapsed[: limit - 3].rstrip() + "..."
+
+    def _refresh_directory_notes_summary(self) -> None:
+        self.directory_notes_table.setRowCount(0)
+        if not self.current_directory or not self.current_directory.is_dir():
+            return
+        notes = self._read_directory_notes(self.current_directory)
+        by_file: Dict[str, List[Dict[str, str]]] = {}
+        for note in notes:
+            file_name = note.get("file_name", "").strip()
+            if not file_name:
+                continue
+            by_file.setdefault(file_name, []).append(note)
+        for file_name in sorted(by_file.keys(), key=str.lower):
+            file_notes = by_file[file_name]
+            latest = max(file_notes, key=lambda item: item.get("updated_at", ""))
+            row_idx = self.directory_notes_table.rowCount()
+            self.directory_notes_table.insertRow(row_idx)
+            file_item = QTableWidgetItem(file_name)
+            file_item.setData(Qt.UserRole, file_name)
+            count_item = QTableWidgetItem(str(len(file_notes)))
+            updated_item = QTableWidgetItem(
+                self._format_checkout_timestamp(str(latest.get("updated_at", "")))
+            )
+            updated_item.setToolTip(str(latest.get("updated_at", "")))
+            self.directory_notes_table.setItem(row_idx, 0, file_item)
+            self.directory_notes_table.setItem(row_idx, 1, count_item)
+            self.directory_notes_table.setItem(row_idx, 2, updated_item)
+        self.directory_notes_table.resizeColumnsToContents()
+        self.directory_notes_table.setColumnWidth(0, max(self.directory_notes_table.columnWidth(0), 220))
+
+    def _open_notes_for_selected_source_file(self) -> None:
+        selected = self.files_list.selectedItems()
+        if selected:
+            file_name = Path(str(selected[0].data(Qt.UserRole))).name
+            self._open_file_notes_window(file_name)
+            return
+        controlled_rows = self.controlled_files_table.selectionModel().selectedRows()
+        if controlled_rows:
+            item = self.controlled_files_table.item(controlled_rows[0].row(), 0)
+            if item:
+                entry = item.data(Qt.UserRole)
+                if isinstance(entry, dict):
+                    self._open_file_notes_window(str(entry.get("file_name", item.text())))
+                    return
+        rows = self.directory_notes_table.selectionModel().selectedRows()
+        if rows:
+            item = self.directory_notes_table.item(rows[0].row(), 0)
+            if item:
+                file_name = str(item.data(Qt.UserRole) or item.text())
+                self._open_file_notes_window(file_name)
+                return
+        self._error("Select a file first.")
+
+    def _show_directory_notes_context_menu(self, pos: QPoint) -> None:
+        row = self.directory_notes_table.rowAt(pos.y())
+        if row >= 0 and (not self.directory_notes_table.item(row, 0) or not self.directory_notes_table.item(row, 0).isSelected()):
+            self.directory_notes_table.clearSelection()
+            self.directory_notes_table.selectRow(row)
+        menu = QMenu(self)
+        view_action = menu.addAction("View Notes")
+        refresh_action = menu.addAction("Refresh")
+        chosen = menu.exec(self.directory_notes_table.viewport().mapToGlobal(pos))
+        if chosen == view_action:
+            self._open_notes_for_selected_source_file()
+        elif chosen == refresh_action:
+            self._refresh_directory_notes_summary()
+
+    def _open_file_notes_window(self, file_name: str) -> None:
+        current_directory = self._validate_current_directory()
+        if not current_directory:
+            return
+        notes = self._read_directory_notes(current_directory)
+        file_notes = [note for note in notes if note.get("file_name", "") == file_name]
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"File Notes - {file_name}")
+        dialog.resize(1080, 620)
+        layout = QVBoxLayout(dialog)
+
+        tree = QTreeWidget()
+        tree.setColumnCount(5)
+        tree.setHeaderLabels(["Subject", "Preview", "Created By", "Created", "Last Edit"])
+        tree.setSelectionMode(QTreeWidget.SingleSelection)
+        tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        header = tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        layout.addWidget(tree, stretch=1)
+
+        def refresh_tree() -> None:
+            tree.clear()
+            by_parent: Dict[str, List[Dict[str, str]]] = {}
+            for note in file_notes:
+                by_parent.setdefault(note.get("parent_id", ""), []).append(note)
+
+            def add_children(parent_item: Optional[QTreeWidgetItem], parent_id: str) -> None:
+                children = sorted(
+                    by_parent.get(parent_id, []), key=lambda item: item.get("created_at", "")
+                )
+                for note in children:
+                    created_by = note.get("created_by_name", "") or note.get("created_by_initials", "")
+                    values = [
+                        note.get("subject", ""),
+                        self._note_preview(note.get("body", "")),
+                        created_by,
+                        self._format_checkout_timestamp(note.get("created_at", "")),
+                        self._format_checkout_timestamp(note.get("updated_at", "")),
+                    ]
+                    item = QTreeWidgetItem(values)
+                    item.setData(0, Qt.UserRole, note.get("id", ""))
+                    item.setToolTip(1, note.get("body", ""))
+                    if parent_item is None:
+                        tree.addTopLevelItem(item)
+                    else:
+                        parent_item.addChild(item)
+                    add_children(item, note.get("id", ""))
+
+            add_children(None, "")
+            tree.expandAll()
+
+        def prompt_note(existing: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
+            note_dialog = QDialog(dialog)
+            note_dialog.setWindowTitle("Edit Note" if existing else "New Note")
+            note_dialog.resize(620, 360)
+            note_layout = QVBoxLayout(note_dialog)
+            subject_edit = QLineEdit(existing.get("subject", "") if existing else "")
+            body_edit = QPlainTextEdit(existing.get("body", "") if existing else "")
+            note_layout.addWidget(QLabel("Subject:"))
+            note_layout.addWidget(subject_edit)
+            note_layout.addWidget(QLabel("Body:"))
+            note_layout.addWidget(body_edit, stretch=1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(note_dialog.accept)
+            buttons.rejected.connect(note_dialog.reject)
+            note_layout.addWidget(buttons)
+            if note_dialog.exec() != QDialog.Accepted:
+                return None
+            subject = subject_edit.text().strip()
+            if not subject:
+                self._error("Subject is required.")
+                return None
+            timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+            return {
+                "id": existing.get("id", "") if existing else str(uuid4()),
+                "file_name": file_name,
+                "parent_id": existing.get("parent_id", "") if existing else "",
+                "subject": subject,
+                "body": body_edit.toPlainText().strip(),
+                "created_by_initials": existing.get("created_by_initials", "") if existing else self._normalize_initials(),
+                "created_by_name": existing.get("created_by_name", "") if existing else self._current_full_name(),
+                "created_at": existing.get("created_at", "") if existing else timestamp,
+                "updated_at": timestamp,
+            }
+
+        def selected_note() -> Optional[Dict[str, str]]:
+            current_item = tree.currentItem()
+            if not current_item:
+                return None
+            note_id = str(current_item.data(0, Qt.UserRole))
+            for note in file_notes:
+                if note.get("id", "") == note_id:
+                    return note
+            return None
+
+        def add_note(parent_id: str = "") -> None:
+            created = prompt_note()
+            if not created:
+                return
+            created["parent_id"] = parent_id
+            file_notes.append(created)
+            all_notes = [note for note in notes if note.get("file_name", "") != file_name] + file_notes
+            self._write_directory_notes(current_directory, all_notes)
+            refresh_tree()
+            self._refresh_directory_notes_summary()
+
+        def edit_note() -> None:
+            selected = selected_note()
+            if not selected:
+                self._error("Select a note first.")
+                return
+            updated = prompt_note(selected)
+            if not updated:
+                return
+            for idx, note in enumerate(file_notes):
+                if note.get("id", "") == selected.get("id", ""):
+                    updated["parent_id"] = note.get("parent_id", "")
+                    file_notes[idx] = updated
+                    break
+            all_notes = [note for note in notes if note.get("file_name", "") != file_name] + file_notes
+            self._write_directory_notes(current_directory, all_notes)
+            refresh_tree()
+            self._refresh_directory_notes_summary()
+
+        def remove_note() -> None:
+            selected = selected_note()
+            if not selected:
+                self._error("Select a note first.")
+                return
+            selected_id = selected.get("id", "")
+            to_remove = {selected_id}
+            changed = True
+            while changed:
+                changed = False
+                for note in file_notes:
+                    if note.get("parent_id", "") in to_remove and note.get("id", "") not in to_remove:
+                        to_remove.add(note.get("id", ""))
+                        changed = True
+            remaining = [note for note in file_notes if note.get("id", "") not in to_remove]
+            file_notes.clear()
+            file_notes.extend(remaining)
+            all_notes = [note for note in notes if note.get("file_name", "") != file_name] + file_notes
+            self._write_directory_notes(current_directory, all_notes)
+            refresh_tree()
+            self._refresh_directory_notes_summary()
+
+        def reply_note() -> None:
+            selected = selected_note()
+            if not selected:
+                self._error("Select a parent note first.")
+                return
+            add_note(selected.get("id", ""))
+
+        tree.customContextMenuRequested.connect(
+            lambda pos: self._show_file_notes_tree_context_menu(tree, pos, add_note, reply_note, edit_note, remove_note)
+        )
+
+        controls = QHBoxLayout()
+        new_btn = QPushButton("New Note")
+        new_btn.clicked.connect(add_note)
+        reply_btn = QPushButton("Reply")
+        reply_btn.clicked.connect(reply_note)
+        edit_btn = QPushButton("Edit")
+        edit_btn.clicked.connect(edit_note)
+        remove_btn = QPushButton("Remove")
+        remove_btn.clicked.connect(remove_note)
+        controls.addWidget(new_btn)
+        controls.addWidget(reply_btn)
+        controls.addWidget(edit_btn)
+        controls.addWidget(remove_btn)
+        controls.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        controls.addWidget(close_btn)
+        layout.addLayout(controls)
+
+        refresh_tree()
+        dialog.exec()
+
+    def _show_file_notes_tree_context_menu(
+        self,
+        tree: QTreeWidget,
+        pos: QPoint,
+        add_note_cb,
+        reply_cb,
+        edit_cb,
+        remove_cb,
+    ) -> None:
+        item = tree.itemAt(pos)
+        if item is not None and not item.isSelected():
+            tree.setCurrentItem(item)
+        menu = QMenu(self)
+        new_action = menu.addAction("New Note")
+        reply_action = menu.addAction("Reply")
+        edit_action = menu.addAction("Edit")
+        remove_action = menu.addAction("Remove")
+        chosen = menu.exec(tree.viewport().mapToGlobal(pos))
+        if chosen == new_action:
+            add_note_cb()
+        elif chosen == reply_action:
+            reply_cb()
+        elif chosen == edit_action:
+            edit_cb()
+        elif chosen == remove_action:
+            remove_cb()
+
     def _apply_file_history_style(
         self, item: QListWidgetItem, source_file: Path, latest_row: Optional[Dict[str, str]]
     ) -> None:
@@ -4321,6 +4730,7 @@ class DocumentControlApp(QMainWindow):
                     "initials": initials,
                     "full_name": row.get("user_full_name", ""),
                     "locked_source_file": str(locked_source_file),
+                    "checked_out_at": row.get("timestamp", ""),
                 }
             )
 
@@ -5277,6 +5687,7 @@ class DocumentControlApp(QMainWindow):
             ("Check In Selected (If Mine)", "checkin_mine"),
             ("Copy As Reference", "reference"),
             ("View History", "history"),
+            ("View File Notes", "notes"),
             ("Add Local File(s) To Here", "add_local"),
             ("Add Selected To Favorites", "favorite"),
             ("Refresh", "refresh"),
@@ -5304,6 +5715,9 @@ class DocumentControlApp(QMainWindow):
             return
         if action_id == "history":
             self._show_selected_file_history()
+            return
+        if action_id == "notes":
+            self._open_notes_for_selected_source_file()
             return
         if action_id == "add_local":
             self._add_new_files_to_source()
@@ -5420,20 +5834,22 @@ class DocumentControlApp(QMainWindow):
             self._render_records_tables()
 
     def _show_controlled_files_context_menu(self, pos: QPoint) -> None:
-        item = self.controlled_files_list.itemAt(pos)
-        if item is not None and not item.isSelected():
-            self.controlled_files_list.clearSelection()
-            item.setSelected(True)
-            self.controlled_files_list.setCurrentItem(item)
+        row = self.controlled_files_table.rowAt(pos.y())
+        if row >= 0 and (not self.controlled_files_table.item(row, 0) or not self.controlled_files_table.item(row, 0).isSelected()):
+            self.controlled_files_table.clearSelection()
+            self.controlled_files_table.selectRow(row)
 
         menu = QMenu(self)
         refresh_action = menu.addAction("Refresh")
         force_action = menu.addAction("Force Check In Selected")
-        chosen = menu.exec(self.controlled_files_list.mapToGlobal(pos))
+        notes_action = menu.addAction("View File Notes")
+        chosen = menu.exec(self.controlled_files_table.viewport().mapToGlobal(pos))
         if chosen == refresh_action:
             self._refresh_controlled_files()
         elif chosen == force_action:
             self._force_checkin_selected()
+        elif chosen == notes_action:
+            self._open_notes_for_selected_source_file()
 
     def _show_tracked_projects_context_menu_for_item(self, item: QListWidgetItem) -> None:
         self.tracked_projects_list.setCurrentItem(item)
@@ -5629,8 +6045,8 @@ class DocumentControlApp(QMainWindow):
         if not current_directory:
             return
 
-        selected_items = self.controlled_files_list.selectedItems()
-        if not selected_items:
+        selected_rows = self.controlled_files_table.selectionModel().selectedRows()
+        if not selected_rows:
             self._error("Select at least one controlled file to force check in.")
             return
 
@@ -5639,7 +6055,10 @@ class DocumentControlApp(QMainWindow):
             return
 
         entries: List[Dict[str, str]] = []
-        for item in selected_items:
+        for model_index in selected_rows:
+            item = self.controlled_files_table.item(model_index.row(), 0)
+            if item is None:
+                continue
             entry = item.data(Qt.UserRole)
             if not isinstance(entry, dict):
                 continue

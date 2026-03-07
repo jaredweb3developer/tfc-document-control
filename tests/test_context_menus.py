@@ -13,6 +13,7 @@ def test_source_file_context_actions_dispatch(app_env, monkeypatch):
     )
     monkeypatch.setattr(app, "_copy_selected_as_reference", lambda: called.append("reference"))
     monkeypatch.setattr(app, "_show_selected_file_history", lambda: called.append("history"))
+    monkeypatch.setattr(app, "_open_notes_for_selected_source_file", lambda: called.append("notes"))
     monkeypatch.setattr(app, "_add_new_files_to_source", lambda: called.append("add_local"))
     monkeypatch.setattr(app, "_add_selected_source_files_to_favorites", lambda: called.append("favorite"))
     monkeypatch.setattr(app, "_refresh_source_files", lambda: called.append("refresh"))
@@ -23,6 +24,7 @@ def test_source_file_context_actions_dispatch(app_env, monkeypatch):
         "checkin_mine",
         "reference",
         "history",
+        "notes",
         "add_local",
         "favorite",
         "refresh",
@@ -35,6 +37,7 @@ def test_source_file_context_actions_dispatch(app_env, monkeypatch):
         "checkin_mine",
         "reference",
         "history",
+        "notes",
         "add_local",
         "favorite",
         "refresh",
@@ -74,9 +77,9 @@ def test_context_menu_policies_are_enabled(app_env):
     assert app.favorites_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.notes_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.global_favorites_list.contextMenuPolicy() == Qt.CustomContextMenu
-    assert app.global_notes_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.source_roots_list.contextMenuPolicy() == Qt.CustomContextMenu
-    assert app.controlled_files_list.contextMenuPolicy() == Qt.CustomContextMenu
+    assert app.controlled_files_table.contextMenuPolicy() == Qt.CustomContextMenu
+    assert app.directory_notes_table.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.all_records_table.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.project_records_table.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.reference_records_table.contextMenuPolicy() == Qt.CustomContextMenu
