@@ -336,11 +336,10 @@ class DocumentControlApp(QMainWindow):
 
         tracked_panel = QWidget()
         tracked_layout = QVBoxLayout(tracked_panel)
-        tracked_layout.addWidget(QLabel("Tracked Projects"))
-        tracked_layout.addWidget(self.project_search_edit)
-        tracked_layout.addWidget(self.tracked_projects_list, stretch=1)
-        tracked_controls = QHBoxLayout()
-        tracked_controls.addWidget(
+        tracked_header = QHBoxLayout()
+        tracked_header.addWidget(QLabel("Tracked Projects"))
+        tracked_header.addStretch()
+        tracked_header.addWidget(
             self._build_options_button(
                 [
                     ("New Project", self._show_new_project_dialog),
@@ -358,12 +357,32 @@ class DocumentControlApp(QMainWindow):
                 ]
             )
         )
-        tracked_controls.addStretch()
-        tracked_layout.addLayout(tracked_controls)
+        tracked_layout.addLayout(tracked_header)
+        tracked_layout.addWidget(self.project_search_edit)
+        tracked_layout.addWidget(self.tracked_projects_list, stretch=1)
 
         favorites_panel = QWidget()
         favorites_layout = QVBoxLayout(favorites_panel)
-        favorites_layout.addWidget(QLabel("Favorite Files"))
+        favorites_header = QHBoxLayout()
+        favorites_header.addWidget(QLabel("Favorite Files"))
+        favorites_header.addStretch()
+        favorites_header.addWidget(
+            self._build_options_button(
+                [
+                    ("Add Project Favorite", self._browse_and_add_favorites),
+                    ("Add Global Favorite", self._browse_and_add_global_favorites),
+                    ("Add Selected Global -> Project", self._add_selected_global_favorites_to_project),
+                    ("Open Selected", self._open_selected_favorites_from_active_tab),
+                    ("Remove Selected", self._remove_selected_favorites_from_active_tab),
+                    ("---", self._open_selected_favorites_from_active_tab),
+                    ("Move Up", self._move_selected_favorite_up),
+                    ("Move Down", self._move_selected_favorite_down),
+                    ("Move to Top", self._move_selected_favorite_top),
+                    ("Move to Bottom", self._move_selected_favorite_bottom),
+                ]
+            )
+        )
+        favorites_layout.addLayout(favorites_header)
 
         self.favorites_tabs = QTabWidget()
         project_favorites_tab = QWidget()
@@ -394,36 +413,12 @@ class DocumentControlApp(QMainWindow):
         self.favorites_tabs.addTab(global_favorites_tab, "Global Favorites")
         favorites_layout.addWidget(self.favorites_tabs, stretch=1)
 
-        favorites_controls = QHBoxLayout()
-        favorites_controls.addWidget(
-            self._build_options_button(
-                [
-                    ("Add Project Favorite", self._browse_and_add_favorites),
-                    ("Add Global Favorite", self._browse_and_add_global_favorites),
-                    ("Add Selected Global -> Project", self._add_selected_global_favorites_to_project),
-                    ("Open Selected", self._open_selected_favorites_from_active_tab),
-                    ("Remove Selected", self._remove_selected_favorites_from_active_tab),
-                    ("---", self._open_selected_favorites_from_active_tab),
-                    ("Move Up", self._move_selected_favorite_up),
-                    ("Move Down", self._move_selected_favorite_down),
-                    ("Move to Top", self._move_selected_favorite_top),
-                    ("Move to Bottom", self._move_selected_favorite_bottom),
-                ]
-            )
-        )
-        favorites_controls.addStretch()
-        favorites_layout.addLayout(favorites_controls)
-
         notes_panel = QWidget()
         notes_layout = QVBoxLayout(notes_panel)
-        notes_layout.addWidget(QLabel("Notes"))
-        self.notes_list = QListWidget()
-        self.notes_list.itemDoubleClicked.connect(self._show_notes_context_menu_for_item)
-        self.notes_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.notes_list.customContextMenuRequested.connect(self._show_notes_context_menu)
-        notes_layout.addWidget(self.notes_list, stretch=1)
-        notes_controls = QHBoxLayout()
-        notes_controls.addWidget(
+        notes_header = QHBoxLayout()
+        notes_header.addWidget(QLabel("Notes"))
+        notes_header.addStretch()
+        notes_header.addWidget(
             self._build_options_button(
                 [
                     ("New Note", self._create_note),
@@ -437,8 +432,12 @@ class DocumentControlApp(QMainWindow):
                 ]
             )
         )
-        notes_controls.addStretch()
-        notes_layout.addLayout(notes_controls)
+        notes_layout.addLayout(notes_header)
+        self.notes_list = QListWidget()
+        self.notes_list.itemDoubleClicked.connect(self._show_notes_context_menu_for_item)
+        self.notes_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.notes_list.customContextMenuRequested.connect(self._show_notes_context_menu)
+        notes_layout.addWidget(self.notes_list, stretch=1)
 
         content_splitter = QSplitter(Qt.Horizontal)
         content_splitter.addWidget(tracked_panel)
@@ -463,16 +462,10 @@ class DocumentControlApp(QMainWindow):
 
         tracked_panel = QWidget()
         tracked_layout = QVBoxLayout(tracked_panel)
-        tracked_layout.addWidget(QLabel("Tracked Source Directories"))
-        self.source_roots_list = QListWidget()
-        self.source_roots_list.currentItemChanged.connect(self._on_source_root_changed)
-        self.source_roots_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.source_roots_list.customContextMenuRequested.connect(self._show_source_roots_context_menu)
-        self.source_roots_list.setMinimumWidth(220)
-        tracked_layout.addWidget(self.source_roots_list)
-
-        source_button_bar = QHBoxLayout()
-        source_button_bar.addWidget(
+        tracked_header = QHBoxLayout()
+        tracked_header.addWidget(QLabel("Tracked Source Directories"))
+        tracked_header.addStretch()
+        tracked_header.addWidget(
             self._build_options_button(
                 [
                     ("Track Dir (Browse)", self._add_source_directory),
@@ -486,12 +479,29 @@ class DocumentControlApp(QMainWindow):
                 ]
             )
         )
-        source_button_bar.addStretch()
-        tracked_layout.addLayout(source_button_bar)
+        tracked_layout.addLayout(tracked_header)
+        self.source_roots_list = QListWidget()
+        self.source_roots_list.currentItemChanged.connect(self._on_source_root_changed)
+        self.source_roots_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.source_roots_list.customContextMenuRequested.connect(self._show_source_roots_context_menu)
+        self.source_roots_list.setMinimumWidth(220)
+        tracked_layout.addWidget(self.source_roots_list)
 
         directory_panel = QWidget()
         directory_layout = QVBoxLayout(directory_panel)
-        directory_layout.addWidget(QLabel("Directory Browser"))
+        directory_header = QHBoxLayout()
+        directory_header.addWidget(QLabel("Directory Browser"))
+        directory_header.addStretch()
+        directory_header.addWidget(
+            self._build_options_button(
+                [
+                    ("Browse", self._browse_directory_tree_root),
+                    ("View Location", self._view_current_directory_location),
+                    ("Track Directory", self._track_current_directory),
+                ]
+            )
+        )
+        directory_layout.addLayout(directory_header)
         self.directory_tree = QTreeWidget()
         self.directory_tree.setColumnCount(1)
         self.directory_tree.setHeaderHidden(True)
@@ -502,22 +512,29 @@ class DocumentControlApp(QMainWindow):
         self.directory_tree.setMinimumWidth(300)
         self.directory_tree.setMinimumHeight(260)
         directory_layout.addWidget(self.directory_tree, stretch=1)
-        directory_button_bar = QHBoxLayout()
-        directory_button_bar.addWidget(
-            self._build_options_button(
-                [
-                    ("Browse", self._browse_directory_tree_root),
-                    ("View Location", self._view_current_directory_location),
-                    ("Track Directory", self._track_current_directory),
-                ]
-            )
-        )
-        directory_button_bar.addStretch()
-        directory_layout.addLayout(directory_button_bar)
 
         files_panel = QWidget()
         files_layout = QVBoxLayout(files_panel)
-        files_layout.addWidget(QLabel("Files"))
+        files_header = QHBoxLayout()
+        files_header.addWidget(QLabel("Files"))
+        files_header.addStretch()
+        files_header.addWidget(
+            self._build_options_button(
+                [
+                    ("Refresh", self._refresh_source_files),
+                    ("Open Selected", self._open_selected_source_files),
+                    ("Check Out Selected", self._checkout_selected),
+                    ("Check In Selected (If Mine)", self._checkin_selected_source_files_if_owned),
+                    ("View History", self._show_selected_file_history),
+                    ("View File Notes", self._open_notes_for_selected_source_file),
+                    ("---", self._open_selected_source_files),
+                    ("Add Selected To Favorites", self._add_selected_source_files_to_favorites),
+                    ("Copy As Reference", self._copy_selected_as_reference),
+                    ("Add Local File(s) To Here", self._add_new_files_to_source),
+                ]
+            )
+        )
+        files_layout.addLayout(files_header)
         self.file_search_edit = QLineEdit()
         self.file_search_edit.setPlaceholderText("Search files")
         self.file_search_edit.textChanged.connect(self._on_file_search_changed)
@@ -585,28 +602,21 @@ class DocumentControlApp(QMainWindow):
         self.files_list.customContextMenuRequested.connect(self._show_source_file_context_menu)
         files_layout.addWidget(self.files_list, stretch=1)
 
-        file_button_bar = QHBoxLayout()
-        file_button_bar.addWidget(
+        controlled_panel = QWidget()
+        controlled_layout = QVBoxLayout(controlled_panel)
+        directory_group_header = QHBoxLayout()
+        directory_group_header.addWidget(QLabel("Directory"))
+        directory_group_header.addStretch()
+        directory_group_header.addWidget(
             self._build_options_button(
                 [
-                    ("Refresh", self._refresh_source_files),
-                    ("Open Selected", self._open_selected_source_files),
-                    ("Check Out Selected", self._checkout_selected),
-                    ("Check In Selected (If Mine)", self._checkin_selected_source_files_if_owned),
-                    ("View History", self._show_selected_file_history),
-                    ("---", self._open_selected_source_files),
-                    ("Add Selected To Favorites", self._add_selected_source_files_to_favorites),
-                    ("Copy As Reference", self._copy_selected_as_reference),
-                    ("Add Local File(s) To Here", self._add_new_files_to_source),
+                    ("Refresh", self._refresh_controlled_files),
+                    ("Force Check In", self._force_checkin_selected),
+                    ("View File Notes", self._open_notes_for_selected_source_file),
                 ]
             )
         )
-        file_button_bar.addStretch()
-        files_layout.addLayout(file_button_bar)
-
-        controlled_panel = QWidget()
-        controlled_layout = QVBoxLayout(controlled_panel)
-        controlled_layout.addWidget(QLabel("Directory"))
+        controlled_layout.addLayout(directory_group_header)
         self.directory_tabs = QTabWidget()
         self.controlled_files_table = QTableWidget(0, 3)
         self.controlled_files_table.setHorizontalHeaderLabels(["File Name", "Initials", "Checked Out"])
@@ -640,19 +650,6 @@ class DocumentControlApp(QMainWindow):
         self.directory_tabs.addTab(self.directory_notes_table, "File Notes")
         controlled_layout.addWidget(self.directory_tabs, stretch=1)
 
-        controlled_button_bar = QHBoxLayout()
-        controlled_button_bar.addWidget(
-            self._build_options_button(
-                [
-                    ("Refresh", self._refresh_controlled_files),
-                    ("Force Check In", self._force_checkin_selected),
-                    ("View File Notes", self._open_notes_for_selected_source_file),
-                ]
-            )
-        )
-        controlled_button_bar.addStretch()
-        controlled_layout.addLayout(controlled_button_bar)
-
         splitter.addWidget(tracked_panel)
         splitter.addWidget(directory_panel)
         splitter.addWidget(files_panel)
@@ -666,17 +663,10 @@ class DocumentControlApp(QMainWindow):
         group = QGroupBox("Checked Out Files")
         layout = QVBoxLayout(group)
 
-        self.records_tabs = QTabWidget()
-        self.all_records_table = self._build_records_table()
-        self.project_records_table = self._build_records_table()
-        self.reference_records_table = self._build_reference_records_table()
-        self.records_tabs.addTab(self.all_records_table, "All Checked Out")
-        self.records_tabs.addTab(self.project_records_table, "Current Project")
-        self.records_tabs.addTab(self.reference_records_table, "Reference Copies")
-        layout.addWidget(self.records_tabs)
-
-        button_bar = QHBoxLayout()
-        button_bar.addWidget(
+        header = QHBoxLayout()
+        header.addWidget(QLabel("Records"))
+        header.addStretch()
+        header.addWidget(
             self._build_options_button(
                 [
                     ("Open Selected", self._open_selected_record_files),
@@ -687,8 +677,16 @@ class DocumentControlApp(QMainWindow):
                 ]
             )
         )
-        button_bar.addStretch()
-        layout.addLayout(button_bar)
+        layout.addLayout(header)
+
+        self.records_tabs = QTabWidget()
+        self.all_records_table = self._build_records_table()
+        self.project_records_table = self._build_records_table()
+        self.reference_records_table = self._build_reference_records_table()
+        self.records_tabs.addTab(self.all_records_table, "All Checked Out")
+        self.records_tabs.addTab(self.project_records_table, "Current Project")
+        self.records_tabs.addTab(self.reference_records_table, "Reference Copies")
+        layout.addWidget(self.records_tabs)
 
         return group
 
@@ -1525,7 +1523,7 @@ class DocumentControlApp(QMainWindow):
         return True
 
     def _build_options_button(
-        self, actions: List[Tuple[str, Callable[[], None]]], label: str = "Options"
+        self, actions: List[Tuple[str, Callable[[], None]]], label: str = "Menu"
     ) -> QToolButton:
         button = QToolButton(self)
         button.setText(label)
