@@ -1,3 +1,6 @@
+from PySide6.QtCore import Qt
+
+
 def test_refresh_controlled_files_populates_table(app_env):
     # Controlled files should render in the Directory > Controlled Files table.
     app = app_env["app"]
@@ -57,3 +60,28 @@ def test_directory_notes_summary_groups_by_file(app_env):
     assert app.directory_notes_table.rowCount() == 1
     assert app.directory_notes_table.item(0, 0).text() == "A.dwg"
     assert app.directory_notes_table.item(0, 1).text() == "2"
+
+
+def test_open_notes_from_source_list_uses_original_file_name(app_env, monkeypatch):
+    # Opening notes from source list should resolve to original file name (not locked -initials name).
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    source_dir = tmp / "source-open-notes"
+    source_dir.mkdir(parents=True)
+    app.current_directory = source_dir
+    app.files_list.clear()
+    item = app.files_list.addItem if False else None
+    del item
+    from PySide6.QtWidgets import QListWidgetItem
+    list_item = QListWidgetItem("A-JWH.dwg")
+    list_item.setData(Qt.UserRole, str(source_dir / "A-JWH.dwg"))
+    list_item.setData(Qt.UserRole + 1, "A.dwg")
+    app.files_list.addItem(list_item)
+    app.files_list.setCurrentItem(list_item)
+    list_item.setSelected(True)
+
+    opened = {"file_name": ""}
+    monkeypatch.setattr(app, "_open_file_notes_window", lambda name: opened.__setitem__("file_name", name))
+    app._open_notes_for_selected_source_file()
+    assert opened["file_name"] == "A.dwg"

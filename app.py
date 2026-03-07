@@ -4442,8 +4442,10 @@ class DocumentControlApp(QMainWindow):
     def _open_notes_for_selected_source_file(self) -> None:
         selected = self.files_list.selectedItems()
         if selected:
-            file_name = Path(str(selected[0].data(Qt.UserRole))).name
-            self._open_file_notes_window(file_name)
+            original_name = str(selected[0].data(Qt.UserRole + 1) or "").strip()
+            if not original_name:
+                original_name = Path(str(selected[0].data(Qt.UserRole))).name
+            self._open_file_notes_window(original_name)
             return
         controlled_rows = self.controlled_files_table.selectionModel().selectedRows()
         if controlled_rows:
@@ -4461,6 +4463,18 @@ class DocumentControlApp(QMainWindow):
                 self._open_file_notes_window(file_name)
                 return
         self._error("Select a file first.")
+
+    def _canonical_note_file_name(self, file_name: str, source_dir: Path) -> str:
+        normalized = file_name.strip()
+        if not normalized:
+            return normalized
+        lookup = self._history_lookup_for_directory(source_dir)
+        row = lookup.get(normalized)
+        if row:
+            original = str(row.get("original_file_name", "")).strip()
+            if original:
+                return original
+        return normalized
 
     def _show_directory_notes_context_menu(self, pos: QPoint) -> None:
         row = self.directory_notes_table.rowAt(pos.y())
@@ -4480,6 +4494,7 @@ class DocumentControlApp(QMainWindow):
         current_directory = self._validate_current_directory()
         if not current_directory:
             return
+        file_name = self._canonical_note_file_name(file_name, current_directory)
         notes = self._read_directory_notes(current_directory)
         file_notes = [note for note in notes if note.get("file_name", "") == file_name]
 
