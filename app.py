@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import os
 import stat
@@ -57,6 +58,7 @@ TRACKED_PROJECTS_SCHEMA_VERSION = 1
 PROJECT_CONFIG_SCHEMA_VERSION = 1
 FILTER_PRESETS_SCHEMA_VERSION = 1
 RECORDS_SCHEMA_VERSION = 1
+FILE_VERSIONS_SCHEMA_VERSION = 1
 USER_DATA_ROOT = Path.home() / "Documents" / USER_DATA_DIR_NAME
 SETTINGS_FILE = USER_DATA_ROOT / "settings.json"
 LEGACY_SETTINGS_FILE = APP_ROOT / "settings.json"
@@ -64,9 +66,13 @@ LEGACY_PROJECTS_FILE = APP_ROOT / "projects.json"
 LEGACY_RECORDS_FILE = APP_ROOT / ".checkout_records.json"
 LEGACY_FILTER_PRESETS_FILE = APP_ROOT / "filter_presets.json"
 PROJECT_CONFIG_FILE = "dctl.json"
-HISTORY_FILE_NAME = ".doc_control_history.csv"
+HISTORY_FILE_NAME = ".doc_control_history.json"
+LEGACY_HISTORY_FILE_NAME = ".doc_control_history.csv"
+HISTORY_SCHEMA_VERSION = 1
 DEFAULT_PROJECT_NAME = "Default"
 DEBUG_EVENTS_FILE = USER_DATA_ROOT / "debug_events.log"
+FILE_VERSIONS_FILE = "file_versions.json"
+FILE_VERSIONS_DIR = "file_versions"
 
 
 @dataclass
@@ -330,6 +336,7 @@ class DocumentControlApp(QMainWindow):
                 [
                     ("New Project", self._show_new_project_dialog),
                     ("Load Selected", self._load_selected_tracked_project),
+                    ("Project Files Manager", self._open_project_files_manager_for_selected_project),
                     ("Track Existing", self._add_existing_project),
                     ("Edit Selected", self._edit_selected_project),
                     ("Open Location", self._open_selected_project_location),
@@ -401,7 +408,7 @@ class DocumentControlApp(QMainWindow):
         content_splitter.addWidget(tracked_panel)
         content_splitter.addWidget(favorites_panel)
         content_splitter.addWidget(notes_panel)
-        content_splitter.setSizes([280, 320, 320])
+        content_splitter.setSizes([320, 360, 360])
 
         layout.addWidget(self.current_project_label)
         layout.addWidget(content_splitter, stretch=1)
@@ -612,6 +619,8 @@ class DocumentControlApp(QMainWindow):
                 [
                     ("Open Selected", self._open_selected_record_files),
                     ("Check In Selected", self._checkin_selected),
+                    ("Create Revision Snapshot", self._create_revision_snapshot_for_selected_records),
+                    ("Switch To Revision", self._switch_selected_record_to_revision),
                     ("Remove Selected Ref", self._remove_selected_reference_records),
                 ]
             )
@@ -1091,6 +1100,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        milestones: Optional[List[Dict[str, object]]] = None,
         selected_source: str = "",
         source_ids: Optional[Dict[str, str]] = None,
         client: str = "",
@@ -1110,6 +1120,7 @@ class DocumentControlApp(QMainWindow):
             "filter_mode": filter_mode,
             "favorites": favorites or [],
             "notes": notes or [],
+            "milestones": milestones or [],
         }
 
     def _read_project_config(self, project_dir: Path) -> Dict[str, object]:
@@ -1128,6 +1139,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode = str(data.get("filter_mode", "No Filter")).strip() or "No Filter"
         raw_favorites = data.get("favorites", [])
         raw_notes = data.get("notes", [])
+        raw_milestones = data.get("milestones", [])
         selected_source = str(data.get("selected_source", "")).strip()
         client = str(data.get("client", "")).strip()
         year_started = str(data.get("year_started", "")).strip()
@@ -1162,6 +1174,12 @@ class DocumentControlApp(QMainWindow):
                         "updated_at": str(entry.get("updated_at", "")).strip(),
                     }
                 )
+        milestones: List[Dict[str, object]] = []
+        if isinstance(raw_milestones, list):
+            for entry in raw_milestones:
+                normalized = self._normalize_milestone_entry(entry)
+                if normalized:
+                    milestones.append(normalized)
         if filter_mode not in {"No Filter", "Include Only", "Exclude"}:
             filter_mode = "No Filter"
         return self._project_payload(
@@ -1171,6 +1189,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites,
             notes,
+            milestones,
             selected_source,
             source_ids,
             client,
@@ -1186,6 +1205,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        milestones: Optional[List[Dict[str, object]]] = None,
         selected_source: str = "",
         source_ids: Optional[Dict[str, str]] = None,
         client: str = "",
@@ -1200,6 +1220,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode,
             favorites,
             notes,
+            milestones,
             selected_source,
             source_ids,
             client,
@@ -1217,6 +1238,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: Optional[str] = None,
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        milestones: Optional[List[Dict[str, object]]] = None,
         selected_source: Optional[str] = None,
         source_ids: Optional[Dict[str, str]] = None,
         client: Optional[str] = None,
@@ -1236,6 +1258,9 @@ class DocumentControlApp(QMainWindow):
             filter_mode or str(current.get("filter_mode", "No Filter")),
             favorites if favorites is not None else list(current.get("favorites", [])),  # type: ignore[arg-type]
             notes if notes is not None else list(current.get("notes", [])),  # type: ignore[arg-type]
+            milestones
+            if milestones is not None
+            else list(current.get("milestones", [])),  # type: ignore[arg-type]
             selected_source
             if selected_source is not None
             else str(current.get("selected_source", "")),
@@ -1421,6 +1446,7 @@ class DocumentControlApp(QMainWindow):
         filter_mode: str = "No Filter",
         favorites: Optional[List[str]] = None,
         notes: Optional[List[Dict[str, str]]] = None,
+        milestones: Optional[List[Dict[str, object]]] = None,
         client: str = "",
         year_started: str = "",
     ) -> None:
@@ -1431,17 +1457,18 @@ class DocumentControlApp(QMainWindow):
         with self._debug_timed("create_or_update_project", project_name=name):
             with self._busy_action("Creating project..."):
                 self._write_project_config(
-                    project_dir,
-                    name,
-                    source_list,
-                    extension_filters or [],
-                    filter_mode,
-                    favorites or [],
-                    notes or [],
-                    source_list[0] if source_list else "",
-                    None,
-                    client,
-                    year_started,
+                    project_dir=project_dir,
+                    name=name,
+                    sources=source_list,
+                    extension_filters=extension_filters or [],
+                    filter_mode=filter_mode,
+                    favorites=favorites or [],
+                    notes=notes or [],
+                    milestones=milestones or [],
+                    selected_source=source_list[0] if source_list else "",
+                    source_ids=None,
+                    client=client,
+                    year_started=year_started,
                 )
                 self._register_tracked_project(name, project_dir, client, year_started)
                 self._load_project_from_dir(project_dir)
@@ -1868,6 +1895,7 @@ class DocumentControlApp(QMainWindow):
             filter_mode=str(config.get("filter_mode", "No Filter")),
             favorites=[str(item) for item in config.get("favorites", [])],  # type: ignore[arg-type]
             notes=[dict(item) for item in config.get("notes", [])],  # type: ignore[arg-type]
+            milestones=[dict(item) for item in config.get("milestones", [])],  # type: ignore[arg-type]
             selected_source=str(config.get("selected_source", "")),
             source_ids=(
                 dict(config.get("source_ids", {}))
@@ -1990,6 +2018,387 @@ class DocumentControlApp(QMainWindow):
             self._error("Select a tracked project to open.")
             return
         self._open_paths([project_dir])
+
+    def _open_project_files_manager_for_selected_project(self) -> None:
+        project_dir = self._selected_tracked_project_dir()
+        if not project_dir or not project_dir.is_dir():
+            self._error("Select a tracked project first.")
+            return
+        self._show_project_files_manager(project_dir)
+
+    def _project_file_manager_rows(self, project_dir: Path, record_type: str) -> List[Dict[str, object]]:
+        rows: List[Dict[str, object]] = []
+        tracked_local_files: set[str] = set()
+        for idx, record in enumerate(self.records):
+            if record.project_dir != str(project_dir):
+                continue
+            tracked_local_files.add(str(Path(record.local_file)))
+            if record_type not in {"all", record.record_type}:
+                continue
+            revision_count = len(self._revision_entries_for_record(record)) if record.record_type == "checked_out" else 0
+            rows.append(
+                {
+                    "record_idx": idx,
+                    "record_type": record.record_type,
+                    "file_name": Path(record.local_file).name or Path(record.source_file).name,
+                    "local_file": record.local_file,
+                    "source_file": record.source_file,
+                    "revisions": revision_count,
+                }
+            )
+
+        if record_type in {"all", "untracked"}:
+            skip_file_names = {PROJECT_CONFIG_FILE, FILE_VERSIONS_FILE}
+            for local_path in project_dir.rglob("*"):
+                if not local_path.is_file():
+                    continue
+                if local_path.name in skip_file_names:
+                    continue
+                if FILE_VERSIONS_DIR in local_path.parts:
+                    continue
+                local_path_str = str(local_path)
+                if local_path_str in tracked_local_files:
+                    continue
+                rows.append(
+                    {
+                        "record_idx": -1,
+                        "record_type": "untracked",
+                        "file_name": local_path.name,
+                        "local_file": local_path_str,
+                        "source_file": "",
+                        "revisions": 0,
+                    }
+                )
+        rows.sort(key=lambda item: str(item["file_name"]).lower())
+        return rows
+
+    def _apply_project_file_search(
+        self, rows: List[Dict[str, object]], search_term: str
+    ) -> List[Dict[str, object]]:
+        term = search_term.strip().lower()
+        if not term:
+            return rows
+        filtered: List[Dict[str, object]] = []
+        for row in rows:
+            haystack = " ".join(
+                [
+                    str(row.get("file_name", "")),
+                    str(row.get("local_file", "")),
+                    str(row.get("source_file", "")),
+                    str(row.get("record_type", "")),
+                ]
+            ).lower()
+            if term in haystack:
+                filtered.append(row)
+        return filtered
+
+    def _populate_project_files_manager_table(
+        self, table: QTableWidget, rows: List[Dict[str, object]], search_term: str
+    ) -> None:
+        visible_rows = self._apply_project_file_search(rows, search_term)
+        table.setRowCount(len(visible_rows))
+        for row_idx, row in enumerate(visible_rows):
+            record_type = str(row.get("record_type", ""))
+            type_label = "Untracked"
+            if record_type == "checked_out":
+                type_label = "Checked Out"
+            elif record_type == "reference_copy":
+                type_label = "Reference Copy"
+            values = [
+                str(row.get("file_name", "")),
+                type_label,
+                str(row.get("revisions", 0)),
+                self._short_path(str(row.get("local_file", ""))),
+                self._short_path(str(row.get("source_file", ""))),
+            ]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col_idx == 0:
+                    item.setData(Qt.UserRole, int(row.get("record_idx", -1)))
+                    item.setData(Qt.UserRole + 1, dict(row))
+                if col_idx == 3:
+                    item.setToolTip(str(row.get("local_file", "")))
+                elif col_idx == 4:
+                    item.setToolTip(str(row.get("source_file", "")))
+                else:
+                    item.setToolTip(value)
+                table.setItem(row_idx, col_idx, item)
+        table.resizeColumnsToContents()
+        table.setColumnWidth(0, max(table.columnWidth(0), 180))
+        table.setColumnWidth(1, max(table.columnWidth(1), 110))
+        table.setColumnWidth(2, max(table.columnWidth(2), 80))
+        table.setColumnWidth(3, max(table.columnWidth(3), 220))
+        table.setColumnWidth(4, max(table.columnWidth(4), 220))
+
+    def _selected_record_indexes_from_manager_table(self, table: QTableWidget) -> List[int]:
+        indexes: List[int] = []
+        for row in sorted({idx.row() for idx in table.selectedIndexes()}):
+            item = table.item(row, 0)
+            if not item:
+                continue
+            record_idx = item.data(Qt.UserRole)
+            if isinstance(record_idx, int):
+                indexes.append(record_idx)
+        return indexes
+
+    def _selected_rows_from_manager_table(self, table: QTableWidget) -> List[Dict[str, object]]:
+        rows: List[Dict[str, object]] = []
+        for row in sorted({idx.row() for idx in table.selectedIndexes()}):
+            item = table.item(row, 0)
+            if not item:
+                continue
+            data = item.data(Qt.UserRole + 1)
+            if isinstance(data, dict):
+                rows.append(dict(data))
+        return rows
+
+    def _show_project_files_manager(self, project_dir: Path) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Project Files Manager - {project_dir.name}")
+        dialog.resize(1180, 680)
+        layout = QVBoxLayout(dialog)
+
+        search_edit = QLineEdit()
+        search_edit.setPlaceholderText("Search files")
+        layout.addWidget(search_edit)
+
+        tabs = QTabWidget()
+        all_table = QTableWidget(0, 5)
+        checked_table = QTableWidget(0, 5)
+        reference_table = QTableWidget(0, 5)
+        untracked_table = QTableWidget(0, 5)
+        tables = [all_table, checked_table, reference_table, untracked_table]
+        for table in tables:
+            table.setHorizontalHeaderLabels(["File", "Type", "Revisions", "Local", "Source"])
+            table.setSelectionBehavior(QTableWidget.SelectRows)
+            table.setSelectionMode(QTableWidget.ExtendedSelection)
+            table.setEditTriggers(QTableWidget.NoEditTriggers)
+            table.setContextMenuPolicy(Qt.CustomContextMenu)
+        tabs.addTab(all_table, "All Files")
+        tabs.addTab(checked_table, "Checked Out Files")
+        tabs.addTab(reference_table, "Reference Copies")
+        tabs.addTab(untracked_table, "Untracked")
+        layout.addWidget(tabs, stretch=1)
+
+        manager_rows: Dict[str, List[Dict[str, object]]] = {}
+
+        def refresh_tables() -> None:
+            manager_rows["all"] = self._project_file_manager_rows(project_dir, "all")
+            manager_rows["checked_out"] = self._project_file_manager_rows(project_dir, "checked_out")
+            manager_rows["reference_copy"] = self._project_file_manager_rows(project_dir, "reference_copy")
+            manager_rows["untracked"] = self._project_file_manager_rows(project_dir, "untracked")
+            search_term = search_edit.text()
+            self._populate_project_files_manager_table(all_table, manager_rows["all"], search_term)
+            self._populate_project_files_manager_table(
+                checked_table, manager_rows["checked_out"], search_term
+            )
+            self._populate_project_files_manager_table(
+                reference_table, manager_rows["reference_copy"], search_term
+            )
+            self._populate_project_files_manager_table(
+                untracked_table, manager_rows["untracked"], search_term
+            )
+
+        def active_table() -> QTableWidget:
+            current = tabs.currentWidget()
+            return current if isinstance(current, QTableWidget) else all_table
+
+        def selected_rows() -> List[Dict[str, object]]:
+            return self._selected_rows_from_manager_table(active_table())
+
+        def selected_indexes() -> List[int]:
+            return self._selected_record_indexes_from_manager_table(active_table())
+
+        def open_selected() -> None:
+            indexes = selected_indexes()
+            if not indexes:
+                self._error("Select at least one file.")
+                return
+            paths = [
+                Path(self.records[idx].local_file)
+                for idx in indexes
+                if 0 <= idx < len(self.records)
+            ]
+            self._open_paths(paths)
+
+        def create_snapshot() -> None:
+            indexes = [
+                idx
+                for idx in selected_indexes()
+                if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+            ]
+            if not indexes:
+                self._error("Select at least one checked-out file.")
+                return
+            accepted, note = self._prompt_revision_note("Create Revision Snapshot")
+            if not accepted:
+                return
+            with self._busy_action("Creating revision snapshot(s)..."):
+                for idx in indexes:
+                    self._create_revision_snapshot_for_record(self.records[idx], note=note)
+            refresh_tables()
+
+        def switch_revision() -> None:
+            indexes = [
+                idx
+                for idx in selected_indexes()
+                if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+            ]
+            if len(indexes) != 1:
+                self._error("Select exactly one checked-out file.")
+                return
+            record = self.records[indexes[0]]
+            revision = self._choose_revision_for_record(record)
+            if not revision:
+                return
+            with self._busy_action("Switching file revision..."):
+                switched = self._switch_record_to_revision(record, revision)
+            if switched:
+                refresh_tables()
+                self._info(f"Switched to revision {revision.get('id', '')}.")
+
+        def checkin_selected() -> None:
+            if not self._validate_identity():
+                return
+            indexes = {
+                idx
+                for idx in selected_indexes()
+                if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+            }
+            if not indexes:
+                self._error("Select at least one checked-out file.")
+                return
+            self._checkin_record_indexes(indexes)
+            refresh_tables()
+
+        def remove_reference_selected() -> None:
+            indexes = [
+                idx
+                for idx in selected_indexes()
+                if 0 <= idx < len(self.records) and self.records[idx].record_type == "reference_copy"
+            ]
+            if not indexes:
+                self._error("Select at least one reference copy.")
+                return
+            with self._busy_action("Removing reference copy record(s)..."):
+                self._remove_record_indexes(indexes)
+                self._save_records()
+                self._render_records_tables()
+            refresh_tables()
+
+        def delete_untracked_selected() -> None:
+            paths = [
+                Path(str(row.get("local_file", "")))
+                for row in selected_rows()
+                if str(row.get("record_type", "")) == "untracked"
+            ]
+            if not paths:
+                self._error("Select at least one untracked file.")
+                return
+            confirm = QMessageBox.question(
+                dialog,
+                "Delete Untracked Files",
+                f"Delete {len(paths)} untracked file(s)? This cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+            errors: List[str] = []
+            with self._busy_action("Deleting untracked file(s)..."):
+                for path in paths:
+                    try:
+                        if path.exists():
+                            path.unlink()
+                    except OSError as exc:
+                        errors.append(f"{path.name}: {exc}")
+            refresh_tables()
+            if errors:
+                self._error("Some files could not be deleted:\n" + "\n".join(errors))
+
+        def show_manager_context_menu(table: QTableWidget, pos: QPoint) -> None:
+            row = table.rowAt(pos.y())
+            if row >= 0 and (not table.item(row, 0) or not table.item(row, 0).isSelected()):
+                table.clearSelection()
+                table.selectRow(row)
+            rows = self._selected_rows_from_manager_table(table)
+            menu = QMenu(dialog)
+            open_action = menu.addAction("Open Selected")
+            snapshot_action = None
+            switch_action = None
+            checkin_action = None
+            remove_ref_action = None
+            delete_untracked_action = None
+
+            has_checked_out = any(str(row.get("record_type", "")) == "checked_out" for row in rows)
+            has_reference = any(str(row.get("record_type", "")) == "reference_copy" for row in rows)
+            has_untracked = any(str(row.get("record_type", "")) == "untracked" for row in rows)
+            checked_out_count = sum(
+                1 for row in rows if str(row.get("record_type", "")) == "checked_out"
+            )
+
+            if has_checked_out:
+                snapshot_action = menu.addAction("Create Snapshot")
+                checkin_action = menu.addAction("Check In Selected")
+                if checked_out_count == 1:
+                    switch_action = menu.addAction("Switch Revision")
+            if has_reference:
+                remove_ref_action = menu.addAction("Remove Reference Copies")
+            if has_untracked:
+                delete_untracked_action = menu.addAction("Delete Untracked")
+
+            chosen = menu.exec(table.viewport().mapToGlobal(pos))
+            if chosen == open_action:
+                open_selected()
+            elif snapshot_action is not None and chosen == snapshot_action:
+                create_snapshot()
+            elif switch_action is not None and chosen == switch_action:
+                switch_revision()
+            elif checkin_action is not None and chosen == checkin_action:
+                checkin_selected()
+            elif remove_ref_action is not None and chosen == remove_ref_action:
+                remove_reference_selected()
+            elif delete_untracked_action is not None and chosen == delete_untracked_action:
+                delete_untracked_selected()
+
+        for table in tables:
+            table.cellDoubleClicked.connect(lambda _r, _c: open_selected())
+            table.customContextMenuRequested.connect(
+                lambda pos, table=table: show_manager_context_menu(table, pos)
+            )
+
+        search_edit.textChanged.connect(lambda _text: refresh_tables())
+
+        button_bar = QHBoxLayout()
+        open_btn = QPushButton("Open Selected")
+        open_btn.clicked.connect(open_selected)
+        checkin_btn = QPushButton("Check In Selected")
+        checkin_btn.clicked.connect(checkin_selected)
+        remove_ref_btn = QPushButton("Remove Ref Selected")
+        remove_ref_btn.clicked.connect(remove_reference_selected)
+        delete_untracked_btn = QPushButton("Delete Untracked")
+        delete_untracked_btn.clicked.connect(delete_untracked_selected)
+        snapshot_btn = QPushButton("Create Snapshot")
+        snapshot_btn.clicked.connect(create_snapshot)
+        switch_btn = QPushButton("Switch Revision")
+        switch_btn.clicked.connect(switch_revision)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(refresh_tables)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        button_bar.addWidget(open_btn)
+        button_bar.addWidget(checkin_btn)
+        button_bar.addWidget(remove_ref_btn)
+        button_bar.addWidget(delete_untracked_btn)
+        button_bar.addWidget(snapshot_btn)
+        button_bar.addWidget(switch_btn)
+        button_bar.addWidget(refresh_btn)
+        button_bar.addStretch()
+        button_bar.addWidget(close_btn)
+        layout.addLayout(button_bar)
+
+        refresh_tables()
+        dialog.exec()
 
     def _refresh_source_roots(self, sources: List[str], selected_source: str = "") -> None:
         self.source_roots_list.clear()
@@ -2132,7 +2541,10 @@ class DocumentControlApp(QMainWindow):
         entries: List[Path] = []
         try:
             for entry in directory.iterdir():
-                if entry.is_file() and entry.name != HISTORY_FILE_NAME:
+                if entry.is_file() and entry.name not in {
+                    HISTORY_FILE_NAME,
+                    LEGACY_HISTORY_FILE_NAME,
+                }:
                     entries.append(entry)
         except OSError:
             entries = []
@@ -2692,6 +3104,206 @@ class DocumentControlApp(QMainWindow):
     def _move_selected_note_bottom(self) -> None:
         self._move_selected_note_to(self.notes_list.count() - 1)
 
+    def _normalize_milestone_entry(self, entry: object) -> Optional[Dict[str, object]]:
+        if not isinstance(entry, dict):
+            return None
+        name = str(entry.get("name", "")).strip()
+        if not name:
+            return None
+        snapshot = entry.get("snapshot", {})
+        normalized_snapshot: Dict[str, object] = {}
+        if isinstance(snapshot, dict):
+            records = snapshot.get("records", [])
+            sources = snapshot.get("sources", [])
+            extensions = snapshot.get("extension_filters", [])
+            normalized_snapshot = {
+                "record_count": int(snapshot.get("record_count", len(records) if isinstance(records, list) else 0)),
+                "records": [dict(item) for item in records if isinstance(item, dict)]
+                if isinstance(records, list)
+                else [],
+                "sources": [str(item) for item in sources if str(item).strip()]
+                if isinstance(sources, list)
+                else [],
+                "extension_filters": [str(item) for item in extensions if str(item).strip()]
+                if isinstance(extensions, list)
+                else [],
+                "filter_mode": str(snapshot.get("filter_mode", "No Filter")),
+            }
+        return {
+            "id": str(entry.get("id", "")).strip() or str(uuid4()),
+            "name": name,
+            "description": str(entry.get("description", "")).strip(),
+            "created_at": str(entry.get("created_at", "")).strip(),
+            "updated_at": str(entry.get("updated_at", "")).strip(),
+            "snapshot": normalized_snapshot,
+        }
+
+    def _current_project_milestones(self) -> List[Dict[str, object]]:
+        config = self._current_project_config()
+        if not config:
+            return []
+        raw = config.get("milestones", [])
+        if not isinstance(raw, list):
+            return []
+        milestones: List[Dict[str, object]] = []
+        for entry in raw:
+            normalized = self._normalize_milestone_entry(entry)
+            if normalized:
+                milestones.append(normalized)
+        return milestones
+
+    def _milestone_tooltip(self, milestone: Dict[str, object]) -> str:
+        snapshot = milestone.get("snapshot", {})
+        record_count = 0
+        if isinstance(snapshot, dict):
+            record_count = int(snapshot.get("record_count", 0) or 0)
+        created_at = str(milestone.get("created_at", "")).strip() or "-"
+        description = str(milestone.get("description", "")).strip() or "(No description)"
+        return f"Created: {created_at}\nChecked-out records tracked: {record_count}\n{description}"
+
+    def _refresh_milestones_list(self, milestones: List[Dict[str, object]]) -> None:
+        self.milestones_list.clear()
+        for milestone in milestones:
+            item = QListWidgetItem(str(milestone.get("name", "(Unnamed Milestone)")))
+            item.setData(Qt.UserRole, str(milestone.get("id", "")))
+            item.setToolTip(self._milestone_tooltip(milestone))
+            self.milestones_list.addItem(item)
+
+    def _set_project_milestones(self, milestones: List[Dict[str, object]]) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        normalized: List[Dict[str, object]] = []
+        for milestone in milestones:
+            clean = self._normalize_milestone_entry(milestone)
+            if clean:
+                normalized.append(clean)
+        self._save_project_config(project_dir, milestones=normalized)
+        self._refresh_milestones_list(normalized)
+
+    def _selected_milestone_id(self) -> str:
+        item = self.milestones_list.currentItem()
+        return str(item.data(Qt.UserRole)).strip() if item else ""
+
+    def _collect_milestone_snapshot(self) -> Dict[str, object]:
+        project_dir = self._current_project_path()
+        project_dir_str = str(project_dir) if project_dir else ""
+        project_records = [
+            {
+                "source_file": record.source_file,
+                "locked_source_file": record.locked_source_file,
+                "local_file": record.local_file,
+                "initials": record.initials,
+                "checked_out_at": record.checked_out_at,
+            }
+            for record in self.records
+            if record.record_type == "checked_out" and record.project_dir == project_dir_str
+        ]
+        return {
+            "record_count": len(project_records),
+            "records": project_records,
+            "sources": self._source_roots_from_list(),
+            "extension_filters": self._current_extension_filters(),
+            "filter_mode": self.file_filter_mode_combo.currentText(),
+        }
+
+    def _show_milestone_dialog(self) -> Optional[Dict[str, object]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("New Milestone")
+        dialog.resize(620, 380)
+        layout = QVBoxLayout(dialog)
+
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("Milestone name")
+        description_edit = QPlainTextEdit()
+        description_edit.setPlaceholderText("Milestone notes (optional)")
+        include_snapshot_box = QCheckBox("Capture current checked-out file snapshot")
+        include_snapshot_box.setChecked(True)
+
+        layout.addWidget(QLabel("Name:"))
+        layout.addWidget(name_edit)
+        layout.addWidget(QLabel("Description:"))
+        layout.addWidget(description_edit, stretch=1)
+        layout.addWidget(include_snapshot_box)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        name = name_edit.text().strip()
+        if not name:
+            self._error("Milestone name is required.")
+            return None
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        return {
+            "id": str(uuid4()),
+            "name": name,
+            "description": description_edit.toPlainText().strip(),
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "snapshot": self._collect_milestone_snapshot() if include_snapshot_box.isChecked() else {},
+        }
+
+    def _create_milestone(self) -> None:
+        if not self._validate_current_project():
+            return
+        milestone = self._show_milestone_dialog()
+        if not milestone:
+            return
+        milestones = self._current_project_milestones()
+        milestones.append(milestone)
+        self._set_project_milestones(milestones)
+
+    def _view_selected_milestone(self) -> None:
+        milestone_id = self._selected_milestone_id()
+        if not milestone_id:
+            self._error("Select a milestone to view.")
+            return
+        milestone = None
+        for entry in self._current_project_milestones():
+            if str(entry.get("id", "")) == milestone_id:
+                milestone = entry
+                break
+        if not milestone:
+            self._error("Selected milestone could not be found.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Milestone - {milestone.get('name', '')}")
+        dialog.resize(760, 520)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"Name: {milestone.get('name', '')}"))
+        layout.addWidget(QLabel(f"Created: {milestone.get('created_at', '') or '-'}"))
+        layout.addWidget(QLabel(f"Last Updated: {milestone.get('updated_at', '') or '-'}"))
+        description = str(milestone.get("description", "")).strip() or "(No description)"
+        layout.addWidget(QLabel(f"Description: {description}"))
+        snapshot_text = QPlainTextEdit()
+        snapshot_text.setReadOnly(True)
+        snapshot_text.setPlainText(
+            json.dumps(milestone.get("snapshot", {}), indent=2, ensure_ascii=False)
+        )
+        layout.addWidget(snapshot_text, stretch=1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def _remove_selected_milestone(self) -> None:
+        milestone_id = self._selected_milestone_id()
+        if not milestone_id:
+            self._error("Select a milestone to remove.")
+            return
+        milestones = [
+            milestone
+            for milestone in self._current_project_milestones()
+            if str(milestone.get("id", "")) != milestone_id
+        ]
+        self._set_project_milestones(milestones)
+
     def _normalize_filter_preset(self, preset: Dict[str, object]) -> Optional[Dict[str, object]]:
         name = str(preset.get("name", "")).strip()
         if not name:
@@ -3081,37 +3693,73 @@ class DocumentControlApp(QMainWindow):
     def _locked_name_for(self, source_file: Path, initials: str) -> Path:
         return source_file.with_name(f"{source_file.stem}-{initials}{source_file.suffix}")
 
-    def _append_history(self, source_dir: Path, action: str, file_name: str) -> None:
-        history_file = source_dir / HISTORY_FILE_NAME
-        if not history_file.exists():
-            with history_file.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(
-                    ["timestamp", "action", "file_name", "user_initials", "user_full_name"]
-                )
+    def _history_json_file(self, source_dir: Path) -> Path:
+        return source_dir / HISTORY_FILE_NAME
 
-        with history_file.open("a", encoding="utf-8", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    datetime.now().astimezone().isoformat(timespec="seconds"),
-                    action,
-                    file_name,
-                    self._normalize_initials(),
-                    self._current_full_name(),
-                ]
-            )
+    def _history_legacy_csv_file(self, source_dir: Path) -> Path:
+        return source_dir / LEGACY_HISTORY_FILE_NAME
+
+    def _normalize_history_row(self, row: Dict[str, str]) -> Dict[str, str]:
+        revision_id = str(row.get("revision_id", "")).strip()
+        initials = str(row.get("user_initials", "")).strip()
+        full_name = str(row.get("user_full_name", "")).strip()
+        extras = row.get("__extras__", "")
+        if not revision_id and extras:
+            # Legacy CSV rows can become shifted when revision_id was written against old headers.
+            revision_id = initials
+            initials = full_name
+            full_name = extras
+        return {
+            "timestamp": str(row.get("timestamp", "")).strip(),
+            "action": str(row.get("action", "")).strip(),
+            "file_name": str(row.get("file_name", "")).strip(),
+            "revision_id": revision_id,
+            "user_initials": initials,
+            "user_full_name": full_name,
+        }
+
+    def _write_history_rows_json(self, source_dir: Path, rows: List[Dict[str, str]]) -> None:
+        history_file = self._history_json_file(source_dir)
+        self._ensure_parent_dir(history_file)
+        payload = {
+            "schema_version": HISTORY_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
+            "entries": rows,
+        }
+        history_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _append_history(
+        self, source_dir: Path, action: str, file_name: str, revision_id: str = ""
+    ) -> None:
+        rows = self._read_history_rows(source_dir)
+        rows.append(
+            {
+                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "action": action,
+                "file_name": file_name,
+                "revision_id": revision_id,
+                "user_initials": self._normalize_initials(),
+                "user_full_name": self._current_full_name(),
+            }
+        )
+        self._write_history_rows_json(source_dir, rows)
         self._invalidate_directory_caches(source_dir)
 
     def _read_history_rows(self, source_dir: Path) -> List[Dict[str, str]]:
-        history_file = source_dir / HISTORY_FILE_NAME
-        if not history_file.exists():
-            self._history_rows_cache.pop(str(source_dir), None)
+        cache_key = str(source_dir)
+        history_json = self._history_json_file(source_dir)
+        history_csv = self._history_legacy_csv_file(source_dir)
+        active_file: Optional[Path] = None
+        if history_json.exists():
+            active_file = history_json
+        elif history_csv.exists():
+            active_file = history_csv
+        if active_file is None:
+            self._history_rows_cache.pop(cache_key, None)
             return []
 
-        cache_key = str(source_dir)
         try:
-            mtime_ns = history_file.stat().st_mtime_ns
+            mtime_ns = active_file.stat().st_mtime_ns
         except OSError:
             self._history_rows_cache.pop(cache_key, None)
             return []
@@ -3120,17 +3768,29 @@ class DocumentControlApp(QMainWindow):
         if cached and cached[0] == mtime_ns:
             return cached[1]
 
+        rows: List[Dict[str, str]] = []
         try:
-            with history_file.open("r", encoding="utf-8", newline="") as handle:
-                rows = [
-                    {key: str(value) for key, value in row.items()}
-                    for row in csv.DictReader(handle)
-                ]
-                self._history_rows_cache[cache_key] = (mtime_ns, rows)
-                return rows
-        except OSError:
+            if active_file == history_json:
+                raw = json.loads(history_json.read_text(encoding="utf-8"))
+                entries = raw.get("entries", raw) if isinstance(raw, dict) else raw
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        raw_row = {key: str(value) for key, value in entry.items()}
+                        rows.append(self._normalize_history_row(raw_row))
+            else:
+                with history_csv.open("r", encoding="utf-8", newline="") as handle:
+                    for row in csv.DictReader(handle):
+                        extras = row.get(None, [])
+                        raw_row = {key: str(value) for key, value in row.items() if key is not None}
+                        raw_row["__extras__"] = str(extras[0]) if extras else ""
+                        rows.append(self._normalize_history_row(raw_row))
+        except (OSError, ValueError, TypeError):
             self._history_rows_cache.pop(cache_key, None)
             return []
+        self._history_rows_cache[cache_key] = (mtime_ns, rows)
+        return rows
 
     def _latest_history_by_file(self, source_dir: Path) -> Dict[str, Dict[str, str]]:
         latest_by_file: Dict[str, Dict[str, str]] = {}
@@ -3181,6 +3841,7 @@ class DocumentControlApp(QMainWindow):
                     [
                         self._format_history_timestamp(row.get("timestamp", "")),
                         row.get("action", ""),
+                        row.get("revision_id", ""),
                         row.get("user_initials", ""),
                         row.get("user_full_name", ""),
                     ]
@@ -3298,17 +3959,21 @@ class DocumentControlApp(QMainWindow):
                         local_file.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(source_file, local_file)
                         source_file.rename(locked_source_file)
-                        self.records.append(
-                            CheckoutRecord(
-                                source_file=str(source_file),
-                                locked_source_file=str(locked_source_file),
-                                local_file=str(local_file),
-                                initials=initials,
-                                project_name=self._current_project_name(),
-                                project_dir=str(project_dir),
-                                source_root=str(source_root),
-                                checked_out_at=checked_out_at,
-                            )
+                        new_record = CheckoutRecord(
+                            source_file=str(source_file),
+                            locked_source_file=str(locked_source_file),
+                            local_file=str(local_file),
+                            initials=initials,
+                            project_name=self._current_project_name(),
+                            project_dir=str(project_dir),
+                            source_root=str(source_root),
+                            checked_out_at=checked_out_at,
+                        )
+                        self.records.append(new_record)
+                        self._create_revision_snapshot_for_record(
+                            new_record,
+                            note="Baseline snapshot captured at checkout.",
+                            origin="checkout_baseline",
                         )
                         self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
                         self._invalidate_directory_caches(source_file.parent)
@@ -3335,6 +4000,332 @@ class DocumentControlApp(QMainWindow):
             if isinstance(record_idx, int):
                 indexes.append(record_idx)
         return indexes
+
+    def _selected_checked_out_record_indexes(self) -> List[int]:
+        return [
+            idx
+            for idx in self._selected_record_indexes()
+            if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+        ]
+
+    def _file_versions_registry_path(self, project_dir: Path) -> Path:
+        return project_dir / FILE_VERSIONS_FILE
+
+    def _file_versions_root(self, project_dir: Path) -> Path:
+        return project_dir / FILE_VERSIONS_DIR
+
+    def _record_version_key(self, record: CheckoutRecord) -> str:
+        key_source = "|".join([record.project_dir, record.source_file, record.locked_source_file])
+        return hashlib.sha256(key_source.encode("utf-8")).hexdigest()[:16]
+
+    def _load_file_versions_registry(self, project_dir: Path) -> Dict[str, object]:
+        registry_path = self._file_versions_registry_path(project_dir)
+        if not registry_path.exists():
+            return {
+                "schema_version": FILE_VERSIONS_SCHEMA_VERSION,
+                "app_version": APP_VERSION,
+                "files": {},
+            }
+        try:
+            raw = json.loads(registry_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            raw = {}
+        files = raw.get("files", {}) if isinstance(raw, dict) else {}
+        if not isinstance(files, dict):
+            files = {}
+        return {
+            "schema_version": FILE_VERSIONS_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
+            "files": files,
+        }
+
+    def _save_file_versions_registry(self, project_dir: Path, registry: Dict[str, object]) -> None:
+        registry_path = self._file_versions_registry_path(project_dir)
+        self._ensure_parent_dir(registry_path)
+        registry_path.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+
+    def _compute_file_sha256(self, file_path: Path) -> str:
+        digest = hashlib.sha256()
+        with file_path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _next_revision_id(self, existing_entries: List[Dict[str, object]]) -> str:
+        existing_ids = {str(entry.get("id", "")) for entry in existing_entries}
+        while True:
+            stamp = datetime.now().strftime("%y%m%d%H%M%S")
+            candidate = f"R{stamp}-{uuid4().hex[:4].upper()}"
+            if candidate not in existing_ids:
+                return candidate
+
+    def _prompt_revision_note(self, title: str, initial_note: str = "") -> Tuple[bool, str]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(520, 220)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Optional revision note:"))
+        note_edit = QPlainTextEdit(initial_note)
+        layout.addWidget(note_edit, stretch=1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return False, ""
+        return True, note_edit.toPlainText().strip()
+
+    def _revision_entries_for_record(self, record: CheckoutRecord) -> List[Dict[str, object]]:
+        project_dir = Path(record.project_dir)
+        registry = self._load_file_versions_registry(project_dir)
+        files = registry.get("files", {})
+        if not isinstance(files, dict):
+            return []
+        file_entry = files.get(self._record_version_key(record), {})
+        if not isinstance(file_entry, dict):
+            return []
+        revisions = file_entry.get("revisions", [])
+        if not isinstance(revisions, list):
+            return []
+        return [dict(item) for item in revisions if isinstance(item, dict)]
+
+    def _create_revision_snapshot_for_record(
+        self,
+        record: CheckoutRecord,
+        note: str = "",
+        origin: str = "manual",
+        snapshot_source_path: Optional[Path] = None,
+    ) -> Optional[Dict[str, object]]:
+        source_path = snapshot_source_path or Path(record.local_file)
+        if not source_path.exists():
+            self._error(f"Missing snapshot source file: {source_path}")
+            return None
+
+        project_dir = Path(record.project_dir)
+        revisions_root = self._file_versions_root(project_dir)
+        registry = self._load_file_versions_registry(project_dir)
+        files = registry.setdefault("files", {})
+        if not isinstance(files, dict):
+            files = {}
+            registry["files"] = files
+
+        key = self._record_version_key(record)
+        file_entry = files.get(key)
+        if not isinstance(file_entry, dict):
+            file_entry = {
+                "source_file": record.source_file,
+                "locked_source_file": record.locked_source_file,
+                "local_file": record.local_file,
+                "project_name": record.project_name,
+                "revisions": [],
+            }
+            files[key] = file_entry
+
+        revisions = file_entry.get("revisions", [])
+        if not isinstance(revisions, list):
+            revisions = []
+            file_entry["revisions"] = revisions
+
+        file_hash = self._compute_file_sha256(source_path)
+        for revision in revisions:
+            if str(revision.get("sha256", "")) == file_hash:
+                return dict(revision)
+
+        revision_id = self._next_revision_id([dict(item) for item in revisions if isinstance(item, dict)])
+        snapshot_dir = revisions_root / key
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_name = f"{revision_id}{source_path.suffix}"
+        snapshot_path = snapshot_dir / snapshot_name
+        shutil.copy2(source_path, snapshot_path)
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        revision_entry: Dict[str, object] = {
+            "id": revision_id,
+            "created_at": timestamp,
+            "note": note,
+            "sha256": file_hash,
+            "origin": origin,
+            "snapshot_file": str(snapshot_path.relative_to(project_dir)),
+        }
+        revisions.append(revision_entry)
+        file_entry["local_file"] = record.local_file
+        self._save_file_versions_registry(project_dir, registry)
+        return revision_entry
+
+    def _ensure_saved_state_before_revision_switch(self, record: CheckoutRecord) -> bool:
+        local_path = Path(record.local_file)
+        if not local_path.exists():
+            self._error(f"Missing local file: {local_path}")
+            return False
+        current_hash = self._compute_file_sha256(local_path)
+        revisions = self._revision_entries_for_record(record)
+        existing_hashes = {str(item.get("sha256", "")) for item in revisions}
+        if current_hash in existing_hashes:
+            return True
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Unsaved Current State")
+        dialog.setText("Current local file state does not match any saved revision.")
+        dialog.setInformativeText("Create a snapshot of the current state before switching revisions?")
+        save_btn = dialog.addButton("Save Snapshot", QMessageBox.AcceptRole)
+        continue_btn = dialog.addButton("Continue Without Saving", QMessageBox.ActionRole)
+        dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(save_btn)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked == save_btn:
+            created = self._create_revision_snapshot_for_record(
+                record,
+                note="Auto snapshot before switching revision.",
+                origin="auto_before_switch",
+            )
+            return created is not None
+        if clicked == continue_btn:
+            return True
+        return False
+
+    def _choose_revision_for_record(self, record: CheckoutRecord) -> Optional[Dict[str, object]]:
+        revisions = self._revision_entries_for_record(record)
+        if not revisions:
+            self._error("No revisions are available for the selected file.")
+            return None
+        checkin_by_revision = self._checkin_history_by_revision_id_for_record(record)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Revisions - {Path(record.source_file).name}")
+        dialog.resize(900, 420)
+        layout = QVBoxLayout(dialog)
+        table = QTableWidget(len(revisions), 5)
+        table.setHorizontalHeaderLabels(["Revision", "Timestamp", "Checked In", "Hash", "Note"])
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setSelectionMode(QTableWidget.SingleSelection)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        for row, entry in enumerate(revisions):
+            revision_id = str(entry.get("id", ""))
+            checkin_row = checkin_by_revision.get(revision_id)
+            checked_in_value = "Yes" if checkin_row else "No"
+            checked_in_tooltip = ""
+            if checkin_row:
+                checked_in_tooltip = (
+                    f"Action: {checkin_row.get('action', '')}\n"
+                    f"When: {self._format_history_timestamp(str(checkin_row.get('timestamp', '')))}\n"
+                    f"By: {checkin_row.get('user_full_name', '') or checkin_row.get('user_initials', '')}"
+                )
+            values = [
+                revision_id,
+                self._format_history_timestamp(str(entry.get("created_at", ""))),
+                checked_in_value,
+                str(entry.get("sha256", ""))[:12],
+                str(entry.get("note", "")),
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col == 0:
+                    item.setData(Qt.UserRole, row)
+                if col == 2 and checked_in_tooltip:
+                    item.setToolTip(checked_in_tooltip)
+                elif col == 3:
+                    item.setToolTip(str(entry.get("sha256", "")))
+                else:
+                    item.setToolTip(value)
+                table.setItem(row, col, item)
+        if table.rowCount() > 0:
+            table.setCurrentCell(0, 0)
+        layout.addWidget(table)
+        buttons = QDialogButtonBox()
+        switch_btn = buttons.addButton("Switch To Selected", QDialogButtonBox.AcceptRole)
+        cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+        selected: Dict[str, int] = {"row": -1}
+        switch_btn.clicked.connect(lambda: (selected.__setitem__("row", table.currentRow()), dialog.accept()))
+        cancel_btn.clicked.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        row = selected["row"]
+        if row < 0 or row >= len(revisions):
+            return None
+        return revisions[row]
+
+    def _checkin_history_by_revision_id_for_record(
+        self, record: CheckoutRecord
+    ) -> Dict[str, Dict[str, str]]:
+        source_path = Path(record.source_file)
+        source_dir = source_path.parent
+        source_name = source_path.name
+        indexed: Dict[str, Dict[str, str]] = {}
+        for row in self._read_history_rows(source_dir):
+            revision_id = str(row.get("revision_id", "")).strip()
+            if not revision_id:
+                continue
+            if str(row.get("file_name", "")).strip() != source_name:
+                continue
+            action = str(row.get("action", "")).strip()
+            if "CHECK_IN" not in action:
+                continue
+            indexed[revision_id] = row
+        return indexed
+
+    def _switch_record_to_revision(self, record: CheckoutRecord, revision: Dict[str, object]) -> bool:
+        if not self._ensure_saved_state_before_revision_switch(record):
+            return False
+        project_dir = Path(record.project_dir)
+        relative_snapshot = str(revision.get("snapshot_file", "")).strip()
+        if not relative_snapshot:
+            self._error("Selected revision is missing snapshot data.")
+            return False
+        snapshot_path = project_dir / relative_snapshot
+        local_path = Path(record.local_file)
+        if not snapshot_path.exists():
+            self._error(f"Revision snapshot file is missing:\n{snapshot_path}")
+            return False
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(snapshot_path, local_path)
+        except OSError as exc:
+            self._error(f"Could not switch to revision:\n{exc}")
+            return False
+        return True
+
+    def _create_revision_snapshot_for_selected_records(self) -> None:
+        indexes = self._selected_checked_out_record_indexes()
+        if not indexes:
+            self._error("Select at least one checked-out file to snapshot.")
+            return
+        accepted, note = self._prompt_revision_note("Create Revision Snapshot")
+        if not accepted:
+            return
+        created_count = 0
+        with self._busy_action("Creating revision snapshot(s)..."):
+            for idx in indexes:
+                if not (0 <= idx < len(self.records)):
+                    continue
+                created = self._create_revision_snapshot_for_record(self.records[idx], note=note)
+                if created:
+                    created_count += 1
+        if created_count == 0:
+            self._info("No new snapshots were created (current states already tracked).")
+        else:
+            self._info(f"Created {created_count} revision snapshot(s).")
+
+    def _switch_selected_record_to_revision(self) -> None:
+        indexes = self._selected_checked_out_record_indexes()
+        if len(indexes) != 1:
+            self._error("Select exactly one checked-out file to switch revisions.")
+            return
+        record = self.records[indexes[0]]
+        revision = self._choose_revision_for_record(record)
+        if not revision:
+            return
+        with self._busy_action("Switching file revision..."):
+            switched = self._switch_record_to_revision(record, revision)
+        if switched:
+            self._info(f"Switched to revision {revision.get('id', '')}.")
 
     def _remove_record_indexes(self, record_indexes: List[int]) -> None:
         selected = set(record_indexes)
@@ -3416,10 +4407,23 @@ class DocumentControlApp(QMainWindow):
                 else:
                     continue
 
+                revision_id = ""
+                if action.record_idx >= 0 and 0 <= action.record_idx < len(self.records):
+                    record = self.records[action.record_idx]
+                    checkin_revision = self._create_revision_snapshot_for_record(
+                        record,
+                        note=f"Check-in snapshot ({self._history_action_for_checkin(action, workflow)}).",
+                        origin=f"{workflow}_checkin",
+                        snapshot_source_path=source_file,
+                    )
+                    if checkin_revision:
+                        revision_id = str(checkin_revision.get("id", ""))
+
                 self._append_history(
                     source_file.parent,
                     self._history_action_for_checkin(action, workflow),
                     source_file.name,
+                    revision_id,
                 )
                 self._invalidate_directory_caches(source_file.parent)
                 if action.record_idx >= 0:
@@ -3933,6 +4937,10 @@ class DocumentControlApp(QMainWindow):
         else:
             checkin_action = menu.addAction("Check In Selected")
             action_map[checkin_action] = "checkin"
+            snapshot_action = menu.addAction("Create Revision Snapshot")
+            action_map[snapshot_action] = "snapshot"
+            switch_action = menu.addAction("Switch To Revision")
+            action_map[switch_action] = "switch_revision"
         chosen = menu.exec(table.viewport().mapToGlobal(pos))
         if chosen in action_map:
             self._handle_records_context_action(action_map[chosen])
@@ -3943,6 +4951,12 @@ class DocumentControlApp(QMainWindow):
             return
         if action_id == "checkin":
             self._checkin_selected()
+            return
+        if action_id == "snapshot":
+            self._create_revision_snapshot_for_selected_records()
+            return
+        if action_id == "switch_revision":
+            self._switch_selected_record_to_revision()
             return
         if action_id == "remove_ref":
             self._remove_selected_reference_records()
@@ -4007,6 +5021,7 @@ class DocumentControlApp(QMainWindow):
 
         menu = QMenu(self)
         load_action = menu.addAction("Load Selected")
+        files_action = menu.addAction("Project Files Manager")
         edit_action = menu.addAction("Edit Selected")
         open_loc_action = menu.addAction("Open Location")
         untrack_action = menu.addAction("Untrack Selected")
@@ -4017,6 +5032,8 @@ class DocumentControlApp(QMainWindow):
         chosen = menu.exec(self.tracked_projects_list.mapToGlobal(pos))
         if chosen == load_action:
             self._load_selected_tracked_project()
+        elif chosen == files_action:
+            self._open_project_files_manager_for_selected_project()
         elif chosen == edit_action:
             self._edit_selected_project()
         elif chosen == open_loc_action:
@@ -4105,6 +5122,31 @@ class DocumentControlApp(QMainWindow):
             self._move_selected_note_top()
         elif chosen == move_bottom_action:
             self._move_selected_note_bottom()
+
+    def _show_milestones_context_menu_for_item(self, item: QListWidgetItem) -> None:
+        self.milestones_list.setCurrentItem(item)
+        item.setSelected(True)
+        rect = self.milestones_list.visualItemRect(item)
+        self._show_milestones_context_menu(rect.center())
+
+    def _show_milestones_context_menu(self, pos: QPoint) -> None:
+        item = self.milestones_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.milestones_list.clearSelection()
+            item.setSelected(True)
+            self.milestones_list.setCurrentItem(item)
+
+        menu = QMenu(self)
+        new_action = menu.addAction("New Milestone")
+        view_action = menu.addAction("View Selected")
+        remove_action = menu.addAction("Remove Selected")
+        chosen = menu.exec(self.milestones_list.mapToGlobal(pos))
+        if chosen == new_action:
+            self._create_milestone()
+        elif chosen == view_action:
+            self._view_selected_milestone()
+        elif chosen == remove_action:
+            self._remove_selected_milestone()
 
     def _show_source_roots_context_menu(self, pos: QPoint) -> None:
         item = self.source_roots_list.itemAt(pos)
@@ -4228,15 +5270,16 @@ class DocumentControlApp(QMainWindow):
         dialog.resize(980, 420)
         layout = QVBoxLayout(dialog)
 
-        table = QTableWidget(len(rows), 4)
-        table.setHorizontalHeaderLabels(["Timestamp", "Action", "Initials", "Full Name"])
+        table = QTableWidget(len(rows), 5)
+        table.setHorizontalHeaderLabels(["Timestamp", "Action", "Revision", "Initials", "Full Name"])
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.setSelectionMode(QTableWidget.NoSelection)
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
 
         for row_idx, row_values in enumerate(rows):
             for col_idx, value in enumerate(row_values):
@@ -4244,7 +5287,7 @@ class DocumentControlApp(QMainWindow):
 
         table.resizeColumnsToContents()
         table.setColumnWidth(0, max(table.columnWidth(0), 320))
-        table.setColumnWidth(3, max(table.columnWidth(3), 220))
+        table.setColumnWidth(4, max(table.columnWidth(4), 220))
         layout.addWidget(table)
         dialog.exec()
 
