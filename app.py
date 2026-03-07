@@ -4377,11 +4377,14 @@ class DocumentControlApp(QMainWindow):
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
+            parent_id = str(entry.get("parent_id", "")).strip()
+            if parent_id.lower() in {"false", "none", "null"}:
+                parent_id = ""
             notes.append(
                 {
                     "id": str(entry.get("id", "")).strip() or str(uuid4()),
                     "file_name": str(entry.get("file_name", "")).strip(),
-                    "parent_id": str(entry.get("parent_id", "")).strip(),
+                    "parent_id": parent_id,
                     "subject": str(entry.get("subject", "")).strip(),
                     "body": str(entry.get("body", "")),
                     "created_by_initials": str(entry.get("created_by_initials", "")).strip(),
@@ -4520,7 +4523,10 @@ class DocumentControlApp(QMainWindow):
             tree.clear()
             by_parent: Dict[str, List[Dict[str, str]]] = {}
             for note in file_notes:
-                by_parent.setdefault(note.get("parent_id", ""), []).append(note)
+                parent_key = str(note.get("parent_id", "")).strip()
+                if parent_key.lower() in {"false", "none", "null"}:
+                    parent_key = ""
+                by_parent.setdefault(parent_key, []).append(note)
 
             def add_children(parent_item: Optional[QTreeWidgetItem], parent_id: str) -> None:
                 children = sorted(
@@ -4595,7 +4601,7 @@ class DocumentControlApp(QMainWindow):
             created = prompt_note()
             if not created:
                 return
-            created["parent_id"] = parent_id
+            created["parent_id"] = str(parent_id).strip()
             file_notes.append(created)
             all_notes = [note for note in notes if note.get("file_name", "") != file_name] + file_notes
             self._write_directory_notes(current_directory, all_notes)
@@ -4655,13 +4661,13 @@ class DocumentControlApp(QMainWindow):
 
         controls = QHBoxLayout()
         new_btn = QPushButton("New Note")
-        new_btn.clicked.connect(add_note)
+        new_btn.clicked.connect(lambda _checked=False: add_note(""))
         reply_btn = QPushButton("Reply")
-        reply_btn.clicked.connect(reply_note)
+        reply_btn.clicked.connect(lambda _checked=False: reply_note())
         edit_btn = QPushButton("Edit")
-        edit_btn.clicked.connect(edit_note)
+        edit_btn.clicked.connect(lambda _checked=False: edit_note())
         remove_btn = QPushButton("Remove")
-        remove_btn.clicked.connect(remove_note)
+        remove_btn.clicked.connect(lambda _checked=False: remove_note())
         controls.addWidget(new_btn)
         controls.addWidget(reply_btn)
         controls.addWidget(edit_btn)

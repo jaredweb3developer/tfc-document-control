@@ -62,6 +62,40 @@ def test_directory_notes_summary_groups_by_file(app_env):
     assert app.directory_notes_table.item(0, 1).text() == "2"
 
 
+def test_directory_notes_parent_id_false_is_normalized(app_env):
+    # Historical bad parent_id values should normalize to root notes.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    src = tmp / "source-notes-normalize"
+    src.mkdir(parents=True)
+    notes_file = src / ".doc_file_notes.json"
+    notes_file.write_text(
+        """
+{
+  "entries": [
+    {
+      "id": "n1",
+      "file_name": "A.dwg",
+      "parent_id": false,
+      "subject": "Root",
+      "body": "x",
+      "created_by_initials": "JWH",
+      "created_by_name": "Jared",
+      "created_at": "2026-03-07T10:00:00-05:00",
+      "updated_at": "2026-03-07T10:00:00-05:00"
+    }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    rows = app._read_directory_notes(src)
+    assert len(rows) == 1
+    assert rows[0]["parent_id"] == ""
+
+
 def test_open_notes_from_source_list_uses_original_file_name(app_env, monkeypatch):
     # Opening notes from source list should resolve to original file name (not locked -initials name).
     app = app_env["app"]
