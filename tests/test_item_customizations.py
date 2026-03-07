@@ -124,3 +124,13 @@ def test_first_group_assignment_defaults_to_group_colors(app_env):
     assert app._resolve_use_group_colors({}, ["Alpha"], False, False) is True
     assert app._resolve_use_group_colors({}, ["Alpha"], False, True) is False
     assert app._resolve_use_group_colors({"groups": ["Alpha"]}, ["Alpha"], False, False) is False
+
+
+def test_auto_enable_group_colors_checkbox_on_first_group_selection(app_env):
+    # The dialog checkbox should auto-enable only on first group assignment when untouched.
+    app = app_env["app"]
+
+    assert app._should_auto_enable_group_colors_checkbox(False, 0, 1, False) is True
+    assert app._should_auto_enable_group_colors_checkbox(False, 1, 2, False) is False
+    assert app._should_auto_enable_group_colors_checkbox(True, 0, 1, False) is False
+    assert app._should_auto_enable_group_colors_checkbox(False, 0, 1, True) is False
