@@ -59,3 +59,20 @@ def test_project_file_manager_search_filters_rows(app_env):
     filtered = app._apply_project_file_search(rows, "heattrace")
     assert len(filtered) == 1
     assert filtered[0]["file_name"] == "HeatTrace-01.dwg"
+
+
+def test_project_file_manager_rows_include_untracked_project_files(app_env):
+    # All/Untracked views should include local project files that are not tied to a record.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "PFM-Untracked"
+    project_dir.mkdir(parents=True)
+    stray_file = project_dir / "checked_out" / "orphan.tmp"
+    stray_file.parent.mkdir(parents=True)
+    stray_file.write_text("orphan", encoding="utf-8")
+
+    all_rows = app._project_file_manager_rows(project_dir, "all")
+    untracked_rows = app._project_file_manager_rows(project_dir, "untracked")
+    assert any(row["record_type"] == "untracked" for row in all_rows)
+    assert any(str(row.get("local_file", "")) == str(stray_file) for row in untracked_rows)

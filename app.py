@@ -2028,10 +2028,12 @@ class DocumentControlApp(QMainWindow):
 
     def _project_file_manager_rows(self, project_dir: Path, record_type: str) -> List[Dict[str, object]]:
         rows: List[Dict[str, object]] = []
+        tracked_local_files: set[str] = set()
         for idx, record in enumerate(self.records):
             if record.project_dir != str(project_dir):
                 continue
-            if record_type != "all" and record.record_type != record_type:
+            tracked_local_files.add(str(Path(record.local_file)))
+            if record_type not in {"all", record.record_type}:
                 continue
             revision_count = len(self._revision_entries_for_record(record)) if record.record_type == "checked_out" else 0
             rows.append(
@@ -2044,6 +2046,29 @@ class DocumentControlApp(QMainWindow):
                     "revisions": revision_count,
                 }
             )
+
+        if record_type in {"all", "untracked"}:
+            skip_file_names = {PROJECT_CONFIG_FILE, FILE_VERSIONS_FILE}
+            for local_path in project_dir.rglob("*"):
+                if not local_path.is_file():
+                    continue
+                if local_path.name in skip_file_names:
+                    continue
+                if FILE_VERSIONS_DIR in local_path.parts:
+                    continue
+                local_path_str = str(local_path)
+                if local_path_str in tracked_local_files:
+                    continue
+                rows.append(
+                    {
+                        "record_idx": -1,
+                        "record_type": "untracked",
+                        "file_name": local_path.name,
+                        "local_file": local_path_str,
+                        "source_file": "",
+                        "revisions": 0,
+                    }
+                )
         rows.sort(key=lambda item: str(item["file_name"]).lower())
         return rows
 
@@ -2073,9 +2098,15 @@ class DocumentControlApp(QMainWindow):
         visible_rows = self._apply_project_file_search(rows, search_term)
         table.setRowCount(len(visible_rows))
         for row_idx, row in enumerate(visible_rows):
+            record_type = str(row.get("record_type", ""))
+            type_label = "Untracked"
+            if record_type == "checked_out":
+                type_label = "Checked Out"
+            elif record_type == "reference_copy":
+                type_label = "Reference Copy"
             values = [
                 str(row.get("file_name", "")),
-                "Checked Out" if row.get("record_type") == "checked_out" else "Reference Copy",
+                type_label,
                 str(row.get("revisions", 0)),
                 self._short_path(str(row.get("local_file", ""))),
                 self._short_path(str(row.get("source_file", ""))),
@@ -2084,6 +2115,7 @@ class DocumentControlApp(QMainWindow):
                 item = QTableWidgetItem(value)
                 if col_idx == 0:
                     item.setData(Qt.UserRole, int(row.get("record_idx", -1)))
+                    item.setData(Qt.UserRole + 1, dict(row))
                 if col_idx == 3:
                     item.setToolTip(str(row.get("local_file", "")))
                 elif col_idx == 4:
@@ -2109,6 +2141,17 @@ class DocumentControlApp(QMainWindow):
                 indexes.append(record_idx)
         return indexes
 
+    def _selected_rows_from_manager_table(self, table: QTableWidget) -> List[Dict[str, object]]:
+        rows: List[Dict[str, object]] = []
+        for row in sorted({idx.row() for idx in table.selectedIndexes()}):
+            item = table.item(row, 0)
+            if not item:
+                continue
+            data = item.data(Qt.UserRole + 1)
+            if isinstance(data, dict):
+                rows.append(dict(data))
+        return rows
+
     def _show_project_files_manager(self, project_dir: Path) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Project Files Manager - {project_dir.name}")
@@ -2123,7 +2166,8 @@ class DocumentControlApp(QMainWindow):
         all_table = QTableWidget(0, 5)
         checked_table = QTableWidget(0, 5)
         reference_table = QTableWidget(0, 5)
-        tables = [all_table, checked_table, reference_table]
+        untracked_table = QTableWidget(0, 5)
+        tables = [all_table, checked_table, reference_table, untracked_table]
         for table in tables:
             table.setHorizontalHeaderLabels(["File", "Type", "Revisions", "Local", "Source"])
             table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -2133,6 +2177,7 @@ class DocumentControlApp(QMainWindow):
         tabs.addTab(all_table, "All Files")
         tabs.addTab(checked_table, "Checked Out Files")
         tabs.addTab(reference_table, "Reference Copies")
+        tabs.addTab(untracked_table, "Untracked")
         layout.addWidget(tabs, stretch=1)
 
         manager_rows: Dict[str, List[Dict[str, object]]] = {}
@@ -2141,6 +2186,7 @@ class DocumentControlApp(QMainWindow):
             manager_rows["all"] = self._project_file_manager_rows(project_dir, "all")
             manager_rows["checked_out"] = self._project_file_manager_rows(project_dir, "checked_out")
             manager_rows["reference_copy"] = self._project_file_manager_rows(project_dir, "reference_copy")
+            manager_rows["untracked"] = self._project_file_manager_rows(project_dir, "untracked")
             search_term = search_edit.text()
             self._populate_project_files_manager_table(all_table, manager_rows["all"], search_term)
             self._populate_project_files_manager_table(
@@ -2149,10 +2195,16 @@ class DocumentControlApp(QMainWindow):
             self._populate_project_files_manager_table(
                 reference_table, manager_rows["reference_copy"], search_term
             )
+            self._populate_project_files_manager_table(
+                untracked_table, manager_rows["untracked"], search_term
+            )
 
         def active_table() -> QTableWidget:
             current = tabs.currentWidget()
             return current if isinstance(current, QTableWidget) else all_table
+
+        def selected_rows() -> List[Dict[str, object]]:
+            return self._selected_rows_from_manager_table(active_table())
 
         def selected_indexes() -> List[int]:
             return self._selected_record_indexes_from_manager_table(active_table())
@@ -2205,14 +2257,127 @@ class DocumentControlApp(QMainWindow):
                 refresh_tables()
                 self._info(f"Switched to revision {revision.get('id', '')}.")
 
+        def checkin_selected() -> None:
+            if not self._validate_identity():
+                return
+            indexes = {
+                idx
+                for idx in selected_indexes()
+                if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+            }
+            if not indexes:
+                self._error("Select at least one checked-out file.")
+                return
+            self._checkin_record_indexes(indexes)
+            refresh_tables()
+
+        def remove_reference_selected() -> None:
+            indexes = [
+                idx
+                for idx in selected_indexes()
+                if 0 <= idx < len(self.records) and self.records[idx].record_type == "reference_copy"
+            ]
+            if not indexes:
+                self._error("Select at least one reference copy.")
+                return
+            with self._busy_action("Removing reference copy record(s)..."):
+                self._remove_record_indexes(indexes)
+                self._save_records()
+                self._render_records_tables()
+            refresh_tables()
+
+        def delete_untracked_selected() -> None:
+            paths = [
+                Path(str(row.get("local_file", "")))
+                for row in selected_rows()
+                if str(row.get("record_type", "")) == "untracked"
+            ]
+            if not paths:
+                self._error("Select at least one untracked file.")
+                return
+            confirm = QMessageBox.question(
+                dialog,
+                "Delete Untracked Files",
+                f"Delete {len(paths)} untracked file(s)? This cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+            errors: List[str] = []
+            with self._busy_action("Deleting untracked file(s)..."):
+                for path in paths:
+                    try:
+                        if path.exists():
+                            path.unlink()
+                    except OSError as exc:
+                        errors.append(f"{path.name}: {exc}")
+            refresh_tables()
+            if errors:
+                self._error("Some files could not be deleted:\n" + "\n".join(errors))
+
+        def show_manager_context_menu(table: QTableWidget, pos: QPoint) -> None:
+            row = table.rowAt(pos.y())
+            if row >= 0 and (not table.item(row, 0) or not table.item(row, 0).isSelected()):
+                table.clearSelection()
+                table.selectRow(row)
+            rows = self._selected_rows_from_manager_table(table)
+            menu = QMenu(dialog)
+            open_action = menu.addAction("Open Selected")
+            snapshot_action = None
+            switch_action = None
+            checkin_action = None
+            remove_ref_action = None
+            delete_untracked_action = None
+
+            has_checked_out = any(str(row.get("record_type", "")) == "checked_out" for row in rows)
+            has_reference = any(str(row.get("record_type", "")) == "reference_copy" for row in rows)
+            has_untracked = any(str(row.get("record_type", "")) == "untracked" for row in rows)
+            checked_out_count = sum(
+                1 for row in rows if str(row.get("record_type", "")) == "checked_out"
+            )
+
+            if has_checked_out:
+                snapshot_action = menu.addAction("Create Snapshot")
+                checkin_action = menu.addAction("Check In Selected")
+                if checked_out_count == 1:
+                    switch_action = menu.addAction("Switch Revision")
+            if has_reference:
+                remove_ref_action = menu.addAction("Remove Reference Copies")
+            if has_untracked:
+                delete_untracked_action = menu.addAction("Delete Untracked")
+
+            chosen = menu.exec(table.viewport().mapToGlobal(pos))
+            if chosen == open_action:
+                open_selected()
+            elif snapshot_action is not None and chosen == snapshot_action:
+                create_snapshot()
+            elif switch_action is not None and chosen == switch_action:
+                switch_revision()
+            elif checkin_action is not None and chosen == checkin_action:
+                checkin_selected()
+            elif remove_ref_action is not None and chosen == remove_ref_action:
+                remove_reference_selected()
+            elif delete_untracked_action is not None and chosen == delete_untracked_action:
+                delete_untracked_selected()
+
         for table in tables:
             table.cellDoubleClicked.connect(lambda _r, _c: open_selected())
+            table.customContextMenuRequested.connect(
+                lambda pos, table=table: show_manager_context_menu(table, pos)
+            )
 
         search_edit.textChanged.connect(lambda _text: refresh_tables())
 
         button_bar = QHBoxLayout()
         open_btn = QPushButton("Open Selected")
         open_btn.clicked.connect(open_selected)
+        checkin_btn = QPushButton("Check In Selected")
+        checkin_btn.clicked.connect(checkin_selected)
+        remove_ref_btn = QPushButton("Remove Ref Selected")
+        remove_ref_btn.clicked.connect(remove_reference_selected)
+        delete_untracked_btn = QPushButton("Delete Untracked")
+        delete_untracked_btn.clicked.connect(delete_untracked_selected)
         snapshot_btn = QPushButton("Create Snapshot")
         snapshot_btn.clicked.connect(create_snapshot)
         switch_btn = QPushButton("Switch Revision")
@@ -2222,6 +2387,9 @@ class DocumentControlApp(QMainWindow):
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dialog.accept)
         button_bar.addWidget(open_btn)
+        button_bar.addWidget(checkin_btn)
+        button_bar.addWidget(remove_ref_btn)
+        button_bar.addWidget(delete_untracked_btn)
         button_bar.addWidget(snapshot_btn)
         button_bar.addWidget(switch_btn)
         button_bar.addWidget(refresh_btn)
