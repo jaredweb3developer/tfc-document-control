@@ -82,3 +82,28 @@ def test_transfer_project_files_move_updates_record(app_env):
     assert app.records[0].project_name == "TargetP"
     assert Path(app.records[0].local_file).exists()
     assert not local_file.exists()
+
+
+def test_favorites_can_be_added_between_project_and_global(app_env):
+    # Project favorites should be addable to global and global favorites back to project.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "FavXfer"
+    source_dir = tmp / "src"
+    source_dir.mkdir(parents=True)
+    project_dir.mkdir(parents=True)
+    app._write_project_config(project_dir, "FavXfer", [str(source_dir)], favorites=[str(tmp / "a.dwg")])
+    app._load_project_from_dir(project_dir)
+
+    app.favorites_list.setCurrentRow(0)
+    app.favorites_list.item(0).setSelected(True)
+    app._add_selected_project_favorites_to_global()
+    assert str(tmp / "a.dwg") in app.global_favorites
+
+    app.global_favorites = [str(tmp / "b.dwg")]
+    app._refresh_global_favorites_list()
+    app.global_favorites_list.setCurrentRow(0)
+    app.global_favorites_list.item(0).setSelected(True)
+    app._add_selected_global_favorites_to_project()
+    assert str(tmp / "b.dwg") in app._current_project_favorites()

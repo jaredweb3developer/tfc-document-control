@@ -3265,6 +3265,21 @@ class DocumentControlApp(QMainWindow):
             return
         self._add_favorite_paths([Path(str(item.data(Qt.UserRole))) for item in selected_items])
 
+    def _add_selected_project_favorites_to_global(self) -> None:
+        selected_items = self.favorites_list.selectedItems()
+        if not selected_items:
+            self._error("Select at least one project favorite.")
+            return
+        changed = False
+        for item in selected_items:
+            value = str(item.data(Qt.UserRole)).strip()
+            if value and value not in self.global_favorites:
+                self.global_favorites.append(value)
+                changed = True
+        if changed:
+            self._save_global_favorites()
+            self._refresh_global_favorites_list()
+
     def _load_global_favorites(self) -> None:
         data = self._read_json_candidates([self._default_global_favorites_file()])
         raw = data.get("favorites", []) if isinstance(data, dict) else data
@@ -3349,11 +3364,14 @@ class DocumentControlApp(QMainWindow):
             self.global_favorites_list.setCurrentItem(item)
         menu = QMenu(self)
         add_action = menu.addAction("Add Favorite")
+        add_project_action = menu.addAction("Add Selected To Project Favorites")
         open_action = menu.addAction("Open Selected")
         remove_action = menu.addAction("Remove Selected")
         chosen = menu.exec(self.global_favorites_list.mapToGlobal(pos))
         if chosen == add_action:
             self._browse_and_add_global_favorites()
+        elif chosen == add_project_action:
+            self._add_selected_global_favorites_to_project()
         elif chosen == open_action:
             self._open_selected_global_favorites()
         elif chosen == remove_action:
@@ -5930,6 +5948,7 @@ class DocumentControlApp(QMainWindow):
 
         menu = QMenu(self)
         add_action = menu.addAction("Add Favorite")
+        add_global_action = menu.addAction("Add Selected To Global Favorites")
         open_action = menu.addAction("Open Selected")
         remove_action = menu.addAction("Remove Favorite")
         move_up_action = menu.addAction("Move Up")
@@ -5939,6 +5958,8 @@ class DocumentControlApp(QMainWindow):
         chosen = menu.exec(self.favorites_list.mapToGlobal(pos))
         if chosen == add_action:
             self._browse_and_add_favorites()
+        elif chosen == add_global_action:
+            self._add_selected_project_favorites_to_global()
         elif chosen == open_action:
             self._open_selected_favorites()
         elif chosen == remove_action:
