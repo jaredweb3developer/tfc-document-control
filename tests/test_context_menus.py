@@ -73,6 +73,8 @@ def test_context_menu_policies_are_enabled(app_env):
     assert app.tracked_projects_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.favorites_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.notes_list.contextMenuPolicy() == Qt.CustomContextMenu
+    assert app.global_favorites_list.contextMenuPolicy() == Qt.CustomContextMenu
+    assert app.global_notes_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.source_roots_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.controlled_files_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.all_records_table.contextMenuPolicy() == Qt.CustomContextMenu
