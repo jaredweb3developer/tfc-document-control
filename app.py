@@ -3504,6 +3504,9 @@ class DocumentControlApp(QMainWindow):
             normalized["auto_contrast"] = auto_contrast
         if bool(value.get("use_group_colors", False)):
             normalized["use_group_colors"] = True
+        group_color_source = self._normalize_group_name(value.get("group_color_source", ""))
+        if group_color_source and group_color_source in groups:
+            normalized["group_color_source"] = group_color_source
         return normalized
 
     def _load_item_customizations(self) -> None:
@@ -3586,6 +3589,14 @@ class DocumentControlApp(QMainWindow):
     def _group_style_for_name(self, group_name: str) -> Dict[str, object]:
         return self._normalize_group_style(self.item_customization_group_styles.get(group_name, {}))
 
+    def _resolve_group_color_source(
+        self, custom: Dict[str, object], groups: List[str]
+    ) -> str:
+        source = self._normalize_group_name(custom.get("group_color_source", ""))
+        if source and source in groups:
+            return source
+        return groups[0] if groups else ""
+
     def _set_item_customization(self, scope: str, item_key: str, value: Dict[str, object]) -> None:
         if not scope or not item_key:
             return
@@ -3625,7 +3636,7 @@ class DocumentControlApp(QMainWindow):
         auto_contrast = bool(custom.get("auto_contrast", True))
         group_used = ""
         if use_group_colors and groups:
-            group_used = groups[0]
+            group_used = self._resolve_group_color_source(custom, groups)
             group_style = self._group_style_for_name(group_used)
             background = self._normalize_hex_color(group_style.get("background", background))
             configured_font = self._normalize_hex_color(group_style.get("font", configured_font))
@@ -3866,11 +3877,14 @@ class DocumentControlApp(QMainWindow):
             font = self._normalize_hex_color(font_edit.text())
             auto_for_preview = auto_contrast_checkbox.isChecked()
             if use_group_colors_checkbox.isChecked():
-                group_name = ""
-                for group_name_candidate in self.item_customization_groups:
-                    if group_name_candidate in selected_group_names:
-                        group_name = group_name_candidate
-                        break
+                group_name = current_group_name()
+                if group_name and group_name not in selected_group_names:
+                    group_name = ""
+                if not group_name:
+                    for group_name_candidate in self.item_customization_groups:
+                        if group_name_candidate in selected_group_names:
+                            group_name = group_name_candidate
+                            break
                 if group_name:
                     group_style = self._group_style_for_name(group_name)
                     background = self._normalize_hex_color(group_style.get("background", background))
@@ -3953,6 +3967,8 @@ class DocumentControlApp(QMainWindow):
                         if group and group not in deduped:
                             deduped.append(group)
                     custom["groups"] = deduped
+                    if self._normalize_group_name(custom.get("group_color_source", "")) == current_name:
+                        custom["group_color_source"] = normalized_new
             if current_name in selected_group_names:
                 selected_group_names.remove(current_name)
                 selected_group_names.add(normalized_new)
@@ -3978,6 +3994,8 @@ class DocumentControlApp(QMainWindow):
                     custom["groups"] = [
                         str(group) for group in groups if str(group).strip() and str(group) != group_name
                     ]
+                    if self._normalize_group_name(custom.get("group_color_source", "")) == group_name:
+                        custom.pop("group_color_source", None)
             refresh_groups_widget(selected_group_names)
             if groups_list.count() > 0:
                 groups_list.setCurrentRow(0)
@@ -4137,6 +4155,7 @@ class DocumentControlApp(QMainWindow):
         font = self._normalize_hex_color(font_edit.text()) if manual_font_selected else ""
         auto_contrast = bool(auto_contrast_checkbox.isChecked())
         requested_use_group_colors = bool(use_group_colors_checkbox.isChecked())
+        selected_group_for_colors = current_group_name()
         for item_key, _label in targets:
             existing_item = existing_by_key.get(item_key, {})
             payload: Dict[str, object] = {}
@@ -4150,6 +4169,10 @@ class DocumentControlApp(QMainWindow):
             )
             if use_group_colors and chosen_groups:
                 payload["use_group_colors"] = True
+                if selected_group_for_colors and selected_group_for_colors in chosen_groups:
+                    payload["group_color_source"] = selected_group_for_colors
+                else:
+                    payload["group_color_source"] = chosen_groups[0]
             if background:
                 payload["background"] = background
                 payload["auto_contrast"] = auto_contrast

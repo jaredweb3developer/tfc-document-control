@@ -106,7 +106,7 @@ def test_group_colors_can_drive_item_style_when_enabled(app_env):
     app._set_item_customization(
         "tracked_projects",
         str(project_dir),
-        {"groups": ["QA"], "use_group_colors": True},
+        {"groups": ["QA"], "use_group_colors": True, "group_color_source": "QA"},
     )
     app._refresh_tracked_projects_list()
 
@@ -115,6 +115,47 @@ def test_group_colors_can_drive_item_style_when_enabled(app_env):
     assert item.background().color().name().upper() == "#224466"
     assert item.foreground().color().name().upper() == "#F8F8F8"
     assert "Using Group Colors: QA" in item.toolTip()
+
+
+def test_group_color_source_is_used_when_multiple_groups_exist(app_env):
+    # When group colors are enabled, the configured source group must drive the styling.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "SourceGroup"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    app.tracked_projects = [
+        {
+            "name": "SourceGroup",
+            "project_dir": str(project_dir),
+            "client": "",
+            "year_started": "",
+        }
+    ]
+    app.item_customization_groups = ["GroupA", "GroupB"]
+    app.item_customization_group_styles["GroupA"] = {
+        "background": "#AA2200",
+        "font": "#FFFFFF",
+    }
+    app.item_customization_group_styles["GroupB"] = {
+        "background": "#0044AA",
+        "font": "#FFFFFF",
+    }
+    app._set_item_customization(
+        "tracked_projects",
+        str(project_dir),
+        {
+            "groups": ["GroupA", "GroupB"],
+            "use_group_colors": True,
+            "group_color_source": "GroupB",
+        },
+    )
+    app._refresh_tracked_projects_list()
+
+    item = app.tracked_projects_list.item(0)
+    assert item is not None
+    assert item.background().color().name().upper() == "#0044AA"
+    assert "Using Group Colors: GroupB" in item.toolTip()
 
 
 def test_first_group_assignment_defaults_to_group_colors(app_env):
