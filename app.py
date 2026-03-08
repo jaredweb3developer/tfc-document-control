@@ -448,6 +448,12 @@ class DocumentControlApp(QMainWindow):
             )
         )
         notes_layout.addLayout(notes_header)
+        self.project_notes_search_edit = QLineEdit()
+        self.project_notes_search_edit.setPlaceholderText("Search notes")
+        self.project_notes_search_edit.textChanged.connect(
+            lambda _text: self._refresh_notes_list(self._current_project_notes())
+        )
+        notes_layout.addWidget(self.project_notes_search_edit)
         self.notes_list = QListWidget()
         self.notes_list.itemDoubleClicked.connect(self._show_notes_context_menu_for_item)
         self.notes_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1483,25 +1489,29 @@ class DocumentControlApp(QMainWindow):
         current_item = None
         search_term = self.project_search_edit.text().strip().lower()
         for entry in self.tracked_projects:
-            if search_term and search_term not in " ".join(
+            project_dir = str(entry["project_dir"])
+            custom_groups = self._item_customization_groups("tracked_projects", project_dir)
+            search_fields = " ".join(
                 [
                     str(entry.get("name", "")).lower(),
                     str(entry.get("client", "")).lower(),
                     str(entry.get("year_started", "")).lower(),
+                    " ".join(custom_groups).lower(),
                 ]
-            ):
+            )
+            if search_term and search_term not in search_fields:
                 continue
             item = QListWidgetItem(entry["name"])
-            item.setData(Qt.UserRole, entry["project_dir"])
-            tooltip_lines = [entry["project_dir"]]
+            item.setData(Qt.UserRole, project_dir)
+            tooltip_lines = [project_dir]
             if entry.get("client"):
                 tooltip_lines.append(f"Client: {entry['client']}")
             if entry.get("year_started"):
                 tooltip_lines.append(f"Year Started: {entry['year_started']}")
             self._set_projects_item_base_tooltip(item, "\n".join(tooltip_lines))
-            self._apply_projects_list_item_style(item, "tracked_projects", str(entry["project_dir"]))
+            self._apply_projects_list_item_style(item, "tracked_projects", project_dir)
             self.tracked_projects_list.addItem(item)
-            if entry["project_dir"] == self.current_project_dir:
+            if project_dir == self.current_project_dir:
                 current_item = item
 
         if current_item:
@@ -3160,7 +3170,14 @@ class DocumentControlApp(QMainWindow):
         search = self.project_favorites_search_edit.text().strip().lower()
         for favorite in favorites:
             display_name = self._favorite_display_name(favorite)
-            if search and search not in display_name.lower() and search not in favorite.lower():
+            custom_groups = self._item_customization_groups("project_favorites", favorite)
+            group_search = " ".join(custom_groups).lower()
+            if (
+                search
+                and search not in display_name.lower()
+                and search not in favorite.lower()
+                and search not in group_search
+            ):
                 continue
             item = QListWidgetItem(display_name)
             item.setData(Qt.UserRole, favorite)
@@ -3329,7 +3346,14 @@ class DocumentControlApp(QMainWindow):
         self.global_favorites_list.clear()
         search = self.global_favorites_search_edit.text().strip().lower()
         for favorite in self.global_favorites:
-            if search and search not in favorite.lower() and search not in Path(favorite).name.lower():
+            custom_groups = self._item_customization_groups("global_favorites", favorite)
+            group_search = " ".join(custom_groups).lower()
+            if (
+                search
+                and search not in favorite.lower()
+                and search not in Path(favorite).name.lower()
+                and search not in group_search
+            ):
                 continue
             item = QListWidgetItem(Path(favorite).name or favorite)
             item.setData(Qt.UserRole, favorite)
@@ -3585,6 +3609,18 @@ class DocumentControlApp(QMainWindow):
             return {}
         raw = self.item_customizations.get(scope, {}).get(item_key, {})
         return self._normalize_item_customization(raw)
+
+    def _item_customization_groups(self, scope: str, item_key: str) -> List[str]:
+        custom = self._item_customization_for(scope, item_key)
+        groups = custom.get("groups", [])
+        if not isinstance(groups, list):
+            return []
+        normalized: List[str] = []
+        for group in groups:
+            group_name = self._normalize_group_name(group)
+            if group_name:
+                normalized.append(group_name)
+        return normalized
 
     def _group_style_for_name(self, group_name: str) -> Dict[str, object]:
         return self._normalize_group_style(self.item_customization_group_styles.get(group_name, {}))
@@ -4312,11 +4348,24 @@ class DocumentControlApp(QMainWindow):
 
     def _refresh_notes_list(self, notes: List[Dict[str, str]]) -> None:
         self.notes_list.clear()
+        search = self.project_notes_search_edit.text().strip().lower()
         for note in notes:
-            item = QListWidgetItem(note.get("subject", "(Untitled)"))
-            item.setData(Qt.UserRole, note.get("id", ""))
+            note_id = str(note.get("id", ""))
+            subject = note.get("subject", "(Untitled)")
+            body = str(note.get("body", ""))
+            custom_groups = self._item_customization_groups("project_notes", note_id)
+            group_search = " ".join(custom_groups).lower()
+            if (
+                search
+                and search not in subject.lower()
+                and search not in body.lower()
+                and search not in group_search
+            ):
+                continue
+            item = QListWidgetItem(subject)
+            item.setData(Qt.UserRole, note_id)
             self._set_projects_item_base_tooltip(item, self._note_tooltip(note))
-            self._apply_projects_list_item_style(item, "project_notes", str(note.get("id", "")))
+            self._apply_projects_list_item_style(item, "project_notes", note_id)
             self.notes_list.addItem(item)
 
     def _set_project_notes(self, notes: List[Dict[str, str]]) -> None:
