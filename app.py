@@ -7415,6 +7415,7 @@ class DocumentControlApp(QMainWindow):
 
         menu = QMenu(self)
         new_action = menu.addAction("New Note")
+        presets_action = menu.addAction("Presets")
         edit_action = menu.addAction("Edit Selected")
         remove_action = menu.addAction("Remove Selected")
         move_up_action = menu.addAction("Move Up")
