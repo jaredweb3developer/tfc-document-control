@@ -65,6 +65,13 @@ def test_create_project_switches_current_project(app_env):
     assert cfg.get("year_started") == "2025"
 
 
+def test_default_new_project_name_is_blank(app_env):
+    # New project dialog should start with a blank project name.
+    app = app_env["app"]
+    app.current_directory = app_env["tmp"] / "some-dir"
+    assert app._default_new_project_name() == ""
+
+
 def test_project_search_filters_by_name_client_and_year(app_env):
     # Search input in Tracked Projects should match against name/client/year fields.
     app = app_env["app"]

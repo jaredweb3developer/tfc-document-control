@@ -1679,6 +1679,9 @@ class DocumentControlApp(QMainWindow):
                 return suggested_name
         return name
 
+    def _default_new_project_name(self) -> str:
+        return ""
+
     def _show_new_project_dialog(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("New Project")
@@ -1688,8 +1691,7 @@ class DocumentControlApp(QMainWindow):
         form_layout = QGridLayout()
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Project name")
-        if self.current_directory and self.current_directory.name:
-            name_edit.setText(self.current_directory.name)
+        name_edit.setText(self._default_new_project_name())
         client_edit = QLineEdit()
         client_edit.setPlaceholderText("Optional client name")
         year_edit = QLineEdit()
