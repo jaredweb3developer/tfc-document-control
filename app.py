@@ -2852,6 +2852,7 @@ class DocumentControlApp(QMainWindow):
                 if entry.is_file() and entry.name not in {
                     HISTORY_FILE_NAME,
                     LEGACY_HISTORY_FILE_NAME,
+                    DIRECTORY_NOTES_FILE,
                 }:
                     entries.append(entry)
         except OSError:
@@ -5600,15 +5601,23 @@ class DocumentControlApp(QMainWindow):
     ) -> Dict[str, str]:
         normalized: Dict[str, str] = {}
         existing = source_ids or {}
+        used_ids = {str(value).strip() for value in existing.values() if str(value).strip()}
         for source in sources:
             source_value = str(source).strip()
             if not source_value:
                 continue
             source_id = str(existing.get(source_value, "")).strip()
             if not source_id:
-                source_id = str(uuid4())
+                source_id = self._new_compact_id(used_ids)
+            used_ids.add(source_id)
             normalized[source_value] = source_id
         return normalized
+
+    def _new_compact_id(self, existing_ids: set[str], size: int = 10) -> str:
+        while True:
+            candidate = uuid4().hex[:size]
+            if candidate not in existing_ids:
+                return candidate
 
     def _source_key(self, project_dir: Path, source_root: Path) -> str:
         config = self._read_project_config(project_dir)
@@ -5618,7 +5627,7 @@ class DocumentControlApp(QMainWindow):
         normalized_source_ids = self._normalize_source_ids(sources, source_ids)
         source_key = normalized_source_ids.get(str(source_root))
         if not source_key:
-            source_key = str(uuid4())
+            source_key = self._new_compact_id(set(normalized_source_ids.values()))
             normalized_source_ids[str(source_root)] = source_key
             if str(source_root) not in sources:
                 sources.append(str(source_root))

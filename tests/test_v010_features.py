@@ -5,8 +5,8 @@ from PySide6.QtWidgets import QListWidgetItem, QMessageBox
 from app import CheckoutRecord
 
 
-def test_project_config_stores_metadata_and_uuid_source_ids(app_env):
-    # Project configs should persist metadata fields and stable UUID keys for each source.
+def test_project_config_stores_metadata_and_compact_source_ids(app_env):
+    # Project configs should persist metadata fields and stable compact keys for each source.
     app = app_env["app"]
     tmp = app_env["tmp"]
 
@@ -33,11 +33,11 @@ def test_project_config_stores_metadata_and_uuid_source_ids(app_env):
     assert set(source_ids.keys()) == {str(source_a), str(source_b)}
     assert len({source_ids[str(source_a)], source_ids[str(source_b)]}) == 2
 
-    # Source key should be UUID-backed and stable across calls.
+    # Source key should be compact and stable across calls.
     first = app._source_key(project_dir, source_a)
     second = app._source_key(project_dir, source_a)
     assert first == second
-    assert len(first) == 36
+    assert 8 <= len(first) <= 12
 
 
 def test_create_project_switches_current_project(app_env):
