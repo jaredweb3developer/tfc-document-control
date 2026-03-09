@@ -9,6 +9,7 @@ def test_directory_file_cache_uses_ttl_and_invalidation(app_env):
     src = tmp / "cache-src"
     src.mkdir(parents=True)
     (src / "a.txt").write_text("a", encoding="utf-8")
+    (src / ".doc_file_notes.json").write_text("{}", encoding="utf-8")
 
     app._dir_cache_ttl_seconds = 999.0
     first = app._cached_directory_files(src)

@@ -81,6 +81,8 @@ GLOBAL_FAVORITES_FILE = USER_DATA_ROOT / "global_favorites.json"
 GLOBAL_NOTES_FILE = USER_DATA_ROOT / "global_notes.json"
 ITEM_CUSTOMIZATIONS_FILE = USER_DATA_ROOT / "item_customizations.json"
 ITEM_CUSTOMIZATIONS_SCHEMA_VERSION = 1
+NOTE_PRESETS_FILE = USER_DATA_ROOT / "note_presets.json"
+NOTE_PRESETS_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -131,6 +133,8 @@ class DocumentControlApp(QMainWindow):
         self._startup_splash_label: Optional[QLabel] = None
         self.global_favorites: List[str] = []
         self.global_notes: List[Dict[str, str]] = []
+        self.note_presets_notes: List[Dict[str, object]] = []
+        self.note_preset_groups: List[Dict[str, object]] = []
         self.item_customization_groups: List[str] = []
         self.item_customizations: Dict[str, Dict[str, Dict[str, object]]] = {}
         self.item_customization_group_styles: Dict[str, Dict[str, object]] = {}
@@ -163,6 +167,7 @@ class DocumentControlApp(QMainWindow):
             self._update_startup_splash("Loading global favorites and notes...")
             self._load_global_favorites()
             self._load_global_notes()
+            self._load_note_presets()
             self._update_startup_splash("Loading current project...")
             self._load_last_or_default_project()
             self._update_startup_splash("Finalizing startup...")
@@ -437,6 +442,7 @@ class DocumentControlApp(QMainWindow):
             self._build_options_button(
                 [
                     ("New Note", self._create_note),
+                    ("Presets", self._show_note_presets_dialog),
                     ("Edit Selected", self._edit_selected_note),
                     ("Remove Selected", self._remove_selected_note),
                     ("---", self._create_note),
@@ -832,6 +838,9 @@ class DocumentControlApp(QMainWindow):
 
     def _default_global_notes_file(self) -> Path:
         return GLOBAL_NOTES_FILE
+
+    def _default_note_presets_file(self) -> Path:
+        return NOTE_PRESETS_FILE
 
     def _default_item_customizations_file(self) -> Path:
         return ITEM_CUSTOMIZATIONS_FILE
@@ -1670,6 +1679,9 @@ class DocumentControlApp(QMainWindow):
                 return suggested_name
         return name
 
+    def _default_new_project_name(self) -> str:
+        return ""
+
     def _show_new_project_dialog(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("New Project")
@@ -1679,8 +1691,7 @@ class DocumentControlApp(QMainWindow):
         form_layout = QGridLayout()
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Project name")
-        if self.current_directory and self.current_directory.name:
-            name_edit.setText(self.current_directory.name)
+        name_edit.setText(self._default_new_project_name())
         client_edit = QLineEdit()
         client_edit.setPlaceholderText("Optional client name")
         year_edit = QLineEdit()
@@ -1765,6 +1776,7 @@ class DocumentControlApp(QMainWindow):
             sources=sources,
             extension_filters=extension_filters,
             filter_mode=filter_mode,
+            notes=self._default_notes_from_presets(),
             client=client,
             year_started=year_started,
         )
@@ -2842,6 +2854,7 @@ class DocumentControlApp(QMainWindow):
                 if entry.is_file() and entry.name not in {
                     HISTORY_FILE_NAME,
                     LEGACY_HISTORY_FILE_NAME,
+                    DIRECTORY_NOTES_FILE,
                 }:
                     entries.append(entry)
         except OSError:
@@ -3458,6 +3471,134 @@ class DocumentControlApp(QMainWindow):
             "notes": self.global_notes,
         }
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _normalize_note_preset_note(self, entry: object) -> Optional[Dict[str, object]]:
+        if not isinstance(entry, dict):
+            return None
+        subject = str(entry.get("subject", "")).strip()
+        if not subject:
+            return None
+        return {
+            "id": str(entry.get("id", "")).strip() or str(uuid4()),
+            "subject": subject,
+            "body": str(entry.get("body", "")).strip(),
+            "auto_add_new_projects": bool(entry.get("auto_add_new_projects", False)),
+        }
+
+    def _normalize_note_preset_group(self, entry: object) -> Optional[Dict[str, object]]:
+        if not isinstance(entry, dict):
+            return None
+        name = str(entry.get("name", "")).strip()
+        if not name:
+            return None
+        note_ids: List[str] = []
+        raw_ids = entry.get("note_ids", [])
+        if isinstance(raw_ids, list):
+            for note_id in raw_ids:
+                value = str(note_id).strip()
+                if value and value not in note_ids:
+                    note_ids.append(value)
+        return {
+            "id": str(entry.get("id", "")).strip() or str(uuid4()),
+            "name": name,
+            "note_ids": note_ids,
+            "auto_add_new_projects": bool(entry.get("auto_add_new_projects", False)),
+        }
+
+    def _load_note_presets(self) -> None:
+        data = self._read_json_candidates([self._default_note_presets_file()])
+        self.note_presets_notes = []
+        self.note_preset_groups = []
+        if not isinstance(data, dict):
+            return
+
+        raw_notes = data.get("notes", [])
+        if isinstance(raw_notes, list):
+            for entry in raw_notes:
+                normalized = self._normalize_note_preset_note(entry)
+                if normalized:
+                    self.note_presets_notes.append(normalized)
+
+        valid_note_ids = {str(note["id"]) for note in self.note_presets_notes}
+        raw_groups = data.get("groups", [])
+        if isinstance(raw_groups, list):
+            for entry in raw_groups:
+                normalized_group = self._normalize_note_preset_group(entry)
+                if not normalized_group:
+                    continue
+                normalized_group["note_ids"] = [
+                    note_id
+                    for note_id in normalized_group.get("note_ids", [])
+                    if str(note_id) in valid_note_ids
+                ]
+                self.note_preset_groups.append(normalized_group)
+
+    def _save_note_presets(self) -> None:
+        path = self._default_note_presets_file()
+        self._ensure_parent_dir(path)
+        payload = {
+            "schema_version": NOTE_PRESETS_SCHEMA_VERSION,
+            "app_version": APP_VERSION,
+            "notes": self.note_presets_notes,
+            "groups": self.note_preset_groups,
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _project_note_from_preset(self, preset_note: Dict[str, object]) -> Dict[str, str]:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        return {
+            "id": str(uuid4()),
+            "subject": str(preset_note.get("subject", "")).strip(),
+            "body": str(preset_note.get("body", "")).strip(),
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+
+    def _default_notes_from_presets(self) -> List[Dict[str, str]]:
+        by_note_id = {
+            str(note.get("id", "")): note
+            for note in self.note_presets_notes
+            if str(note.get("id", "")).strip()
+        }
+        selected_note_ids: List[str] = []
+        for note in self.note_presets_notes:
+            note_id = str(note.get("id", "")).strip()
+            if note_id and bool(note.get("auto_add_new_projects", False)) and note_id not in selected_note_ids:
+                selected_note_ids.append(note_id)
+        for group in self.note_preset_groups:
+            if not bool(group.get("auto_add_new_projects", False)):
+                continue
+            for note_id in group.get("note_ids", []):
+                value = str(note_id).strip()
+                if value and value not in selected_note_ids and value in by_note_id:
+                    selected_note_ids.append(value)
+        notes: List[Dict[str, str]] = []
+        for note_id in selected_note_ids:
+            preset = by_note_id.get(note_id)
+            if preset:
+                notes.append(self._project_note_from_preset(preset))
+        return notes
+
+    def _add_preset_notes_to_current_project(self, note_ids: List[str]) -> None:
+        project_dir = self._validate_current_project()
+        if not project_dir:
+            return
+        notes = self._current_project_notes()
+        by_note_id = {
+            str(note.get("id", "")): note
+            for note in self.note_presets_notes
+            if str(note.get("id", "")).strip()
+        }
+        added = 0
+        for note_id in note_ids:
+            preset = by_note_id.get(note_id)
+            if not preset:
+                continue
+            notes.append(self._project_note_from_preset(preset))
+            added += 1
+        self._set_project_notes(notes)
+        if added:
+            self._info(f"Added {added} preset note(s) to current project.")
 
     def _normalize_group_name(self, value: object) -> str:
         return " ".join(str(value or "").strip().split())
@@ -4330,6 +4471,7 @@ class DocumentControlApp(QMainWindow):
             self.global_notes_list.setCurrentItem(item)
         menu = QMenu(self)
         new_action = menu.addAction("New Note")
+        presets_action = menu.addAction("Presets")
         edit_action = menu.addAction("Edit Selected")
         remove_action = menu.addAction("Remove Selected")
         chosen = menu.exec(self.global_notes_list.mapToGlobal(pos))
@@ -4423,6 +4565,420 @@ class DocumentControlApp(QMainWindow):
             "created_at": existing.get("created_at", "") or timestamp,
             "updated_at": timestamp,
         }
+
+    def _show_note_preset_note_dialog(
+        self, note: Optional[Dict[str, object]] = None
+    ) -> Optional[Dict[str, object]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Preset Note" if note else "New Preset Note")
+        dialog.resize(640, 420)
+        layout = QVBoxLayout(dialog)
+
+        form_layout = QGridLayout()
+        subject_edit = QLineEdit(str(note.get("subject", "")) if note else "")
+        form_layout.addWidget(QLabel("Subject:"), 0, 0)
+        form_layout.addWidget(subject_edit, 0, 1)
+        layout.addLayout(form_layout)
+
+        body_edit = QPlainTextEdit(str(note.get("body", "")) if note else "")
+        body_edit.setPlaceholderText("Note body")
+        layout.addWidget(body_edit, stretch=1)
+
+        auto_add_checkbox = QCheckBox("Automatically add to new projects")
+        auto_add_checkbox.setChecked(bool(note.get("auto_add_new_projects", False)) if note else False)
+        layout.addWidget(auto_add_checkbox)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        subject = subject_edit.text().strip()
+        if not subject:
+            self._error("Note subject is required.")
+            return None
+
+        return {
+            "id": str(note.get("id", "")) if note else str(uuid4()),
+            "subject": subject,
+            "body": body_edit.toPlainText().strip(),
+            "auto_add_new_projects": bool(auto_add_checkbox.isChecked()),
+        }
+
+    def _show_note_preset_group_dialog(
+        self, group: Optional[Dict[str, object]] = None
+    ) -> Optional[Dict[str, object]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Note Group" if group else "New Note Group")
+        dialog.resize(640, 460)
+        layout = QVBoxLayout(dialog)
+
+        form_layout = QGridLayout()
+        name_edit = QLineEdit(str(group.get("name", "")) if group else "")
+        form_layout.addWidget(QLabel("Group Name:"), 0, 0)
+        form_layout.addWidget(name_edit, 0, 1)
+        layout.addLayout(form_layout)
+
+        notes_list = QListWidget()
+        selected_note_ids = {
+            str(note_id).strip()
+            for note_id in (group.get("note_ids", []) if group else [])
+            if str(note_id).strip()
+        }
+        for preset_note in self.note_presets_notes:
+            note_id = str(preset_note.get("id", "")).strip()
+            if not note_id:
+                continue
+            item = QListWidgetItem(str(preset_note.get("subject", "(Untitled)")))
+            item.setData(Qt.UserRole, note_id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if note_id in selected_note_ids else Qt.Unchecked)
+            notes_list.addItem(item)
+        layout.addWidget(QLabel("Include Notes:"))
+        layout.addWidget(notes_list, stretch=1)
+
+        auto_add_checkbox = QCheckBox("Automatically add to new projects")
+        auto_add_checkbox.setChecked(bool(group.get("auto_add_new_projects", False)) if group else False)
+        layout.addWidget(auto_add_checkbox)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        name = name_edit.text().strip()
+        if not name:
+            self._error("Group name is required.")
+            return None
+        note_ids: List[str] = []
+        for row in range(notes_list.count()):
+            item = notes_list.item(row)
+            if item.checkState() != Qt.Checked:
+                continue
+            note_id = str(item.data(Qt.UserRole)).strip()
+            if note_id and note_id not in note_ids:
+                note_ids.append(note_id)
+        if not note_ids:
+            self._error("Select at least one preset note for the group.")
+            return None
+
+        return {
+            "id": str(group.get("id", "")) if group else str(uuid4()),
+            "name": name,
+            "note_ids": note_ids,
+            "auto_add_new_projects": bool(auto_add_checkbox.isChecked()),
+        }
+
+    def _show_note_presets_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Note Presets")
+        dialog.resize(980, 640)
+        layout = QVBoxLayout(dialog)
+
+        splitter = QSplitter(Qt.Horizontal)
+        notes_panel = QWidget()
+        notes_layout = QVBoxLayout(notes_panel)
+        notes_layout.addWidget(QLabel("Preset Notes"))
+        notes_search = QLineEdit()
+        notes_search.setPlaceholderText("Search preset notes")
+        notes_layout.addWidget(notes_search)
+        notes_list = QListWidget()
+        notes_list.setSelectionMode(QListWidget.ExtendedSelection)
+        notes_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        notes_layout.addWidget(notes_list, stretch=1)
+
+        groups_panel = QWidget()
+        groups_layout = QVBoxLayout(groups_panel)
+        groups_layout.addWidget(QLabel("Note Groups"))
+        groups_search = QLineEdit()
+        groups_search.setPlaceholderText("Search note groups")
+        groups_layout.addWidget(groups_search)
+        groups_list = QListWidget()
+        groups_list.setSelectionMode(QListWidget.ExtendedSelection)
+        groups_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        groups_layout.addWidget(groups_list, stretch=1)
+
+        splitter.addWidget(notes_panel)
+        splitter.addWidget(groups_panel)
+        splitter.setSizes([520, 460])
+        layout.addWidget(splitter, stretch=1)
+
+        notes_buttons = QHBoxLayout()
+        new_note_btn = QPushButton("New Note")
+        edit_note_btn = QPushButton("Edit")
+        remove_note_btn = QPushButton("Remove")
+        add_note_to_project_btn = QPushButton("Add To Current Project")
+        toggle_note_auto_btn = QPushButton("Toggle Auto-Add")
+        notes_buttons.addWidget(new_note_btn)
+        notes_buttons.addWidget(edit_note_btn)
+        notes_buttons.addWidget(remove_note_btn)
+        notes_buttons.addWidget(add_note_to_project_btn)
+        notes_buttons.addWidget(toggle_note_auto_btn)
+        notes_buttons.addStretch()
+        layout.addLayout(notes_buttons)
+
+        groups_buttons = QHBoxLayout()
+        new_group_btn = QPushButton("New Group")
+        edit_group_btn = QPushButton("Edit")
+        remove_group_btn = QPushButton("Remove")
+        add_group_to_project_btn = QPushButton("Add Group To Current Project")
+        toggle_group_auto_btn = QPushButton("Toggle Auto-Add")
+        groups_buttons.addWidget(new_group_btn)
+        groups_buttons.addWidget(edit_group_btn)
+        groups_buttons.addWidget(remove_group_btn)
+        groups_buttons.addWidget(add_group_to_project_btn)
+        groups_buttons.addWidget(toggle_group_auto_btn)
+        groups_buttons.addStretch()
+        layout.addLayout(groups_buttons)
+
+        close_btn_row = QHBoxLayout()
+        close_btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        close_btn_row.addWidget(close_btn)
+        layout.addLayout(close_btn_row)
+
+        def refresh_lists() -> None:
+            notes_list.clear()
+            groups_list.clear()
+            note_search_text = notes_search.text().strip().lower()
+            for preset_note in self.note_presets_notes:
+                subject = str(preset_note.get("subject", "(Untitled)"))
+                body = str(preset_note.get("body", ""))
+                if note_search_text and note_search_text not in subject.lower() and note_search_text not in body.lower():
+                    continue
+                label = subject
+                if bool(preset_note.get("auto_add_new_projects", False)):
+                    label += " [Auto]"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, str(preset_note.get("id", "")))
+                item.setToolTip(body or "(No body)")
+                notes_list.addItem(item)
+
+            group_search_text = groups_search.text().strip().lower()
+            note_by_id = {
+                str(note.get("id", "")): str(note.get("subject", "(Untitled)"))
+                for note in self.note_presets_notes
+            }
+            for group in self.note_preset_groups:
+                name = str(group.get("name", "(Unnamed Group)"))
+                note_ids = [str(note_id).strip() for note_id in group.get("note_ids", []) if str(note_id).strip()]
+                note_subjects = [note_by_id.get(note_id, note_id) for note_id in note_ids]
+                searchable = f"{name} {' '.join(note_subjects)}".lower()
+                if group_search_text and group_search_text not in searchable:
+                    continue
+                label = f"{name} ({len(note_ids)} notes)"
+                if bool(group.get("auto_add_new_projects", False)):
+                    label += " [Auto]"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, str(group.get("id", "")))
+                item.setToolTip("\n".join(note_subjects) or "(No notes)")
+                groups_list.addItem(item)
+
+        def selected_note_ids() -> List[str]:
+            ids: List[str] = []
+            for item in notes_list.selectedItems():
+                note_id = str(item.data(Qt.UserRole)).strip()
+                if note_id and note_id not in ids:
+                    ids.append(note_id)
+            return ids
+
+        def selected_group_ids() -> List[str]:
+            ids: List[str] = []
+            for item in groups_list.selectedItems():
+                group_id = str(item.data(Qt.UserRole)).strip()
+                if group_id and group_id not in ids:
+                    ids.append(group_id)
+            return ids
+
+        def create_note_preset() -> None:
+            created = self._show_note_preset_note_dialog()
+            if not created:
+                return
+            self.note_presets_notes.append(created)
+            self._save_note_presets()
+            refresh_lists()
+
+        def edit_note_preset() -> None:
+            note_ids = selected_note_ids()
+            if len(note_ids) != 1:
+                self._error("Select one preset note to edit.")
+                return
+            note_id = note_ids[0]
+            for idx, note in enumerate(self.note_presets_notes):
+                if str(note.get("id", "")) != note_id:
+                    continue
+                updated = self._show_note_preset_note_dialog(note)
+                if not updated:
+                    return
+                self.note_presets_notes[idx] = updated
+                self._save_note_presets()
+                refresh_lists()
+                return
+            self._error("Selected preset note could not be found.")
+
+        def remove_note_preset() -> None:
+            note_ids = selected_note_ids()
+            if not note_ids:
+                self._error("Select at least one preset note to remove.")
+                return
+            self.note_presets_notes = [
+                note for note in self.note_presets_notes if str(note.get("id", "")) not in note_ids
+            ]
+            valid_ids = {str(note.get("id", "")) for note in self.note_presets_notes}
+            for group in self.note_preset_groups:
+                group["note_ids"] = [
+                    str(note_id)
+                    for note_id in group.get("note_ids", [])
+                    if str(note_id) in valid_ids
+                ]
+            self._save_note_presets()
+            refresh_lists()
+
+        def toggle_note_auto_add() -> None:
+            note_ids = selected_note_ids()
+            if not note_ids:
+                self._error("Select at least one preset note.")
+                return
+            selected = [note for note in self.note_presets_notes if str(note.get("id", "")) in note_ids]
+            if not selected:
+                return
+            enable = not all(bool(note.get("auto_add_new_projects", False)) for note in selected)
+            for note in self.note_presets_notes:
+                if str(note.get("id", "")) in note_ids:
+                    note["auto_add_new_projects"] = enable
+            self._save_note_presets()
+            refresh_lists()
+
+        def add_selected_notes_to_project() -> None:
+            note_ids = selected_note_ids()
+            if not note_ids:
+                self._error("Select at least one preset note.")
+                return
+            self._add_preset_notes_to_current_project(note_ids)
+
+        def create_note_group() -> None:
+            created = self._show_note_preset_group_dialog()
+            if not created:
+                return
+            self.note_preset_groups.append(created)
+            self._save_note_presets()
+            refresh_lists()
+
+        def edit_note_group() -> None:
+            group_ids = selected_group_ids()
+            if len(group_ids) != 1:
+                self._error("Select one note group to edit.")
+                return
+            group_id = group_ids[0]
+            for idx, group in enumerate(self.note_preset_groups):
+                if str(group.get("id", "")) != group_id:
+                    continue
+                updated = self._show_note_preset_group_dialog(group)
+                if not updated:
+                    return
+                self.note_preset_groups[idx] = updated
+                self._save_note_presets()
+                refresh_lists()
+                return
+            self._error("Selected note group could not be found.")
+
+        def remove_note_group() -> None:
+            group_ids = selected_group_ids()
+            if not group_ids:
+                self._error("Select at least one note group to remove.")
+                return
+            self.note_preset_groups = [
+                group for group in self.note_preset_groups if str(group.get("id", "")) not in group_ids
+            ]
+            self._save_note_presets()
+            refresh_lists()
+
+        def toggle_group_auto_add() -> None:
+            group_ids = selected_group_ids()
+            if not group_ids:
+                self._error("Select at least one note group.")
+                return
+            selected = [group for group in self.note_preset_groups if str(group.get("id", "")) in group_ids]
+            if not selected:
+                return
+            enable = not all(bool(group.get("auto_add_new_projects", False)) for group in selected)
+            for group in self.note_preset_groups:
+                if str(group.get("id", "")) in group_ids:
+                    group["auto_add_new_projects"] = enable
+            self._save_note_presets()
+            refresh_lists()
+
+        def add_selected_groups_to_project() -> None:
+            group_ids = selected_group_ids()
+            if not group_ids:
+                self._error("Select at least one note group.")
+                return
+            note_ids: List[str] = []
+            for group in self.note_preset_groups:
+                if str(group.get("id", "")) not in group_ids:
+                    continue
+                for note_id in group.get("note_ids", []):
+                    value = str(note_id).strip()
+                    if value and value not in note_ids:
+                        note_ids.append(value)
+            self._add_preset_notes_to_current_project(note_ids)
+
+        def show_notes_context_menu(pos: QPoint) -> None:
+            item = notes_list.itemAt(pos)
+            if item is not None and not item.isSelected():
+                notes_list.clearSelection()
+                item.setSelected(True)
+                notes_list.setCurrentItem(item)
+            menu = QMenu(dialog)
+            add_action = menu.addAction("Add To Current Project")
+            toggle_auto_action = menu.addAction("Toggle Auto-Add To New Projects")
+            chosen = menu.exec(notes_list.mapToGlobal(pos))
+            if chosen == add_action:
+                add_selected_notes_to_project()
+            elif chosen == toggle_auto_action:
+                toggle_note_auto_add()
+
+        def show_groups_context_menu(pos: QPoint) -> None:
+            item = groups_list.itemAt(pos)
+            if item is not None and not item.isSelected():
+                groups_list.clearSelection()
+                item.setSelected(True)
+                groups_list.setCurrentItem(item)
+            menu = QMenu(dialog)
+            add_action = menu.addAction("Add Group To Current Project")
+            toggle_auto_action = menu.addAction("Toggle Auto-Add To New Projects")
+            chosen = menu.exec(groups_list.mapToGlobal(pos))
+            if chosen == add_action:
+                add_selected_groups_to_project()
+            elif chosen == toggle_auto_action:
+                toggle_group_auto_add()
+
+        notes_search.textChanged.connect(lambda _text: refresh_lists())
+        groups_search.textChanged.connect(lambda _text: refresh_lists())
+        notes_list.customContextMenuRequested.connect(show_notes_context_menu)
+        groups_list.customContextMenuRequested.connect(show_groups_context_menu)
+        new_note_btn.clicked.connect(create_note_preset)
+        edit_note_btn.clicked.connect(edit_note_preset)
+        remove_note_btn.clicked.connect(remove_note_preset)
+        add_note_to_project_btn.clicked.connect(add_selected_notes_to_project)
+        toggle_note_auto_btn.clicked.connect(toggle_note_auto_add)
+        new_group_btn.clicked.connect(create_note_group)
+        edit_group_btn.clicked.connect(edit_note_group)
+        remove_group_btn.clicked.connect(remove_note_group)
+        add_group_to_project_btn.clicked.connect(add_selected_groups_to_project)
+        toggle_group_auto_btn.clicked.connect(toggle_group_auto_add)
+        notes_list.itemDoubleClicked.connect(lambda _item: add_selected_notes_to_project())
+        groups_list.itemDoubleClicked.connect(lambda _item: add_selected_groups_to_project())
+
+        refresh_lists()
+        dialog.exec()
 
     def _create_note(self) -> None:
         project_dir = self._validate_current_project()
@@ -5047,15 +5603,23 @@ class DocumentControlApp(QMainWindow):
     ) -> Dict[str, str]:
         normalized: Dict[str, str] = {}
         existing = source_ids or {}
+        used_ids = {str(value).strip() for value in existing.values() if str(value).strip()}
         for source in sources:
             source_value = str(source).strip()
             if not source_value:
                 continue
             source_id = str(existing.get(source_value, "")).strip()
             if not source_id:
-                source_id = str(uuid4())
+                source_id = self._new_compact_id(used_ids)
+            used_ids.add(source_id)
             normalized[source_value] = source_id
         return normalized
+
+    def _new_compact_id(self, existing_ids: set[str], size: int = 10) -> str:
+        while True:
+            candidate = uuid4().hex[:size]
+            if candidate not in existing_ids:
+                return candidate
 
     def _source_key(self, project_dir: Path, source_root: Path) -> str:
         config = self._read_project_config(project_dir)
@@ -5065,7 +5629,7 @@ class DocumentControlApp(QMainWindow):
         normalized_source_ids = self._normalize_source_ids(sources, source_ids)
         source_key = normalized_source_ids.get(str(source_root))
         if not source_key:
-            source_key = str(uuid4())
+            source_key = self._new_compact_id(set(normalized_source_ids.values()))
             normalized_source_ids[str(source_root)] = source_key
             if str(source_root) not in sources:
                 sources.append(str(source_root))
@@ -6862,6 +7426,7 @@ class DocumentControlApp(QMainWindow):
 
         menu = QMenu(self)
         new_action = menu.addAction("New Note")
+        presets_action = menu.addAction("Presets")
         edit_action = menu.addAction("Edit Selected")
         remove_action = menu.addAction("Remove Selected")
         move_up_action = menu.addAction("Move Up")
@@ -6872,6 +7437,8 @@ class DocumentControlApp(QMainWindow):
         chosen = menu.exec(self.notes_list.mapToGlobal(pos))
         if chosen == new_action:
             self._create_note()
+        elif chosen == presets_action:
+            self._show_note_presets_dialog()
         elif chosen == edit_action:
             self._edit_selected_note()
         elif chosen == remove_action:
@@ -7226,6 +7793,7 @@ class DocumentControlApp(QMainWindow):
         self._save_records()
         self._save_global_favorites()
         self._save_global_notes()
+        self._save_note_presets()
         self._save_item_customizations()
         super().closeEvent(event)
 

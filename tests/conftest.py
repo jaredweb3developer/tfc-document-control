@@ -33,6 +33,7 @@ def app_env(tmp_path, monkeypatch, qapp):
         "presets": data_root / "filter_presets.json",
         "global_favorites": data_root / "global_favorites.json",
         "global_notes": data_root / "global_notes.json",
+        "note_presets": data_root / "note_presets.json",
         "item_customizations": data_root / "item_customizations.json",
         "debug_log": data_root / "debug_events.log",
         "legacy_settings": tmp_path / "legacy-settings.json",
@@ -50,6 +51,7 @@ def app_env(tmp_path, monkeypatch, qapp):
         app_module, "GLOBAL_FAVORITES_FILE", paths["global_favorites"], raising=False
     )
     monkeypatch.setattr(app_module, "GLOBAL_NOTES_FILE", paths["global_notes"], raising=False)
+    monkeypatch.setattr(app_module, "NOTE_PRESETS_FILE", paths["note_presets"], raising=False)
     monkeypatch.setattr(
         app_module, "ITEM_CUSTOMIZATIONS_FILE", paths["item_customizations"], raising=False
     )
@@ -94,6 +96,12 @@ def app_env(tmp_path, monkeypatch, qapp):
         app_module.DocumentControlApp,
         "_default_global_notes_file",
         lambda _self: paths["global_notes"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        app_module.DocumentControlApp,
+        "_default_note_presets_file",
+        lambda _self: paths["note_presets"],
         raising=False,
     )
     monkeypatch.setattr(
