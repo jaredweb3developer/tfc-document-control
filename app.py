@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -422,9 +423,7 @@ class DocumentControlApp(QMainWindow):
         global_favorites_layout.addWidget(self.global_favorites_search_edit)
         self.global_favorites_list = QListWidget()
         self.global_favorites_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.global_favorites_list.itemDoubleClicked.connect(
-            self._show_global_favorites_context_menu_for_item
-        )
+        self.global_favorites_list.itemDoubleClicked.connect(self._open_global_favorite_item)
         self.global_favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.global_favorites_list.customContextMenuRequested.connect(
             self._show_global_favorites_context_menu
@@ -790,9 +789,7 @@ class DocumentControlApp(QMainWindow):
 
         self.global_favorites_list = QListWidget()
         self.global_favorites_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.global_favorites_list.itemDoubleClicked.connect(
-            self._show_global_favorites_context_menu_for_item
-        )
+        self.global_favorites_list.itemDoubleClicked.connect(self._open_global_favorite_item)
         self.global_favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.global_favorites_list.customContextMenuRequested.connect(
             self._show_global_favorites_context_menu
@@ -1564,16 +1561,7 @@ class DocumentControlApp(QMainWindow):
         search_term = self.project_search_edit.text().strip().lower()
         for entry in self.tracked_projects:
             project_dir = str(entry["project_dir"])
-            custom_groups = self._item_customization_groups("tracked_projects", project_dir)
-            search_fields = " ".join(
-                [
-                    str(entry.get("name", "")).lower(),
-                    str(entry.get("client", "")).lower(),
-                    str(entry.get("year_started", "")).lower(),
-                    " ".join(custom_groups).lower(),
-                ]
-            )
-            if search_term and search_term not in search_fields:
+            if search_term and not self._tracked_project_matches_search(entry, search_term):
                 continue
             item = QListWidgetItem(entry["name"])
             item.setData(Qt.UserRole, project_dir)
@@ -1595,6 +1583,24 @@ class DocumentControlApp(QMainWindow):
 
     def _on_project_search_changed(self, _text: str) -> None:
         self.project_search_debounce.start()
+
+    def _tracked_project_search_blob(self, entry: Dict[str, object]) -> str:
+        project_dir = str(entry.get("project_dir", ""))
+        custom_groups = self._item_customization_groups("tracked_projects", project_dir)
+        return " ".join(
+            [
+                str(entry.get("name", "")).lower(),
+                str(entry.get("client", "")).lower(),
+                str(entry.get("year_started", "")).lower(),
+                " ".join(custom_groups).lower(),
+            ]
+        )
+
+    def _tracked_project_matches_search(self, entry: Dict[str, object], search_term: str) -> bool:
+        normalized = str(search_term).strip().lower()
+        if not normalized:
+            return True
+        return normalized in self._tracked_project_search_blob(entry)
 
     def _on_file_search_changed(self, _text: str) -> None:
         self.file_search_debounce.start()
@@ -3327,48 +3333,72 @@ class DocumentControlApp(QMainWindow):
     def _choose_favorite_target(self, paths: List[Path]) -> Optional[Tuple[str, Optional[Path]]]:
         dialog = QDialog(self)
         dialog.setWindowTitle("Add To Favorites")
-        dialog.resize(560, 220)
+        dialog.resize(640, 360)
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel(f"Add {len(paths)} file(s) to favorites:"))
 
-        target_combo = QComboBox()
-        target_combo.addItem("Current Project", "current")
-        target_combo.addItem("Another Project", "other")
-        target_combo.addItem("Global Favorites", "global")
-        layout.addWidget(target_combo)
+        current_radio = QRadioButton("Current Project")
+        other_radio = QRadioButton("Another Project")
+        global_radio = QRadioButton("Global Favorites")
+        current_radio.setChecked(True)
+        target_layout = QVBoxLayout()
+        target_layout.addWidget(current_radio)
+        target_layout.addWidget(other_radio)
+        target_layout.addWidget(global_radio)
+        layout.addLayout(target_layout)
 
         project_filter = QLineEdit()
-        project_filter.setPlaceholderText("Filter tracked projects")
-        project_combo = QComboBox()
+        project_filter.setPlaceholderText("Filter tracked projects by name, client, year, or group")
+        project_list = QListWidget()
+        project_list.setSelectionMode(QListWidget.SingleSelection)
         project_entries = [
             entry for entry in self.tracked_projects if Path(str(entry.get("project_dir", ""))).is_dir()
         ]
 
-        def refresh_project_combo() -> None:
-            current_value = str(project_combo.currentData() or "")
-            project_combo.clear()
+        def refresh_project_list() -> None:
+            current_value = ""
+            current_item = project_list.currentItem()
+            if current_item is not None:
+                current_value = str(current_item.data(Qt.UserRole) or "")
+            project_list.clear()
             search = project_filter.text().strip().lower()
             for entry in project_entries:
                 label = str(entry.get("name", "")) or Path(str(entry.get("project_dir", ""))).name
-                if search and search not in label.lower():
+                if search and not self._tracked_project_matches_search(entry, search):
                     continue
-                project_combo.addItem(label, str(entry.get("project_dir", "")))
+                details = []
+                if entry.get("client"):
+                    details.append(f"Client: {entry['client']}")
+                if entry.get("year_started"):
+                    details.append(f"Year: {entry['year_started']}")
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, str(entry.get("project_dir", "")))
+                tooltip_lines = [str(entry.get("project_dir", ""))]
+                tooltip_lines.extend(details)
+                item.setToolTip("\n".join(tooltip_lines))
+                project_list.addItem(item)
             if current_value:
-                idx = project_combo.findData(current_value)
-                if idx >= 0:
-                    project_combo.setCurrentIndex(idx)
+                for idx in range(project_list.count()):
+                    item = project_list.item(idx)
+                    if str(item.data(Qt.UserRole) or "") == current_value:
+                        project_list.setCurrentItem(item)
+                        break
+            if project_list.currentItem() is None and project_list.count() > 0:
+                project_list.setCurrentRow(0)
 
         def update_project_controls() -> None:
-            visible = target_combo.currentData() == "other"
+            visible = other_radio.isChecked()
             project_filter.setVisible(visible)
-            project_combo.setVisible(visible)
+            project_list.setVisible(visible)
 
         layout.addWidget(project_filter)
-        layout.addWidget(project_combo)
-        refresh_project_combo()
+        layout.addWidget(project_list, stretch=1)
+        refresh_project_list()
         update_project_controls()
-        target_combo.currentIndexChanged.connect(lambda _idx: update_project_controls())
-        project_filter.textChanged.connect(lambda _text: refresh_project_combo())
+        current_radio.toggled.connect(lambda _checked: update_project_controls())
+        other_radio.toggled.connect(lambda _checked: update_project_controls())
+        global_radio.toggled.connect(lambda _checked: update_project_controls())
+        project_filter.textChanged.connect(lambda _text: refresh_project_list())
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
@@ -3377,9 +3407,14 @@ class DocumentControlApp(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return None
 
-        mode = str(target_combo.currentData())
+        mode = "current"
+        if other_radio.isChecked():
+            mode = "other"
+        elif global_radio.isChecked():
+            mode = "global"
         if mode == "other":
-            project_dir = str(project_combo.currentData() or "").strip()
+            current_item = project_list.currentItem()
+            project_dir = str(current_item.data(Qt.UserRole) if current_item is not None else "").strip()
             if not project_dir:
                 self._error("Select a target project.")
                 return None
@@ -3662,6 +3697,9 @@ class DocumentControlApp(QMainWindow):
         rect = self.global_favorites_list.visualItemRect(item)
         self._show_global_favorites_context_menu(rect.center())
 
+    def _open_global_favorite_item(self, item: QListWidgetItem) -> None:
+        self._open_paths([Path(str(item.data(Qt.UserRole)))])
+
     def _show_global_favorites_context_menu(self, pos: QPoint) -> None:
         item = self.global_favorites_list.itemAt(pos)
         if item is not None and not item.isSelected():
@@ -3669,18 +3707,18 @@ class DocumentControlApp(QMainWindow):
             item.setSelected(True)
             self.global_favorites_list.setCurrentItem(item)
         menu = QMenu(self)
+        open_action = menu.addAction("Open Selected")
         add_action = menu.addAction("Add Favorite")
         add_project_action = menu.addAction("Add Selected To Project Favorites")
-        open_action = menu.addAction("Open Selected")
         remove_action = menu.addAction("Remove Selected")
         customize_action = menu.addAction("Customize/Organize")
         chosen = menu.exec(self.global_favorites_list.mapToGlobal(pos))
-        if chosen == add_action:
+        if chosen == open_action:
+            self._open_selected_global_favorites()
+        elif chosen == add_action:
             self._browse_and_add_global_favorites()
         elif chosen == add_project_action:
             self._add_selected_global_favorites_to_project()
-        elif chosen == open_action:
-            self._open_selected_global_favorites()
         elif chosen == remove_action:
             self._remove_selected_global_favorites()
         elif chosen == customize_action:

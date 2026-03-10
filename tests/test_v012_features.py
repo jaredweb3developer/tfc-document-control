@@ -44,6 +44,20 @@ def test_favorite_and_note_item_helpers_route_to_expected_actions(app_env, monke
     assert app.notes_list.currentItem() is note_item
 
 
+def test_global_favorite_item_opens_directly(app_env, monkeypatch):
+    # Global favorites should open on double-click instead of opening a context menu.
+    app = app_env["app"]
+    opened = []
+
+    monkeypatch.setattr(app, "_open_paths", lambda paths: opened.extend(paths))
+
+    item = QListWidgetItem("shared.pdf")
+    item.setData(Qt.UserRole, "/tmp/shared.pdf")
+    app._open_global_favorite_item(item)
+
+    assert opened == [Path("/tmp/shared.pdf")]
+
+
 @pytest.mark.parametrize(
     ("target", "expected"),
     [
@@ -157,3 +171,21 @@ def test_checked_out_tab_remove_requires_identity_before_checkin(app_env, monkey
     app._remove_selected_favorites_from_active_tab()
 
     assert blocked == []
+
+
+def test_tracked_project_matches_search_uses_name_client_year_and_groups(app_env):
+    # The tracked-project search helper should match the same fields used by the Projects UI.
+    app = app_env["app"]
+    entry = {
+        "name": "Delta Pump Upgrade",
+        "project_dir": "/tmp/projects/delta",
+        "client": "Acme Energy",
+        "year_started": "2026",
+    }
+    app._set_item_customization("tracked_projects", "/tmp/projects/delta", {"groups": ["Priority A"]})
+
+    assert app._tracked_project_matches_search(entry, "delta")
+    assert app._tracked_project_matches_search(entry, "acme")
+    assert app._tracked_project_matches_search(entry, "2026")
+    assert app._tracked_project_matches_search(entry, "priority a")
+    assert not app._tracked_project_matches_search(entry, "globex")
