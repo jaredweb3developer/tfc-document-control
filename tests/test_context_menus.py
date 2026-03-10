@@ -45,7 +45,7 @@ def test_source_file_context_actions_dispatch(app_env, monkeypatch):
 
 
 def test_records_context_actions_dispatch(app_env, monkeypatch):
-    # Checked-out/reference context actions should route to open/checkin/remove-ref handlers.
+    # Checked-out/reference context actions should route to the appropriate record handlers.
     app = app_env["app"]
     called = []
 
@@ -57,15 +57,27 @@ def test_records_context_actions_dispatch(app_env, monkeypatch):
     monkeypatch.setattr(
         app, "_switch_selected_record_to_revision", lambda: called.append("switch_revision")
     )
+    monkeypatch.setattr(app, "_view_selected_record_revision", lambda: called.append("view_revision"))
     monkeypatch.setattr(app, "_remove_selected_reference_records", lambda: called.append("remove_ref"))
+    monkeypatch.setattr(app, "_customize_selected_active_records", lambda: called.append("customize"))
 
     app._handle_records_context_action("open")
     app._handle_records_context_action("checkin")
     app._handle_records_context_action("snapshot")
+    app._handle_records_context_action("view_revision")
     app._handle_records_context_action("switch_revision")
     app._handle_records_context_action("remove_ref")
+    app._handle_records_context_action("customize")
 
-    assert called == ["open", "checkin", "snapshot", "switch_revision", "remove_ref"]
+    assert called == [
+        "open",
+        "checkin",
+        "snapshot",
+        "view_revision",
+        "switch_revision",
+        "remove_ref",
+        "customize",
+    ]
 
 
 def test_context_menu_policies_are_enabled(app_env):
@@ -77,6 +89,8 @@ def test_context_menu_policies_are_enabled(app_env):
     assert app.favorites_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.notes_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.global_favorites_list.contextMenuPolicy() == Qt.CustomContextMenu
+    assert app.project_checked_out_list.contextMenuPolicy() == Qt.CustomContextMenu
+    assert app.project_reference_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.source_roots_list.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.controlled_files_table.contextMenuPolicy() == Qt.CustomContextMenu
     assert app.directory_notes_table.contextMenuPolicy() == Qt.CustomContextMenu

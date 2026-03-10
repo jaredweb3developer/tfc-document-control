@@ -53,7 +53,7 @@ from PySide6.QtWidgets import (
 
 APP_ROOT = Path(__file__).resolve().parent
 APP_NAME = "TFC Document Control"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 USER_DATA_DIR_NAME = "TFC Project Control"
 SETTINGS_SCHEMA_VERSION = 1
 TRACKED_PROJECTS_SCHEMA_VERSION = 1
@@ -336,7 +336,7 @@ class DocumentControlApp(QMainWindow):
         layout = QVBoxLayout(group)
 
         self.tracked_projects_list = QListWidget()
-        self.tracked_projects_list.itemDoubleClicked.connect(self._show_tracked_projects_context_menu_for_item)
+        self.tracked_projects_list.itemDoubleClicked.connect(self._load_tracked_project_item)
         self.tracked_projects_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tracked_projects_list.customContextMenuRequested.connect(
             self._show_tracked_projects_context_menu
@@ -378,7 +378,7 @@ class DocumentControlApp(QMainWindow):
         favorites_panel = QWidget()
         favorites_layout = QVBoxLayout(favorites_panel)
         favorites_header = QHBoxLayout()
-        favorites_header.addWidget(QLabel("Favorite Files"))
+        favorites_header.addWidget(QLabel("Favorites & Local Files"))
         favorites_header.addStretch()
         favorites_header.addWidget(
             self._build_options_button(
@@ -408,7 +408,7 @@ class DocumentControlApp(QMainWindow):
         )
         project_favorites_layout.addWidget(self.project_favorites_search_edit)
         self.favorites_list = QListWidget()
-        self.favorites_list.itemDoubleClicked.connect(self._show_favorites_context_menu_for_item)
+        self.favorites_list.itemDoubleClicked.connect(self._open_favorite_item)
         self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.favorites_list.customContextMenuRequested.connect(self._show_favorites_context_menu)
         project_favorites_layout.addWidget(self.favorites_list, stretch=1)
@@ -431,6 +431,38 @@ class DocumentControlApp(QMainWindow):
         )
         global_favorites_layout.addWidget(self.global_favorites_list, stretch=1)
         self.favorites_tabs.addTab(global_favorites_tab, "Global Favorites")
+
+        checked_out_favorites_tab = QWidget()
+        checked_out_favorites_layout = QVBoxLayout(checked_out_favorites_tab)
+        self.project_checked_out_search_edit = QLineEdit()
+        self.project_checked_out_search_edit.setPlaceholderText("Search checked out files")
+        self.project_checked_out_search_edit.textChanged.connect(self._refresh_project_local_files_lists)
+        checked_out_favorites_layout.addWidget(self.project_checked_out_search_edit)
+        self.project_checked_out_list = QListWidget()
+        self.project_checked_out_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.project_checked_out_list.itemDoubleClicked.connect(self._open_project_local_checked_out_item)
+        self.project_checked_out_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.project_checked_out_list.customContextMenuRequested.connect(
+            self._show_project_checked_out_context_menu
+        )
+        checked_out_favorites_layout.addWidget(self.project_checked_out_list, stretch=1)
+        self.favorites_tabs.addTab(checked_out_favorites_tab, "Checked Out")
+
+        reference_favorites_tab = QWidget()
+        reference_favorites_layout = QVBoxLayout(reference_favorites_tab)
+        self.project_reference_search_edit = QLineEdit()
+        self.project_reference_search_edit.setPlaceholderText("Search reference files")
+        self.project_reference_search_edit.textChanged.connect(self._refresh_project_local_files_lists)
+        reference_favorites_layout.addWidget(self.project_reference_search_edit)
+        self.project_reference_list = QListWidget()
+        self.project_reference_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.project_reference_list.itemDoubleClicked.connect(self._open_project_local_reference_item)
+        self.project_reference_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.project_reference_list.customContextMenuRequested.connect(
+            self._show_project_reference_context_menu
+        )
+        reference_favorites_layout.addWidget(self.project_reference_list, stretch=1)
+        self.favorites_tabs.addTab(reference_favorites_tab, "Reference Files")
         favorites_layout.addWidget(self.favorites_tabs, stretch=1)
 
         notes_panel = QWidget()
@@ -461,7 +493,7 @@ class DocumentControlApp(QMainWindow):
         )
         notes_layout.addWidget(self.project_notes_search_edit)
         self.notes_list = QListWidget()
-        self.notes_list.itemDoubleClicked.connect(self._show_notes_context_menu_for_item)
+        self.notes_list.itemDoubleClicked.connect(self._edit_note_item)
         self.notes_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.notes_list.customContextMenuRequested.connect(self._show_notes_context_menu)
         notes_layout.addWidget(self.notes_list, stretch=1)
@@ -497,6 +529,7 @@ class DocumentControlApp(QMainWindow):
                 [
                     ("Track Dir (Browse)", self._add_source_directory),
                     ("Track Directory", self._track_current_directory),
+                    ("View Location", self._view_selected_source_directory_location),
                     ("Untrack Dir", self._remove_source_directory),
                     ("---", self._track_current_directory),
                     ("Move Up", self._move_selected_source_up),
@@ -699,23 +732,52 @@ class DocumentControlApp(QMainWindow):
                     ("Open Selected", self._open_selected_record_files),
                     ("Check In Selected", self._checkin_selected),
                     ("Create Revision Snapshot", self._create_revision_snapshot_for_selected_records),
+                    ("View Revision", self._view_selected_record_revision),
                     ("Switch To Revision", self._switch_selected_record_to_revision),
                     ("Remove Selected Ref", self._remove_selected_reference_records),
+                    ("Customize/Organize", self._customize_selected_active_records),
                 ]
             )
         )
         layout.addLayout(header)
 
         self.records_tabs = QTabWidget()
+        self._records_tab_tables: Dict[QWidget, QTableWidget] = {}
         self.all_records_table = self._build_records_table()
         self.project_records_table = self._build_records_table()
         self.reference_records_table = self._build_reference_records_table()
-        self.records_tabs.addTab(self.all_records_table, "All Checked Out")
-        self.records_tabs.addTab(self.project_records_table, "Current Project")
-        self.records_tabs.addTab(self.reference_records_table, "Reference Copies")
+        self.all_records_search_edit = QLineEdit()
+        self.all_records_search_edit.setPlaceholderText("Search all checked out files")
+        self.all_records_search_edit.textChanged.connect(self._render_records_tables)
+        self.project_records_search_edit = QLineEdit()
+        self.project_records_search_edit.setPlaceholderText("Search current project files")
+        self.project_records_search_edit.textChanged.connect(self._render_records_tables)
+        self.reference_records_search_edit = QLineEdit()
+        self.reference_records_search_edit.setPlaceholderText("Search reference copies")
+        self.reference_records_search_edit.textChanged.connect(self._render_records_tables)
+        self.records_tabs.addTab(
+            self._build_records_tab_page(self.all_records_search_edit, self.all_records_table),
+            "All Checked Out",
+        )
+        self.records_tabs.addTab(
+            self._build_records_tab_page(self.project_records_search_edit, self.project_records_table),
+            "Current Project",
+        )
+        self.records_tabs.addTab(
+            self._build_records_tab_page(self.reference_records_search_edit, self.reference_records_table),
+            "Reference Copies",
+        )
         layout.addWidget(self.records_tabs)
 
         return group
+
+    def _build_records_tab_page(self, search_edit: QLineEdit, table: QTableWidget) -> QWidget:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.addWidget(search_edit)
+        page_layout.addWidget(table, stretch=1)
+        self._records_tab_tables[page] = table
+        return page
 
     def _build_global_favorites_group(self) -> QGroupBox:
         group = QGroupBox("Global Favorites")
@@ -928,7 +990,10 @@ class DocumentControlApp(QMainWindow):
         return str(source_root) if source_root else ""
 
     def _active_records_table(self) -> QTableWidget:
-        return self.records_tabs.currentWidget()  # type: ignore[return-value]
+        current = self.records_tabs.currentWidget()
+        if current in self._records_tab_tables:
+            return self._records_tab_tables[current]  # type: ignore[index]
+        return self.all_records_table
 
     def _choose_local_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -2622,6 +2687,7 @@ class DocumentControlApp(QMainWindow):
             menu = QMenu(dialog)
             open_action = menu.addAction("Open Selected")
             snapshot_action = None
+            view_revision_action = None
             switch_action = None
             checkin_action = None
             remove_ref_action = None
@@ -2637,6 +2703,7 @@ class DocumentControlApp(QMainWindow):
             if has_checked_out:
                 snapshot_action = menu.addAction("Create Snapshot")
                 checkin_action = menu.addAction("Check In Selected")
+                view_revision_action = menu.addAction("View Revision")
                 if checked_out_count == 1:
                     switch_action = menu.addAction("Switch Revision")
             if has_reference:
@@ -2652,6 +2719,8 @@ class DocumentControlApp(QMainWindow):
                 open_selected()
             elif snapshot_action is not None and chosen == snapshot_action:
                 create_snapshot()
+            elif view_revision_action is not None and chosen == view_revision_action:
+                self._view_record_revision_from_indexes(selected_indexes())
             elif switch_action is not None and chosen == switch_action:
                 switch_revision()
             elif checkin_action is not None and chosen == checkin_action:
@@ -2688,6 +2757,8 @@ class DocumentControlApp(QMainWindow):
         move_project_btn.clicked.connect(lambda: transfer_selected("move"))
         snapshot_btn = QPushButton("Create Snapshot")
         snapshot_btn.clicked.connect(create_snapshot)
+        view_revision_btn = QPushButton("View Revision")
+        view_revision_btn.clicked.connect(lambda: self._view_record_revision_from_indexes(selected_indexes()))
         switch_btn = QPushButton("Switch Revision")
         switch_btn.clicked.connect(switch_revision)
         refresh_btn = QPushButton("Refresh")
@@ -2701,6 +2772,7 @@ class DocumentControlApp(QMainWindow):
         button_bar.addWidget(copy_project_btn)
         button_bar.addWidget(move_project_btn)
         button_bar.addWidget(snapshot_btn)
+        button_bar.addWidget(view_revision_btn)
         button_bar.addWidget(switch_btn)
         button_bar.addWidget(refresh_btn)
         button_bar.addStretch()
@@ -2806,6 +2878,13 @@ class DocumentControlApp(QMainWindow):
         if not current_directory:
             return
         self._open_paths([current_directory])
+
+    def _view_selected_source_directory_location(self) -> None:
+        item = self.source_roots_list.currentItem()
+        if not item:
+            self._error("Select a tracked source directory.")
+            return
+        self._open_paths([Path(str(item.data(Qt.UserRole)))])
 
     def _on_source_root_changed(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
         if not current:
@@ -3220,6 +3299,93 @@ class DocumentControlApp(QMainWindow):
                 favorites.append(favorite)
         self._set_project_favorites(favorites)
 
+    def _add_favorite_paths_to_project(self, project_dir: Path, paths: List[Path]) -> None:
+        config = self._read_project_config(project_dir)
+        favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
+        changed = False
+        for path in paths:
+            favorite = str(path)
+            if favorite not in favorites:
+                favorites.append(favorite)
+                changed = True
+        if changed:
+            self._save_project_config(project_dir, favorites=favorites)
+            if self.current_project_dir == str(project_dir):
+                self._refresh_favorites_list(favorites)
+
+    def _add_favorite_paths_to_global(self, paths: List[Path]) -> None:
+        changed = False
+        for path in paths:
+            favorite = str(path)
+            if favorite not in self.global_favorites:
+                self.global_favorites.append(favorite)
+                changed = True
+        if changed:
+            self._save_global_favorites()
+            self._refresh_global_favorites_list()
+
+    def _choose_favorite_target(self, paths: List[Path]) -> Optional[Tuple[str, Optional[Path]]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add To Favorites")
+        dialog.resize(560, 220)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"Add {len(paths)} file(s) to favorites:"))
+
+        target_combo = QComboBox()
+        target_combo.addItem("Current Project", "current")
+        target_combo.addItem("Another Project", "other")
+        target_combo.addItem("Global Favorites", "global")
+        layout.addWidget(target_combo)
+
+        project_filter = QLineEdit()
+        project_filter.setPlaceholderText("Filter tracked projects")
+        project_combo = QComboBox()
+        project_entries = [
+            entry for entry in self.tracked_projects if Path(str(entry.get("project_dir", ""))).is_dir()
+        ]
+
+        def refresh_project_combo() -> None:
+            current_value = str(project_combo.currentData() or "")
+            project_combo.clear()
+            search = project_filter.text().strip().lower()
+            for entry in project_entries:
+                label = str(entry.get("name", "")) or Path(str(entry.get("project_dir", ""))).name
+                if search and search not in label.lower():
+                    continue
+                project_combo.addItem(label, str(entry.get("project_dir", "")))
+            if current_value:
+                idx = project_combo.findData(current_value)
+                if idx >= 0:
+                    project_combo.setCurrentIndex(idx)
+
+        def update_project_controls() -> None:
+            visible = target_combo.currentData() == "other"
+            project_filter.setVisible(visible)
+            project_combo.setVisible(visible)
+
+        layout.addWidget(project_filter)
+        layout.addWidget(project_combo)
+        refresh_project_combo()
+        update_project_controls()
+        target_combo.currentIndexChanged.connect(lambda _idx: update_project_controls())
+        project_filter.textChanged.connect(lambda _text: refresh_project_combo())
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        mode = str(target_combo.currentData())
+        if mode == "other":
+            project_dir = str(project_combo.currentData() or "").strip()
+            if not project_dir:
+                self._error("Select a target project.")
+                return None
+            return mode, Path(project_dir)
+        return mode, None
+
     def _browse_and_add_favorites(self) -> None:
         project_dir = self._validate_current_project()
         if not project_dir:
@@ -3240,7 +3406,16 @@ class DocumentControlApp(QMainWindow):
         if not selected_files:
             self._error("Select at least one source file to favorite.")
             return
-        self._add_favorite_paths(selected_files)
+        target = self._choose_favorite_target(selected_files)
+        if not target:
+            return
+        mode, project_dir = target
+        if mode == "current":
+            self._add_favorite_paths(selected_files)
+        elif mode == "other" and project_dir is not None:
+            self._add_favorite_paths_to_project(project_dir, selected_files)
+        elif mode == "global":
+            self._add_favorite_paths_to_global(selected_files)
 
     def _remove_selected_favorites(self) -> None:
         selected_items = self.favorites_list.selectedItems()
@@ -3291,6 +3466,24 @@ class DocumentControlApp(QMainWindow):
     def _open_favorite_item(self, item: QListWidgetItem) -> None:
         self._open_paths([Path(str(item.data(Qt.UserRole)))])
 
+    def _record_for_list_item(self, item: QListWidgetItem) -> Optional[CheckoutRecord]:
+        record_idx = item.data(Qt.UserRole)
+        if not isinstance(record_idx, int):
+            return None
+        if not (0 <= record_idx < len(self.records)):
+            return None
+        return self.records[record_idx]
+
+    def _open_project_local_checked_out_item(self, item: QListWidgetItem) -> None:
+        record = self._record_for_list_item(item)
+        if record:
+            self._open_paths([Path(record.local_file)])
+
+    def _open_project_local_reference_item(self, item: QListWidgetItem) -> None:
+        record = self._record_for_list_item(item)
+        if record:
+            self._open_paths([Path(record.local_file)])
+
     def _open_selected_favorites(self) -> None:
         selected_items = self.favorites_list.selectedItems()
         if not selected_items:
@@ -3302,11 +3495,31 @@ class DocumentControlApp(QMainWindow):
         if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 1:
             self._open_selected_global_favorites()
             return
+        if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 2:
+            indexes = self._selected_record_indexes_from_list_widget(self.project_checked_out_list)
+            self._open_paths([Path(self.records[idx].local_file) for idx in indexes if 0 <= idx < len(self.records)])
+            return
+        if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 3:
+            indexes = self._selected_record_indexes_from_list_widget(self.project_reference_list)
+            self._open_paths([Path(self.records[idx].local_file) for idx in indexes if 0 <= idx < len(self.records)])
+            return
         self._open_selected_favorites()
 
     def _remove_selected_favorites_from_active_tab(self) -> None:
         if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 1:
             self._remove_selected_global_favorites()
+            return
+        if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 2:
+            if not self._validate_identity():
+                return
+            self._checkin_record_indexes(
+                set(self._selected_record_indexes_from_list_widget(self.project_checked_out_list))
+            )
+            return
+        if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 3:
+            self._remove_record_indexes(self._selected_record_indexes_from_list_widget(self.project_reference_list))
+            self._save_records()
+            self._render_records_tables()
             return
         self._remove_selected_favorites()
 
@@ -3374,6 +3587,39 @@ class DocumentControlApp(QMainWindow):
             self._apply_projects_list_item_style(item, "global_favorites", str(favorite))
             self.global_favorites_list.addItem(item)
 
+    def _refresh_project_local_files_lists(self) -> None:
+        if not hasattr(self, "project_checked_out_list") or not hasattr(self, "project_reference_list"):
+            return
+        self.project_checked_out_list.clear()
+        self.project_reference_list.clear()
+        current_project = self.current_project_dir
+        checked_search = self.project_checked_out_search_edit.text().strip().lower()
+        reference_search = self.project_reference_search_edit.text().strip().lower()
+        for idx, record in enumerate(self.records):
+            if record.project_dir != current_project:
+                continue
+            item_key = self._record_customization_key(record)
+            scope = self._record_customization_scope(record)
+            search_blob = self._record_search_blob(record)
+            if record.record_type == "checked_out":
+                if checked_search and checked_search not in search_blob:
+                    continue
+                label = self._local_display_name(record.local_file)
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, idx)
+                self._set_projects_item_base_tooltip(item, record.local_file)
+                self._apply_projects_list_item_style(item, scope, item_key)
+                self.project_checked_out_list.addItem(item)
+            elif record.record_type == "reference_copy":
+                if reference_search and reference_search not in search_blob:
+                    continue
+                label = self._local_display_name(record.local_file)
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, idx)
+                self._set_projects_item_base_tooltip(item, record.local_file)
+                self._apply_projects_list_item_style(item, scope, item_key)
+                self.project_reference_list.addItem(item)
+
     def _browse_and_add_global_favorites(self) -> None:
         start_dir = str(self._current_project_path() or Path.home())
         file_paths, _ = QFileDialog.getOpenFileNames(
@@ -3439,6 +3685,87 @@ class DocumentControlApp(QMainWindow):
             self._remove_selected_global_favorites()
         elif chosen == customize_action:
             self._customize_organize_selected(self.global_favorites_list)
+
+    def _selected_record_indexes_from_list_widget(self, list_widget: QListWidget) -> List[int]:
+        indexes: List[int] = []
+        for item in list_widget.selectedItems():
+            record_idx = item.data(Qt.UserRole)
+            if isinstance(record_idx, int):
+                indexes.append(record_idx)
+        return indexes
+
+    def _show_project_checked_out_context_menu(self, pos: QPoint) -> None:
+        item = self.project_checked_out_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.project_checked_out_list.clearSelection()
+            item.setSelected(True)
+            self.project_checked_out_list.setCurrentItem(item)
+        menu = QMenu(self)
+        open_action = menu.addAction("Open Selected")
+        checkin_action = menu.addAction("Check In Selected")
+        view_revision_action = menu.addAction("View Revision")
+        snapshot_action = menu.addAction("Create Revision Snapshot")
+        switch_action = menu.addAction("Switch To Revision")
+        customize_action = menu.addAction("Customize/Organize")
+        chosen = menu.exec(self.project_checked_out_list.mapToGlobal(pos))
+        if chosen == open_action:
+            self._open_paths(
+                [
+                    Path(self.records[idx].local_file)
+                    for idx in self._selected_record_indexes_from_list_widget(self.project_checked_out_list)
+                    if 0 <= idx < len(self.records)
+                ]
+            )
+        elif chosen == checkin_action:
+            if not self._validate_identity():
+                return
+            self._checkin_record_indexes(
+                set(self._selected_record_indexes_from_list_widget(self.project_checked_out_list))
+            )
+        elif chosen == view_revision_action:
+            self._view_record_revision_from_indexes(
+                self._selected_record_indexes_from_list_widget(self.project_checked_out_list)
+            )
+        elif chosen == snapshot_action:
+            self._create_revision_snapshot_for_record_indexes(
+                self._selected_record_indexes_from_list_widget(self.project_checked_out_list)
+            )
+        elif chosen == switch_action:
+            self._switch_record_revision_from_indexes(
+                self._selected_record_indexes_from_list_widget(self.project_checked_out_list)
+            )
+        elif chosen == customize_action:
+            self._customize_records_from_indexes(
+                self._selected_record_indexes_from_list_widget(self.project_checked_out_list)
+            )
+
+    def _show_project_reference_context_menu(self, pos: QPoint) -> None:
+        item = self.project_reference_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            self.project_reference_list.clearSelection()
+            item.setSelected(True)
+            self.project_reference_list.setCurrentItem(item)
+        menu = QMenu(self)
+        open_action = menu.addAction("Open Selected")
+        remove_ref_action = menu.addAction("Remove Selected Ref")
+        customize_action = menu.addAction("Customize/Organize")
+        chosen = menu.exec(self.project_reference_list.mapToGlobal(pos))
+        if chosen == open_action:
+            self._open_paths(
+                [
+                    Path(self.records[idx].local_file)
+                    for idx in self._selected_record_indexes_from_list_widget(self.project_reference_list)
+                    if 0 <= idx < len(self.records)
+                ]
+            )
+        elif chosen == remove_ref_action:
+            self._remove_record_indexes(self._selected_record_indexes_from_list_widget(self.project_reference_list))
+            self._save_records()
+            self._render_records_tables()
+        elif chosen == customize_action:
+            self._customize_records_from_indexes(
+                self._selected_record_indexes_from_list_widget(self.project_reference_list)
+            )
 
     def _load_global_notes(self) -> None:
         data = self._read_json_candidates([self._default_global_notes_file()])
@@ -3743,6 +4070,10 @@ class DocumentControlApp(QMainWindow):
             return "global_favorites"
         if list_widget is self.notes_list:
             return "project_notes"
+        if hasattr(self, "project_checked_out_list") and list_widget is self.project_checked_out_list:
+            return "checked_out_records"
+        if hasattr(self, "project_reference_list") and list_widget is self.project_reference_list:
+            return "reference_records"
         return ""
 
     def _item_customization_for(self, scope: str, item_key: str) -> Dict[str, object]:
@@ -3762,6 +4093,39 @@ class DocumentControlApp(QMainWindow):
             if group_name:
                 normalized.append(group_name)
         return normalized
+
+    def _record_customization_scope(self, record: CheckoutRecord) -> str:
+        return "reference_records" if record.record_type == "reference_copy" else "checked_out_records"
+
+    def _record_customization_key(self, record: CheckoutRecord) -> str:
+        return "|".join(
+            [
+                record.record_type,
+                record.project_dir,
+                record.source_file,
+                record.local_file,
+            ]
+        )
+
+    def _record_search_blob(self, record: CheckoutRecord) -> str:
+        groups = " ".join(
+            self._item_customization_groups(
+                self._record_customization_scope(record),
+                self._record_customization_key(record),
+            )
+        )
+        return " ".join(
+            [
+                record.source_file.lower(),
+                record.locked_source_file.lower(),
+                record.local_file.lower(),
+                record.initials.lower(),
+                record.project_name.lower(),
+                record.project_dir.lower(),
+                self._format_checkout_timestamp(record.checked_out_at).lower(),
+                groups.lower(),
+            ]
+        )
 
     def _group_style_for_name(self, group_name: str) -> Dict[str, object]:
         return self._normalize_group_style(self.item_customization_group_styles.get(group_name, {}))
@@ -3794,6 +4158,45 @@ class DocumentControlApp(QMainWindow):
     def _set_projects_item_base_tooltip(self, item: QListWidgetItem, tooltip: str) -> None:
         item.setData(Qt.UserRole + 40, tooltip)
         item.setToolTip(tooltip)
+
+    def _apply_record_table_row_style(
+        self, table: QTableWidget, row_idx: int, record: CheckoutRecord
+    ) -> None:
+        scope = self._record_customization_scope(record)
+        item_key = self._record_customization_key(record)
+        custom = self._item_customization_for(scope, item_key)
+        background = self._normalize_hex_color(custom.get("background", ""))
+        configured_font = self._normalize_hex_color(custom.get("font", ""))
+        auto_contrast = bool(custom.get("auto_contrast", True))
+        groups = [str(group) for group in custom.get("groups", []) if str(group).strip()]
+        group_used = ""
+        if bool(custom.get("use_group_colors", False)) and groups:
+            group_used = self._resolve_group_color_source(custom, groups)
+            group_style = self._group_style_for_name(group_used)
+            background = self._normalize_hex_color(group_style.get("background", background))
+            configured_font = self._normalize_hex_color(group_style.get("font", configured_font))
+            auto_contrast = bool(group_style.get("auto_contrast", auto_contrast))
+        foreground = (
+            self._effective_font_color(background, configured_font, auto_contrast)
+            if background
+            else configured_font
+        )
+        for col_idx in range(table.columnCount()):
+            item = table.item(row_idx, col_idx)
+            if item is None:
+                continue
+            item.setBackground(QBrush())
+            item.setForeground(QBrush())
+            if background:
+                item.setBackground(QBrush(QColor(background)))
+            if foreground:
+                item.setForeground(QBrush(QColor(foreground)))
+            if groups:
+                tooltip = item.toolTip()
+                extra = f"\nGroups: {', '.join(groups)}"
+                if group_used:
+                    extra += f"\nUsing Group Colors: {group_used}"
+                item.setToolTip((tooltip + extra).strip())
 
     def _apply_projects_list_item_style(
         self, item: QListWidgetItem, scope: str, item_key: str
@@ -3845,6 +4248,10 @@ class DocumentControlApp(QMainWindow):
             return
         if scope == "project_notes":
             self._refresh_notes_list(self._current_project_notes())
+            return
+        if scope in {"checked_out_records", "reference_records"}:
+            self._refresh_project_local_files_lists()
+            self._render_records_tables()
 
     def _customize_organize_selected(self, list_widget: QListWidget) -> None:
         scope = self._projects_customization_scope(list_widget)
@@ -6496,6 +6903,11 @@ class DocumentControlApp(QMainWindow):
         return False
 
     def _choose_revision_for_record(self, record: CheckoutRecord) -> Optional[Dict[str, object]]:
+        return self._choose_revision_for_record_action(record, "Switch To Selected")
+
+    def _choose_revision_for_record_action(
+        self, record: CheckoutRecord, accept_label: str
+    ) -> Optional[Dict[str, object]]:
         revisions = self._revision_entries_for_record(record)
         if not revisions:
             self._error("No revisions are available for the selected file.")
@@ -6549,7 +6961,7 @@ class DocumentControlApp(QMainWindow):
             table.setCurrentCell(0, 0)
         layout.addWidget(table)
         buttons = QDialogButtonBox()
-        switch_btn = buttons.addButton("Switch To Selected", QDialogButtonBox.AcceptRole)
+        switch_btn = buttons.addButton(accept_label, QDialogButtonBox.AcceptRole)
         cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
         selected: Dict[str, int] = {"row": -1}
         switch_btn.clicked.connect(lambda: (selected.__setitem__("row", table.currentRow()), dialog.accept()))
@@ -6603,8 +7015,40 @@ class DocumentControlApp(QMainWindow):
         return True
 
     def _create_revision_snapshot_for_selected_records(self) -> None:
+        self._create_revision_snapshot_for_record_indexes(self._selected_checked_out_record_indexes())
+
+    def _switch_selected_record_to_revision(self) -> None:
         indexes = self._selected_checked_out_record_indexes()
-        if not indexes:
+        self._switch_record_revision_from_indexes(indexes)
+
+    def _view_record_revision_from_indexes(self, indexes: List[int]) -> None:
+        if len(indexes) != 1:
+            self._error("Select exactly one checked-out file to view a revision.")
+            return
+        record = self.records[indexes[0]]
+        revision = self._choose_revision_for_record_action(record, "View Selected")
+        if not revision:
+            return
+        relative_snapshot = str(revision.get("snapshot_file", "")).strip()
+        if not relative_snapshot:
+            self._error("Selected revision is missing snapshot data.")
+            return
+        snapshot_path = Path(record.project_dir) / relative_snapshot
+        if not snapshot_path.exists():
+            self._error(f"Revision snapshot file is missing:\n{snapshot_path}")
+            return
+        self._open_paths([snapshot_path])
+
+    def _view_selected_record_revision(self) -> None:
+        self._view_record_revision_from_indexes(self._selected_checked_out_record_indexes())
+
+    def _create_revision_snapshot_for_record_indexes(self, indexes: List[int]) -> None:
+        valid_indexes = [
+            idx
+            for idx in indexes
+            if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+        ]
+        if not valid_indexes:
             self._error("Select at least one checked-out file to snapshot.")
             return
         accepted, note = self._prompt_revision_note("Create Revision Snapshot")
@@ -6612,9 +7056,7 @@ class DocumentControlApp(QMainWindow):
             return
         created_count = 0
         with self._busy_action("Creating revision snapshot(s)..."):
-            for idx in indexes:
-                if not (0 <= idx < len(self.records)):
-                    continue
+            for idx in valid_indexes:
                 created = self._create_revision_snapshot_for_record(self.records[idx], note=note)
                 if created:
                     created_count += 1
@@ -6623,12 +7065,16 @@ class DocumentControlApp(QMainWindow):
         else:
             self._info(f"Created {created_count} revision snapshot(s).")
 
-    def _switch_selected_record_to_revision(self) -> None:
-        indexes = self._selected_checked_out_record_indexes()
-        if len(indexes) != 1:
+    def _switch_record_revision_from_indexes(self, indexes: List[int]) -> None:
+        valid_indexes = [
+            idx
+            for idx in indexes
+            if 0 <= idx < len(self.records) and self.records[idx].record_type == "checked_out"
+        ]
+        if len(valid_indexes) != 1:
             self._error("Select exactly one checked-out file to switch revisions.")
             return
-        record = self.records[indexes[0]]
+        record = self.records[valid_indexes[0]]
         revision = self._choose_revision_for_record(record)
         if not revision:
             return
@@ -7248,13 +7694,19 @@ class DocumentControlApp(QMainWindow):
         if table is self.reference_records_table:
             remove_ref_action = menu.addAction("Remove Selected Ref")
             action_map[remove_ref_action] = "remove_ref"
+            customize_action = menu.addAction("Customize/Organize")
+            action_map[customize_action] = "customize"
         else:
             checkin_action = menu.addAction("Check In Selected")
             action_map[checkin_action] = "checkin"
             snapshot_action = menu.addAction("Create Revision Snapshot")
             action_map[snapshot_action] = "snapshot"
+            view_revision_action = menu.addAction("View Revision")
+            action_map[view_revision_action] = "view_revision"
             switch_action = menu.addAction("Switch To Revision")
             action_map[switch_action] = "switch_revision"
+            customize_action = menu.addAction("Customize/Organize")
+            action_map[customize_action] = "customize"
         chosen = menu.exec(table.viewport().mapToGlobal(pos))
         if chosen in action_map:
             self._handle_records_context_action(action_map[chosen])
@@ -7269,12 +7721,40 @@ class DocumentControlApp(QMainWindow):
         if action_id == "snapshot":
             self._create_revision_snapshot_for_selected_records()
             return
+        if action_id == "view_revision":
+            self._view_selected_record_revision()
+            return
         if action_id == "switch_revision":
             self._switch_selected_record_to_revision()
             return
         if action_id == "remove_ref":
             self._remove_selected_reference_records()
             return
+        if action_id == "customize":
+            self._customize_selected_active_records()
+            return
+
+    def _customize_records_from_indexes(self, indexes: List[int]) -> None:
+        targets: List[Tuple[str, str]] = []
+        scope = ""
+        for idx in indexes:
+            if not (0 <= idx < len(self.records)):
+                continue
+            record = self.records[idx]
+            current_scope = self._record_customization_scope(record)
+            if not scope:
+                scope = current_scope
+            if current_scope != scope:
+                self._error("Select only checked-out files or only reference files to customize.")
+                return
+            targets.append((self._record_customization_key(record), self._local_display_name(record.local_file)))
+        if not targets or not scope:
+            self._error("Select at least one file to customize.")
+            return
+        self._show_customize_organize_dialog(scope, targets)
+
+    def _customize_selected_active_records(self) -> None:
+        self._customize_records_from_indexes(self._selected_record_indexes())
 
     def _open_selected_record_files(self) -> None:
         indexes = self._selected_record_indexes()
@@ -7336,6 +7816,7 @@ class DocumentControlApp(QMainWindow):
             self.tracked_projects_list.setCurrentItem(item)
 
         menu = QMenu(self)
+        new_project_action = menu.addAction("New Project")
         load_action = menu.addAction("Load Selected")
         files_action = menu.addAction("Project Files Manager")
         edit_action = menu.addAction("Edit Selected")
@@ -7347,7 +7828,9 @@ class DocumentControlApp(QMainWindow):
         move_bottom_action = menu.addAction("Move to Bottom")
         customize_action = menu.addAction("Customize/Organize")
         chosen = menu.exec(self.tracked_projects_list.mapToGlobal(pos))
-        if chosen == load_action:
+        if chosen == new_project_action:
+            self._show_new_project_dialog()
+        elif chosen == load_action:
             self._load_selected_tracked_project()
         elif chosen == files_action:
             self._open_project_files_manager_for_selected_project()
@@ -7382,9 +7865,9 @@ class DocumentControlApp(QMainWindow):
             self.favorites_list.setCurrentItem(item)
 
         menu = QMenu(self)
+        open_action = menu.addAction("Open Selected")
         add_action = menu.addAction("Add Favorite")
         add_global_action = menu.addAction("Add Selected To Global Favorites")
-        open_action = menu.addAction("Open Selected")
         remove_action = menu.addAction("Remove Favorite")
         move_up_action = menu.addAction("Move Up")
         move_down_action = menu.addAction("Move Down")
@@ -7425,9 +7908,9 @@ class DocumentControlApp(QMainWindow):
             self.notes_list.setCurrentItem(item)
 
         menu = QMenu(self)
+        edit_action = menu.addAction("Edit Selected")
         new_action = menu.addAction("New Note")
         presets_action = menu.addAction("Presets")
-        edit_action = menu.addAction("Edit Selected")
         remove_action = menu.addAction("Remove Selected")
         move_up_action = menu.addAction("Move Up")
         move_down_action = menu.addAction("Move Down")
@@ -7489,6 +7972,7 @@ class DocumentControlApp(QMainWindow):
         menu = QMenu(self)
         track_browse_action = menu.addAction("Track Dir (Browse)")
         track_current_action = menu.addAction("Track Directory")
+        view_location_action = menu.addAction("View Location")
         untrack_action = menu.addAction("Untrack Dir")
         move_up_action = menu.addAction("Move Up")
         move_down_action = menu.addAction("Move Down")
@@ -7499,6 +7983,8 @@ class DocumentControlApp(QMainWindow):
             self._add_source_directory()
         elif chosen == track_current_action:
             self._track_current_directory()
+        elif chosen == view_location_action:
+            self._view_selected_source_directory_location()
         elif chosen == untrack_action:
             self._remove_source_directory()
         elif chosen == move_up_action:
@@ -7647,26 +8133,44 @@ class DocumentControlApp(QMainWindow):
                 for idx, record in enumerate(self.records)
                 if record.record_type == "checked_out"
             ]
-            self._populate_records_table(self.all_records_table, checked_out_items)
+            self._populate_records_table(
+                self.all_records_table,
+                checked_out_items,
+                self.all_records_search_edit.text().strip().lower(),
+            )
             current_project = self.current_project_dir
             filtered = [
                 (idx, record)
                 for idx, record in checked_out_items
                 if record.project_dir == current_project
             ]
-            self._populate_records_table(self.project_records_table, filtered)
+            self._populate_records_table(
+                self.project_records_table,
+                filtered,
+                self.project_records_search_edit.text().strip().lower(),
+            )
             reference_items = [
                 (idx, record)
                 for idx, record in enumerate(self.records)
                 if record.record_type == "reference_copy"
             ]
-            self._populate_reference_records_table(self.reference_records_table, reference_items)
+            self._populate_reference_records_table(
+                self.reference_records_table,
+                reference_items,
+                self.reference_records_search_edit.text().strip().lower(),
+            )
+            self._refresh_project_local_files_lists()
 
     def _populate_records_table(
-        self, table: QTableWidget, items: List[tuple[int, CheckoutRecord]]
+        self, table: QTableWidget, items: List[tuple[int, CheckoutRecord]], search: str = ""
     ) -> None:
-        table.setRowCount(len(items))
-        for row_idx, (record_idx, record) in enumerate(items):
+        filtered_items = [
+            (record_idx, record)
+            for record_idx, record in items
+            if not search or search in self._record_search_blob(record)
+        ]
+        table.setRowCount(len(filtered_items))
+        for row_idx, (record_idx, record) in enumerate(filtered_items):
             values = [
                 record.source_file,
                 record.locked_source_file,
@@ -7690,6 +8194,7 @@ class DocumentControlApp(QMainWindow):
                 if col_idx == 0:
                     item.setData(Qt.UserRole, record_idx)
                 table.setItem(row_idx, col_idx, item)
+            self._apply_record_table_row_style(table, row_idx, record)
 
         table.resizeColumnsToContents()
         table.setColumnWidth(0, max(table.columnWidth(0), 260))
@@ -7700,10 +8205,15 @@ class DocumentControlApp(QMainWindow):
         table.setColumnWidth(5, max(table.columnWidth(5), 150))
 
     def _populate_reference_records_table(
-        self, table: QTableWidget, items: List[tuple[int, CheckoutRecord]]
+        self, table: QTableWidget, items: List[tuple[int, CheckoutRecord]], search: str = ""
     ) -> None:
-        table.setRowCount(len(items))
-        for row_idx, (record_idx, record) in enumerate(items):
+        filtered_items = [
+            (record_idx, record)
+            for record_idx, record in items
+            if not search or search in self._record_search_blob(record)
+        ]
+        table.setRowCount(len(filtered_items))
+        for row_idx, (record_idx, record) in enumerate(filtered_items):
             values = [
                 self._short_path(record.source_file),
                 self._local_display_name(record.local_file),
@@ -7722,6 +8232,7 @@ class DocumentControlApp(QMainWindow):
                 else:
                     item.setToolTip(record.checked_out_at)
                 table.setItem(row_idx, col_idx, item)
+            self._apply_record_table_row_style(table, row_idx, record)
 
         table.resizeColumnsToContents()
         table.setColumnWidth(0, max(table.columnWidth(0), 280))

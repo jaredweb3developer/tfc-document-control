@@ -73,7 +73,8 @@ def test_checkin_selected_rejects_reference_copy_rows(app_env, monkeypatch):
         )
     ]
     app._render_records_tables()
-    app.records_tabs.setCurrentWidget(app.reference_records_table)
+    # The records tabs now wrap each table in a tab page, so select the reference tab by index.
+    app.records_tabs.setCurrentIndex(2)
     app.reference_records_table.selectRow(0)
 
     captured = {"msg": ""}
