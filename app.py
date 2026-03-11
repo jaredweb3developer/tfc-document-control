@@ -3170,6 +3170,9 @@ class DocumentControlApp(QMainWindow):
     def _selected_source_file_paths(self) -> List[Path]:
         return [Path(item.data(Qt.UserRole)) for item in self.files_list.selectedItems()]
 
+    def _selected_file_paths_from_list_widget(self, list_widget: QListWidget) -> List[Path]:
+        return [Path(str(item.data(Qt.UserRole))) for item in list_widget.selectedItems()]
+
     def _set_local_reference_read_only(self, path: Path) -> None:
         # Best-effort: mark reference copies read-only on local filesystem.
         try:
@@ -3179,19 +3182,41 @@ class DocumentControlApp(QMainWindow):
             return
 
     def _copy_selected_as_reference(self) -> None:
+        selected_files = self._selected_source_file_paths()
+        target = self._choose_project_target(
+            title="Copy As Reference",
+            message=f"Copy {len(selected_files)} file(s) as reference:",
+        ) if selected_files else None
+        if not selected_files:
+            self._error("Select at least one source file to copy as reference.")
+            return
+        if not target:
+            return
+        mode, project_dir = target
+        if mode == "current":
+            self._copy_selected_as_reference_to_project(None, selected_files)
+        elif mode == "other" and project_dir is not None:
+            self._copy_selected_as_reference_to_project(project_dir, selected_files)
+
+    def _copy_selected_as_reference_to_project(
+        self, target_project_dir: Optional[Path], selected_files: Optional[List[Path]] = None
+    ) -> None:
         if not self._validate_identity():
             return
 
-        project_dir = self._validate_current_project()
+        project_dir = target_project_dir or self._validate_current_project()
         current_directory = self._validate_current_directory()
         source_root = self._current_source_root()
         if not project_dir or not current_directory or not source_root:
             return
 
-        selected_files = self._selected_source_file_paths()
+        selected_files = selected_files or self._selected_source_file_paths()
         if not selected_files:
             self._error("Select at least one source file to copy as reference.")
             return
+
+        config = self._read_project_config(project_dir)
+        project_name = str(config.get("name", project_dir.name))
 
         reference_root = project_dir / "reference_copies" / self._source_key(project_dir, source_root)
         copied_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -3224,7 +3249,7 @@ class DocumentControlApp(QMainWindow):
                                 locked_source_file="",
                                 local_file=str(local_file),
                                 initials=self._normalize_initials(),
-                                project_name=self._current_project_name(),
+                                project_name=project_name,
                                 project_dir=str(project_dir),
                                 source_root=str(source_root),
                                 checked_out_at=copied_at,
@@ -3330,21 +3355,29 @@ class DocumentControlApp(QMainWindow):
             self._save_global_favorites()
             self._refresh_global_favorites_list()
 
-    def _choose_favorite_target(self, paths: List[Path]) -> Optional[Tuple[str, Optional[Path]]]:
+    def _choose_project_target(
+        self,
+        *,
+        title: str,
+        message: str,
+        include_global: bool = False,
+        global_label: str = "Global Favorites",
+    ) -> Optional[Tuple[str, Optional[Path]]]:
         dialog = QDialog(self)
-        dialog.setWindowTitle("Add To Favorites")
+        dialog.setWindowTitle(title)
         dialog.resize(640, 360)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel(f"Add {len(paths)} file(s) to favorites:"))
+        layout.addWidget(QLabel(message))
 
         current_radio = QRadioButton("Current Project")
         other_radio = QRadioButton("Another Project")
-        global_radio = QRadioButton("Global Favorites")
+        global_radio = QRadioButton(global_label)
         current_radio.setChecked(True)
         target_layout = QVBoxLayout()
         target_layout.addWidget(current_radio)
         target_layout.addWidget(other_radio)
-        target_layout.addWidget(global_radio)
+        if include_global:
+            target_layout.addWidget(global_radio)
         layout.addLayout(target_layout)
 
         project_filter = QLineEdit()
@@ -3397,7 +3430,8 @@ class DocumentControlApp(QMainWindow):
         update_project_controls()
         current_radio.toggled.connect(lambda _checked: update_project_controls())
         other_radio.toggled.connect(lambda _checked: update_project_controls())
-        global_radio.toggled.connect(lambda _checked: update_project_controls())
+        if include_global:
+            global_radio.toggled.connect(lambda _checked: update_project_controls())
         project_filter.textChanged.connect(lambda _text: refresh_project_list())
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -3410,7 +3444,7 @@ class DocumentControlApp(QMainWindow):
         mode = "current"
         if other_radio.isChecked():
             mode = "other"
-        elif global_radio.isChecked():
+        elif include_global and global_radio.isChecked():
             mode = "global"
         if mode == "other":
             current_item = project_list.currentItem()
@@ -3420,6 +3454,14 @@ class DocumentControlApp(QMainWindow):
                 return None
             return mode, Path(project_dir)
         return mode, None
+
+    def _choose_favorite_target(self, paths: List[Path]) -> Optional[Tuple[str, Optional[Path]]]:
+        return self._choose_project_target(
+            title="Add To Favorites",
+            message=f"Add {len(paths)} file(s) to favorites:",
+            include_global=True,
+            global_label="Global Favorites",
+        )
 
     def _browse_and_add_favorites(self) -> None:
         project_dir = self._validate_current_project()
@@ -3500,6 +3542,57 @@ class DocumentControlApp(QMainWindow):
 
     def _open_favorite_item(self, item: QListWidgetItem) -> None:
         self._open_paths([Path(str(item.data(Qt.UserRole)))])
+
+    def _view_selected_file_locations_from_list(self, list_widget: QListWidget) -> None:
+        paths = self._selected_file_paths_from_list_widget(list_widget)
+        if not paths:
+            self._error("Select at least one file.")
+            return
+        directories: List[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            directory = path.parent
+            key = str(directory)
+            if key in seen:
+                continue
+            seen.add(key)
+            directories.append(directory)
+        self._open_paths(directories)
+
+    def _select_source_root_item_by_path(self, root_path: Path) -> bool:
+        normalized = str(root_path)
+        for row in range(self.source_roots_list.count()):
+            item = self.source_roots_list.item(row)
+            if str(item.data(Qt.UserRole)) != normalized:
+                continue
+            self.source_roots_list.setCurrentItem(item)
+            return True
+        return False
+
+    def _load_selected_file_location_from_list(self, list_widget: QListWidget) -> None:
+        paths = self._selected_file_paths_from_list_widget(list_widget)
+        if not paths:
+            self._error("Select a file.")
+            return
+        directory = paths[0].parent
+        tracked_roots = [
+            Path(str(self.source_roots_list.item(row).data(Qt.UserRole)))
+            for row in range(self.source_roots_list.count())
+        ]
+        matching_roots: List[Path] = []
+        for root in tracked_roots:
+            try:
+                directory.relative_to(root)
+                matching_roots.append(root)
+            except ValueError:
+                continue
+        if matching_roots:
+            root = max(matching_roots, key=lambda item: len(str(item)))
+            if not self._select_source_root_item_by_path(root):
+                self._set_directory_tree_root(root)
+        else:
+            self._set_directory_tree_root(directory)
+        self._set_current_directory_with_feedback(directory, "Loading directory...")
 
     def _record_for_list_item(self, item: QListWidgetItem) -> Optional[CheckoutRecord]:
         record_idx = item.data(Qt.UserRole)
@@ -3708,6 +3801,8 @@ class DocumentControlApp(QMainWindow):
             self.global_favorites_list.setCurrentItem(item)
         menu = QMenu(self)
         open_action = menu.addAction("Open Selected")
+        view_location_action = menu.addAction("View Location")
+        load_location_action = menu.addAction("Load Location")
         add_action = menu.addAction("Add Favorite")
         add_project_action = menu.addAction("Add Selected To Project Favorites")
         remove_action = menu.addAction("Remove Selected")
@@ -3715,6 +3810,10 @@ class DocumentControlApp(QMainWindow):
         chosen = menu.exec(self.global_favorites_list.mapToGlobal(pos))
         if chosen == open_action:
             self._open_selected_global_favorites()
+        elif chosen == view_location_action:
+            self._view_selected_file_locations_from_list(self.global_favorites_list)
+        elif chosen == load_location_action:
+            self._load_selected_file_location_from_list(self.global_favorites_list)
         elif chosen == add_action:
             self._browse_and_add_global_favorites()
         elif chosen == add_project_action:
@@ -3740,6 +3839,8 @@ class DocumentControlApp(QMainWindow):
             self.project_checked_out_list.setCurrentItem(item)
         menu = QMenu(self)
         open_action = menu.addAction("Open Selected")
+        view_location_action = menu.addAction("View Location")
+        load_location_action = menu.addAction("Load Location")
         checkin_action = menu.addAction("Check In Selected")
         view_revision_action = menu.addAction("View Revision")
         snapshot_action = menu.addAction("Create Revision Snapshot")
@@ -3754,6 +3855,10 @@ class DocumentControlApp(QMainWindow):
                     if 0 <= idx < len(self.records)
                 ]
             )
+        elif chosen == view_location_action:
+            self._view_selected_file_locations_from_list(self.project_checked_out_list)
+        elif chosen == load_location_action:
+            self._load_selected_file_location_from_list(self.project_checked_out_list)
         elif chosen == checkin_action:
             if not self._validate_identity():
                 return
@@ -3785,6 +3890,8 @@ class DocumentControlApp(QMainWindow):
             self.project_reference_list.setCurrentItem(item)
         menu = QMenu(self)
         open_action = menu.addAction("Open Selected")
+        view_location_action = menu.addAction("View Location")
+        load_location_action = menu.addAction("Load Location")
         remove_ref_action = menu.addAction("Remove Selected Ref")
         customize_action = menu.addAction("Customize/Organize")
         chosen = menu.exec(self.project_reference_list.mapToGlobal(pos))
@@ -3796,6 +3903,10 @@ class DocumentControlApp(QMainWindow):
                     if 0 <= idx < len(self.records)
                 ]
             )
+        elif chosen == view_location_action:
+            self._view_selected_file_locations_from_list(self.project_reference_list)
+        elif chosen == load_location_action:
+            self._load_selected_file_location_from_list(self.project_reference_list)
         elif chosen == remove_ref_action:
             self._remove_record_indexes(self._selected_record_indexes_from_list_widget(self.project_reference_list))
             self._save_records()
@@ -7904,6 +8015,8 @@ class DocumentControlApp(QMainWindow):
 
         menu = QMenu(self)
         open_action = menu.addAction("Open Selected")
+        view_location_action = menu.addAction("View Location")
+        load_location_action = menu.addAction("Load Location")
         add_action = menu.addAction("Add Favorite")
         add_global_action = menu.addAction("Add Selected To Global Favorites")
         remove_action = menu.addAction("Remove Favorite")
@@ -7913,12 +8026,16 @@ class DocumentControlApp(QMainWindow):
         move_bottom_action = menu.addAction("Move to Bottom")
         customize_action = menu.addAction("Customize/Organize")
         chosen = menu.exec(self.favorites_list.mapToGlobal(pos))
-        if chosen == add_action:
+        if chosen == open_action:
+            self._open_selected_favorites()
+        elif chosen == view_location_action:
+            self._view_selected_file_locations_from_list(self.favorites_list)
+        elif chosen == load_location_action:
+            self._load_selected_file_location_from_list(self.favorites_list)
+        elif chosen == add_action:
             self._browse_and_add_favorites()
         elif chosen == add_global_action:
             self._add_selected_project_favorites_to_global()
-        elif chosen == open_action:
-            self._open_selected_favorites()
         elif chosen == remove_action:
             self._remove_selected_favorites()
         elif chosen == move_up_action:

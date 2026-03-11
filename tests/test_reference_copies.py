@@ -3,7 +3,7 @@ from pathlib import Path
 from app import CheckoutRecord
 
 
-def test_copy_selected_as_reference_creates_local_copy_without_locking_source(app_env):
+def test_copy_selected_as_reference_creates_local_copy_without_locking_source(app_env, monkeypatch):
     # Reference copy should not rename/lock source file and should create a tracked reference record.
     app = app_env["app"]
     tmp = app_env["tmp"]
@@ -32,6 +32,11 @@ def test_copy_selected_as_reference_creates_local_copy_without_locking_source(ap
             item.setSelected(True)
             break
 
+    monkeypatch.setattr(
+        app,
+        "_choose_project_target",
+        lambda **_kwargs: ("current", None),
+    )
     app._copy_selected_as_reference()
 
     assert source_file.exists()
