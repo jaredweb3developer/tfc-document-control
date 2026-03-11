@@ -3170,8 +3170,27 @@ class DocumentControlApp(QMainWindow):
     def _selected_source_file_paths(self) -> List[Path]:
         return [Path(item.data(Qt.UserRole)) for item in self.files_list.selectedItems()]
 
+    def _path_for_list_item(self, list_widget: QListWidget, item: QListWidgetItem) -> Optional[Path]:
+        if list_widget in {
+            getattr(self, "project_checked_out_list", None),
+            getattr(self, "project_reference_list", None),
+        }:
+            record = self._record_for_list_item(item)
+            if not record:
+                return None
+            return Path(record.local_file)
+        value = item.data(Qt.UserRole)
+        if value in (None, ""):
+            return None
+        return Path(str(value))
+
     def _selected_file_paths_from_list_widget(self, list_widget: QListWidget) -> List[Path]:
-        return [Path(str(item.data(Qt.UserRole))) for item in list_widget.selectedItems()]
+        paths: List[Path] = []
+        for item in list_widget.selectedItems():
+            path = self._path_for_list_item(list_widget, item)
+            if path is not None:
+                paths.append(path)
+        return paths
 
     def _set_local_reference_read_only(self, path: Path) -> None:
         # Best-effort: mark reference copies read-only on local filesystem.
