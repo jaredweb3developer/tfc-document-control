@@ -33,12 +33,27 @@ pip install -r requirements.txt
 python app.py
 ```
 
+## Structure
+- `app.py`: stable compatibility entrypoint, shared constants, shared dataclasses
+- `document_control/window.py`: `DocumentControlApp` assembly and startup lifecycle
+- `document_control/mixins/`: functional split of the former monolithic `app.py`
+- `docs/architecture.md`: codebase map
+- `docs/features.md`: feature inventory and invariants
+- `docs/working-memory.md`: session-to-session development ledger
+- `docs/development-workflow.md`: how to use and maintain the memory files
+
 ## Tests
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 pytest
+```
+
+On Windows with restrictive temp permissions, this also works:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest --basetemp .pytest_tmp -p no:cacheprovider
 ```
 
 ## Data Layout
@@ -52,3 +67,4 @@ pytest
 - Saving a new project creates a project directory under the configured local base folder.
 - Adding an existing project tracks a user-selected `dctl.json` file.
 - Untracking a project only removes it from `projects.json`; it does not delete project files.
+- For ongoing development, update `docs/working-memory.md` in the same change whenever architecture, behavior, or testing expectations shift.
