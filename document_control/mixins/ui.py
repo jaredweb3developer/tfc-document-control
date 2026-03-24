@@ -49,6 +49,19 @@ class UiMixin:
             toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             toggle.setArrowType(Qt.DownArrow)
             toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            toggle.setStyleSheet(
+                """
+                QToolButton {
+                    font-weight: 600;
+                }
+                QToolButton:checked {
+                    color: white;
+                }
+                QToolButton:!checked {
+                    color: black;
+                }
+                """
+            )
 
             content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)

@@ -13,7 +13,7 @@ from time import perf_counter
 from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from PySide6.QtCore import QDir, QPoint, Qt, QTimer, QUrl
+from PySide6.QtCore import QDir, QPoint, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QListWidget,
     QListWidgetItem,
+    QListView,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -45,6 +46,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QTabWidget,
     QToolButton,
+    QStyledItemDelegate,
+    QTreeView,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,

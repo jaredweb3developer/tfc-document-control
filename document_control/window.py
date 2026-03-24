@@ -11,6 +11,18 @@ from .mixins.sources import SourcesMixin
 from .mixins.ui import UiMixin
 
 
+class CompactItemDelegate(QStyledItemDelegate):
+        def __init__(self, min_height: int = 14, extra_vertical_padding: int = 2, parent=None) -> None:
+            super().__init__(parent)
+            self._min_height = min_height
+            self._extra_vertical_padding = extra_vertical_padding
+
+        def sizeHint(self, option, index):  # type: ignore[override]
+            size = super().sizeHint(option, index)
+            compact_height = max(self._min_height, option.fontMetrics.height() + self._extra_vertical_padding)
+            return QSize(size.width(), compact_height)
+
+
 class DocumentControlApp(
     UiMixin,
     ConfigMixin,
@@ -60,8 +72,10 @@ class DocumentControlApp(
             self.file_search_debounce.setSingleShot(True)
             self.file_search_debounce.setInterval(300)
             self.file_search_debounce.timeout.connect(self._refresh_source_files_from_search)
+            self._compact_item_delegates: List[CompactItemDelegate] = []
 
             self._build_ui()
+            self._apply_compact_item_view_style()
             self._show_startup_splash("Starting TFC Document Control...")
             try:
                 self._update_startup_splash("Loading settings...")
@@ -100,9 +114,30 @@ class DocumentControlApp(
             self._save_item_customizations()
             super().closeEvent(event)
 
+        def _apply_compact_item_view_style(self) -> None:
+            seen: set[int] = set()
+            for view in [*self.findChildren(QListView), *self.findChildren(QTreeView)]:
+                view_id = id(view)
+                if view_id in seen:
+                    continue
+                seen.add(view_id)
+                delegate = CompactItemDelegate(parent=view)
+                view.setItemDelegate(delegate)
+                self._compact_item_delegates.append(delegate)
+
 
 def main() -> None:
     app = QApplication(sys.argv)
+    # app.setStyle("windows11")
+    app.setStyleSheet(
+        """
+        QListView::item,
+        QTreeView::item {
+            margin: 0px;
+            padding: 0px;
+        }
+        """
+    )
     window = DocumentControlApp()
     window.show()
     sys.exit(app.exec())
