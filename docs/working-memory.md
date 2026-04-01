@@ -45,6 +45,14 @@ Append a short block for each meaningful session:
 - Tests run: `.\.venv\Scripts\python.exe -m pytest --basetemp .pytest_tmp -p no:cacheprovider` (`83 passed`).
 - Risks or follow-up: The app is structurally modular now, but most behavior still lives on one large `DocumentControlApp` type; future work should extract services and reusable widgets incrementally.
 
+### 2026-03-24
+
+- Goal: Add a repeatable Windows packaging flow that produces a colleague-deliverable executable bundle in environments with restrictive temp handling and endpoint protection.
+- Files/areas changed: `build.ps1`, `requirements-build.txt`, `.gitignore`, `README.md`, `docs/working-memory.md`.
+- Behavior changed: No runtime app behavior change; the repo now includes a PyInstaller `onedir` build path that writes temp/work/config output inside the repository and emits a zipped release artifact.
+- Tests run: Not run; `PyInstaller` is not installed in the current virtualenv, and prior pytest runs in this environment were already constrained by temp-directory permissions.
+- Risks or follow-up: First real packaging run should verify the built executable launches correctly on a colleague machine with SentinelOne enabled; if Qt plugin resolution fails, add explicit plugin/data collection rules to the build script.
+
 ## Maintenance Rule
 
 If a future task changes architecture, persistence formats, feature scope, or test strategy, update this file in the same change.

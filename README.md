@@ -33,6 +33,36 @@ pip install -r requirements.txt
 python app.py
 ```
 
+## Build A Windows Executable
+Use the PowerShell build script to create a distributable `onedir` package and zip archive.
+
+Why `onedir` instead of `onefile`:
+- `onedir` avoids self-extracting to temp at runtime, which is generally friendlier to SentinelOne and similar endpoint protection tools.
+- The script pins `TMP`, `TEMP`, and the PyInstaller config directory inside the repo so the build does not depend on restricted user temp folders.
+
+Build steps:
+
+```powershell
+.\build.ps1 -InstallBuildDeps -Clean
+```
+
+If endpoint protection keeps fresh PyInstaller files open long enough to interfere with archiving, you can either let the script retry longer or skip zip creation and distribute the `dist` folder directly:
+
+```powershell
+.\build.ps1 -ArchiveRetryCount 24 -ArchiveRetryDelaySeconds 5
+.\build.ps1 -SkipArchive
+```
+
+Outputs:
+- `dist/TFC Document Control/`: distributable folder containing `TFC Document Control.exe` plus bundled Qt/runtime files
+- `release/tfc-document-control-windows.zip`: zipped delivery artifact
+
+If dependencies are already installed, a normal rebuild is:
+
+```powershell
+.\build.ps1
+```
+
 ## Structure
 - `app.py`: stable compatibility entrypoint, shared constants, shared dataclasses
 - `document_control/window.py`: `DocumentControlApp` assembly and startup lifecycle
