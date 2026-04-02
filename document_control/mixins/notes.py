@@ -1144,6 +1144,91 @@ class NotesMixin:
             item = self.notes_list.currentItem()
             return str(item.data(Qt.UserRole)).strip() if item else ""
 
+        def _selected_project_note(self) -> Optional[Dict[str, str]]:
+            note_id = self._selected_note_id()
+            if not note_id:
+                return None
+            for note in self._current_project_notes():
+                if str(note.get("id", "")).strip() == note_id:
+                    return dict(note)
+            return None
+
+        def _project_note_transfer_targets(self) -> List[Dict[str, str]]:
+            current_project_dir = str(self._current_project_path() or "")
+            targets: List[Dict[str, str]] = []
+            for entry in getattr(self, "tracked_projects", []):
+                if not isinstance(entry, dict):
+                    continue
+                project_dir = str(entry.get("project_dir", "")).strip()
+                if not project_dir or project_dir == current_project_dir:
+                    continue
+                targets.append(
+                    {
+                        "name": str(entry.get("name", "")).strip() or Path(project_dir).name,
+                        "project_dir": project_dir,
+                    }
+                )
+            targets.sort(key=lambda item: item["name"].lower())
+            return targets
+
+        def _choose_project_note_transfer_target(self, action_label: str) -> Optional[Path]:
+            if not self._project_note_transfer_targets():
+                self._error("No other tracked projects are available.")
+                return None
+            target = self._choose_project_target(
+                title=f"{action_label} Project Note",
+                message="Select a target project:",
+                include_current=False,
+                include_global=False,
+            )
+            if not target:
+                return None
+            _mode, project_dir = target
+            return project_dir
+
+        def _clone_project_note_for_transfer(self, note: Dict[str, str]) -> Dict[str, str]:
+            return {
+                "id": str(uuid4()),
+                "subject": str(note.get("subject", "")).strip(),
+                "body": str(note.get("body", "")),
+                "created_at": str(note.get("created_at", "")).strip(),
+                "updated_at": str(note.get("updated_at", "")).strip(),
+            }
+
+        def _copy_selected_note_to_project(self) -> None:
+            note = self._selected_project_note()
+            if not note:
+                self._error("Select a note to copy.")
+                return
+            target_project_dir = self._choose_project_note_transfer_target("Copy")
+            if not target_project_dir:
+                return
+            target_config = self._read_project_config(target_project_dir)
+            target_notes = [dict(item) for item in target_config.get("notes", []) if isinstance(item, dict)]
+            target_notes.append(self._clone_project_note_for_transfer(note))
+            self._save_project_config(target_project_dir, notes=target_notes)
+            self._info(f"Copied note to project '{str(target_config.get('name', target_project_dir.name)).strip() or target_project_dir.name}'.")
+
+        def _move_selected_note_to_project(self) -> None:
+            note = self._selected_project_note()
+            if not note:
+                self._error("Select a note to move.")
+                return
+            target_project_dir = self._choose_project_note_transfer_target("Move")
+            if not target_project_dir:
+                return
+            target_config = self._read_project_config(target_project_dir)
+            target_notes = [dict(item) for item in target_config.get("notes", []) if isinstance(item, dict)]
+            target_notes.append(self._clone_project_note_for_transfer(note))
+            self._save_project_config(target_project_dir, notes=target_notes)
+            remaining_notes = [
+                existing_note
+                for existing_note in self._current_project_notes()
+                if str(existing_note.get("id", "")).strip() != str(note.get("id", "")).strip()
+            ]
+            self._set_project_notes(remaining_notes)
+            self._info(f"Moved note to project '{str(target_config.get('name', target_project_dir.name)).strip() or target_project_dir.name}'.")
+
         def _show_note_dialog(self, note: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
             dialog = QDialog(self)
             dialog.setWindowTitle("Edit Note" if note else "New Note")

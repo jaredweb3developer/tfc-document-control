@@ -2941,6 +2941,8 @@ class RecordsMixin:
             edit_action = menu.addAction("Edit Selected")
             new_action = menu.addAction("New Note")
             presets_action = menu.addAction("Presets")
+            copy_action = menu.addAction("Copy Selected To Project")
+            move_project_action = menu.addAction("Move Selected To Project")
             remove_action = menu.addAction("Remove Selected")
             move_up_action = menu.addAction("Move Up")
             move_down_action = menu.addAction("Move Down")
@@ -2954,6 +2956,10 @@ class RecordsMixin:
                 self._show_note_presets_dialog()
             elif chosen == edit_action:
                 self._edit_selected_note()
+            elif chosen == copy_action:
+                self._copy_selected_note_to_project()
+            elif chosen == move_project_action:
+                self._move_selected_note_to_project()
             elif chosen == remove_action:
                 self._remove_selected_note()
             elif chosen == move_up_action:

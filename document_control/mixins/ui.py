@@ -318,6 +318,8 @@ class UiMixin:
                         ("New Note", self._create_note),
                         ("Presets", self._show_note_presets_dialog),
                         ("Edit Selected", self._edit_selected_note),
+                        ("Copy Selected To Project", self._copy_selected_note_to_project),
+                        ("Move Selected To Project", self._move_selected_note_to_project),
                         ("Remove Selected", self._remove_selected_note),
                         ("---", self._create_note),
                         ("Move Up", self._move_selected_note_up),

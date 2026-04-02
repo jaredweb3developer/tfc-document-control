@@ -704,6 +704,7 @@ class SourcesMixin:
             *,
             title: str,
             message: str,
+            include_current: bool = True,
             include_global: bool = False,
             global_label: str = "Global Favorites",
         ) -> Optional[Tuple[str, Optional[Path]]]:
@@ -716,9 +717,13 @@ class SourcesMixin:
             current_radio = QRadioButton("Current Project")
             other_radio = QRadioButton("Another Project")
             global_radio = QRadioButton(global_label)
-            current_radio.setChecked(True)
+            if include_current:
+                current_radio.setChecked(True)
+            else:
+                other_radio.setChecked(True)
             target_layout = QVBoxLayout()
-            target_layout.addWidget(current_radio)
+            if include_current:
+                target_layout.addWidget(current_radio)
             target_layout.addWidget(other_radio)
             if include_global:
                 target_layout.addWidget(global_radio)
@@ -772,7 +777,8 @@ class SourcesMixin:
             layout.addWidget(project_list, stretch=1)
             refresh_project_list()
             update_project_controls()
-            current_radio.toggled.connect(lambda _checked: update_project_controls())
+            if include_current:
+                current_radio.toggled.connect(lambda _checked: update_project_controls())
             other_radio.toggled.connect(lambda _checked: update_project_controls())
             if include_global:
                 global_radio.toggled.connect(lambda _checked: update_project_controls())
@@ -786,7 +792,7 @@ class SourcesMixin:
                 return None
 
             mode = "current"
-            if other_radio.isChecked():
+            if not include_current or other_radio.isChecked():
                 mode = "other"
             elif include_global and global_radio.isChecked():
                 mode = "global"
