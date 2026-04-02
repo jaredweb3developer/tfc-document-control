@@ -822,6 +822,7 @@ class ProjectsMixin:
                             source_root=record.source_root,
                             checked_out_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                             record_type="reference_copy" if record_type == "checked_out" else record.record_type,
+                            file_id=record.file_id,
                         )
                     )
                 else:

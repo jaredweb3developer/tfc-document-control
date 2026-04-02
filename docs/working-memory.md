@@ -7,7 +7,7 @@ Update it at the end of any meaningful change so the next session does not need 
 
 ## Current Snapshot
 
-- Active maintainability milestone: `0.1.4`.
+- Active maintainability milestone: `0.2.0`.
 - `app.py` has been reduced to a compatibility entrypoint plus shared constants/dataclasses.
 - The application behavior still lives primarily inside `DocumentControlApp`, but the implementation is now split across mixins under `document_control/mixins/`.
 - Full local test status after the `0.1.4` structural refactor: `83 passed`.
@@ -52,6 +52,30 @@ Append a short block for each meaningful session:
 - Behavior changed: No runtime app behavior change; the repo now includes a PyInstaller `onedir` build path that writes temp/work/config output inside the repository and emits a zipped release artifact.
 - Tests run: Not run; `PyInstaller` is not installed in the current virtualenv, and prior pytest runs in this environment were already constrained by temp-directory permissions.
 - Risks or follow-up: First real packaging run should verify the built executable launches correctly on a colleague machine with SentinelOne enabled; if Qt plugin resolution fails, add explicit plugin/data collection rules to the build script.
+
+### 2026-04-01
+
+- Goal: Document the future stable-`file_id` migration and add a guarded current-version source-file rename workflow.
+- Files/areas changed: `document_control/mixins/records.py`, `document_control/mixins/ui.py`, `tests/test_context_menus.py`, `tests/test_directory_notes_and_controlled_tables.py`, `docs/features.md`, `docs/working-memory.md`, `docs/file-id-migration.md`.
+- Behavior changed: Source files can now be renamed from the Files actions/context menu when they are not actively checked out; rename migrates current history rows and file-note ownership to the new name and appends a `RENAME` history event. Non-checked-out source files can also be deleted from the same area; delete appends a `DELETE_FILE` history event and clears file-note ownership for the removed filenames.
+- Tests run: Targeted `pytest` invocation attempted for `tests/test_context_menus.py` and `tests/test_directory_notes_and_controlled_tables.py`, but this environment still fails during pytest temp cleanup with `WinError 5`; repo-local runtime sanity checks verified successful rename migration and checked-out rename rejection.
+- Risks or follow-up: Checked-out rename/delete remain intentionally blocked because records and revision storage are still keyed from source/locked paths; the migration document captures the longer-term `file_id` design needed to remove that restriction.
+
+### 2026-04-01 (`0.2.0` branch)
+
+- Goal: Start the structural `file_id` migration so filename reuse no longer contaminates document history.
+- Files/areas changed: `app.py`, `document_control/mixins/records.py`, `document_control/mixins/sources.py`, `document_control/mixins/projects.py`, `tests/test_directory_notes_and_controlled_tables.py`, `docs/features.md`, `docs/working-memory.md`, `docs/file-id-migration.md`.
+- Behavior changed: Source directories now maintain a hidden `.doc_control_index.json` registry. Active files receive stable `file_id` values, history rows can store `file_id` and `previous_file_name`, notes can store `file_id`, revision keys prefer `file_id`, and rename/delete now preserve document identity instead of rewriting filename history. Deleted documents retain their note/history lineage as retired identities.
+- Tests run: `pytest` remains blocked in this environment by temp cleanup permissions; repo-local runtime sanity checks verified `file_id`-stable rename, retained delete lineage, and the key collision case where a reused filename no longer inherits a previously deleted document's history.
+- Risks or follow-up: Existing pre-`file_id` history remains only partially backfilled; checked-out rename/delete and broader move/copy workflows still need to finish migrating to `file_id`-aware semantics before they can be safely enabled.
+
+### 2026-04-02 (`0.2.0` branch)
+
+- Goal: Stabilize the `file_id` migration on real copied source folders, fix source-index/history/note migration bugs, and establish `0.2.0` as the pinned baseline before moving future changes to `0.2.1`.
+- Files/areas changed: `document_control/mixins/records.py`, `document_control/mixins/sources.py`, `tests/test_file_revisions.py`, `docs/0.2.0-file-id-migration-summary.md`, `docs/working-memory.md`.
+- Behavior changed: Source-index reconciliation is more conservative and stable; unambiguous legacy history and note rows are backfilled to `file_id`; false history highlighting for unmanaged files was removed; excluded artifacts like `.bak`, `.tmp`, and `plot.log` are filtered from managed source indexing; repeated rename + checkout/checkin flows now preserve one document lineage more reliably on migrated folders.
+- Tests run: Manual verification on multiple copied source folders from `0.1.3` / `0.1.4` and CSV-only legacy history, including repeated restart persistence, rename + repeated checkout/checkin, note continuity, revision accessibility after rename, and passive migration inspection of generated `.doc_control_history.json`, `.doc_control_index.json`, and `.doc_file_notes.json`. Automated Python compile/pytest verification remained blocked in this environment by local Python/runtime and temp-permission issues.
+- Risks or follow-up: `0.1.5`-damaged metadata remains only partially repairable automatically; `0.2.0` should be treated as the pinned migration baseline for the current small active user group, with new colleague-driven changes continuing on `0.2.1` rather than reopening migration logic unless a real new defect appears.
 
 ## Maintenance Rule
 

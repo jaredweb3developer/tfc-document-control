@@ -43,6 +43,387 @@ class RecordsMixin:
         def _locked_name_for(self, source_file: Path, initials: str) -> Path:
             return source_file.with_name(f"{source_file.stem}-{initials}{source_file.suffix}")
 
+        def _source_index_file(self, source_dir: Path) -> Path:
+            return source_dir / app_module.SOURCE_INDEX_FILE
+
+        def _new_file_id(self, existing_ids: set[str]) -> str:
+            while True:
+                candidate = f"f_{uuid4().hex[:12]}"
+                if candidate not in existing_ids:
+                    return candidate
+
+        def _normalize_source_index_entry(
+            self, source_dir: Path, entry: Dict[str, object], fallback_name: str = ""
+        ) -> Dict[str, object]:
+            file_id = str(entry.get("file_id", "")).strip()
+            current_name = str(entry.get("current_name", "")).strip()
+            canonical_name = str(entry.get("canonical_name", "")).strip()
+            status = str(entry.get("status", "active") or "active").strip() or "active"
+            if not canonical_name:
+                canonical_name = current_name or fallback_name
+            known_names_raw = entry.get("known_names", [])
+            legacy_bound_names_raw = entry.get("legacy_bound_names", [])
+            known_names = []
+            if isinstance(known_names_raw, list):
+                known_names = [
+                    str(name).strip()
+                    for name in known_names_raw
+                    if str(name).strip()
+                ]
+            legacy_bound_names = []
+            if isinstance(legacy_bound_names_raw, list):
+                legacy_bound_names = [
+                    str(name).strip()
+                    for name in legacy_bound_names_raw
+                    if str(name).strip()
+                ]
+            for candidate in (current_name, canonical_name, fallback_name):
+                candidate = str(candidate).strip()
+                if candidate and candidate not in known_names:
+                    known_names.append(candidate)
+            return {
+                "file_id": file_id,
+                "current_name": current_name,
+                "canonical_name": canonical_name,
+                "status": status,
+                "known_names": known_names,
+                "legacy_bound_names": legacy_bound_names,
+                "checked_out_by": str(entry.get("checked_out_by", "")).strip(),
+                "checked_out_at": str(entry.get("checked_out_at", "")).strip(),
+                "created_at": str(entry.get("created_at", "")).strip(),
+            }
+
+        def _load_source_index(self, source_dir: Path) -> Dict[str, object]:
+            index_file = self._source_index_file(source_dir)
+            if not index_file.exists():
+                return {
+                    "schema_version": app_module.SOURCE_INDEX_SCHEMA_VERSION,
+                    "app_version": app_module.APP_VERSION,
+                    "files": {},
+                }
+            try:
+                raw = json.loads(index_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                raw = {}
+            files = raw.get("files", {}) if isinstance(raw, dict) else {}
+            normalized: Dict[str, object] = {}
+            if isinstance(files, dict):
+                for key, value in files.items():
+                    if not isinstance(value, dict):
+                        continue
+                    entry = self._normalize_source_index_entry(source_dir, value)
+                    file_id = str(entry.get("file_id", "")).strip() or str(key).strip()
+                    if not file_id:
+                        continue
+                    entry["file_id"] = file_id
+                    normalized[file_id] = entry
+            return {
+                "schema_version": app_module.SOURCE_INDEX_SCHEMA_VERSION,
+                "app_version": app_module.APP_VERSION,
+                "files": normalized,
+            }
+
+        def _save_source_index(self, source_dir: Path, index: Dict[str, object]) -> None:
+            index_file = self._source_index_file(source_dir)
+            self._ensure_parent_dir(index_file)
+            index_file.write_text(json.dumps(index, indent=2), encoding="utf-8")
+
+        def _latest_history_by_name_raw(self, source_dir: Path) -> Dict[str, Dict[str, str]]:
+            latest_by_name: Dict[str, Dict[str, str]] = {}
+            for row in self._read_history_rows(source_dir):
+                file_name = str(row.get("file_name", "")).strip()
+                if file_name:
+                    latest_by_name[file_name] = row
+            return latest_by_name
+
+        def _ensure_source_index(self, source_dir: Path) -> Dict[str, object]:
+            index = self._load_source_index(source_dir)
+            files = index.get("files", {})
+            if not isinstance(files, dict):
+                files = {}
+                index["files"] = files
+
+            existing_ids = {str(file_id).strip() for file_id in files.keys() if str(file_id).strip()}
+            current_names = {entry.name for entry in self._cached_directory_files(source_dir)}
+            latest_by_name = self._latest_history_by_name_raw(source_dir)
+            latest_by_id = self._latest_history_by_file_id(source_dir)
+            locked_aliases: Dict[str, Tuple[str, Dict[str, str]]] = {}
+            for original_name, row in latest_by_name.items():
+                if str(row.get("action", "")).strip() != "CHECK_OUT":
+                    continue
+                initials = str(row.get("user_initials", "")).strip()
+                if not initials:
+                    continue
+                locked_name = self._locked_name_for(source_dir / original_name, initials).name
+                locked_aliases[locked_name] = (original_name, row)
+            changed = False
+
+            active_by_name: Dict[str, str] = {}
+            for file_id, raw_entry in list(files.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                entry = self._normalize_source_index_entry(source_dir, raw_entry)
+                original_entry = dict(entry)
+                if not str(entry.get("file_id", "")).strip():
+                    entry["file_id"] = str(file_id)
+                latest_row = latest_by_id.get(str(entry["file_id"]))
+                if latest_row:
+                    latest_action = str(latest_row.get("action", "")).strip()
+                    latest_name = str(latest_row.get("file_name", "")).strip()
+                    known_names = [
+                        str(name).strip()
+                        for name in entry.get("known_names", [])
+                        if str(name).strip()
+                    ]
+                    if latest_name and latest_name not in known_names:
+                        known_names.append(latest_name)
+                    previous_name = str(latest_row.get("previous_file_name", "")).strip()
+                    if previous_name and previous_name not in known_names:
+                        known_names.append(previous_name)
+                    entry["known_names"] = known_names
+                    if latest_action == "DELETE_FILE":
+                        entry["current_name"] = ""
+                        entry["status"] = "deleted"
+                        entry["canonical_name"] = latest_name or str(entry.get("canonical_name", "")).strip()
+                    elif latest_action == "CHECK_OUT":
+                        initials = str(latest_row.get("user_initials", "")).strip()
+                        canonical_name = latest_name or str(entry.get("canonical_name", "")).strip()
+                        current_name = latest_name
+                        if canonical_name and initials:
+                            current_name = self._locked_name_for(source_dir / canonical_name, initials).name
+                        entry["current_name"] = current_name
+                        entry["canonical_name"] = canonical_name or current_name
+                        entry["status"] = "checked_out"
+                        entry["checked_out_by"] = initials
+                        entry["checked_out_at"] = str(latest_row.get("timestamp", "")).strip()
+                    else:
+                        entry["current_name"] = latest_name or str(entry.get("current_name", "")).strip()
+                        entry["canonical_name"] = latest_name or str(entry.get("canonical_name", "")).strip()
+                        entry["status"] = "active"
+                        if latest_action.startswith("CHECK_IN"):
+                            entry["checked_out_by"] = ""
+                            entry["checked_out_at"] = ""
+                current_name = str(entry.get("current_name", "")).strip()
+                if current_name and current_name in current_names:
+                    active_by_name[current_name] = str(entry["file_id"])
+                files[str(entry["file_id"])] = entry
+                if entry != original_entry:
+                    changed = True
+
+            preferred_by_current_name: Dict[str, str] = {}
+            for file_id, raw_entry in list(files.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                current_name = str(raw_entry.get("current_name", "")).strip()
+                if not current_name:
+                    continue
+                preferred = preferred_by_current_name.get(current_name, "")
+                if not preferred:
+                    preferred_by_current_name[current_name] = str(file_id)
+                    continue
+                preferred_has_history = preferred in latest_by_id
+                candidate_has_history = str(file_id) in latest_by_id
+                if candidate_has_history and not preferred_has_history:
+                    preferred_by_current_name[current_name] = str(file_id)
+
+            for file_id, raw_entry in list(files.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                current_name = str(raw_entry.get("current_name", "")).strip()
+                if not current_name:
+                    continue
+                preferred = preferred_by_current_name.get(current_name, "")
+                if preferred and preferred != str(file_id):
+                    entry = self._normalize_source_index_entry(source_dir, raw_entry)
+                    entry["current_name"] = ""
+                    entry["status"] = "deleted"
+                    files[str(file_id)] = entry
+                    changed = True
+
+            active_by_name = {}
+            for file_id, raw_entry in list(files.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                current_name = str(raw_entry.get("current_name", "")).strip()
+                if current_name and current_name in current_names:
+                    active_by_name[current_name] = str(file_id)
+
+            deleted_groups: Dict[str, List[str]] = {}
+            for file_id, raw_entry in list(files.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                if str(raw_entry.get("status", "")).strip() != "deleted":
+                    continue
+                canonical_name = str(raw_entry.get("canonical_name", "")).strip()
+                if not canonical_name:
+                    continue
+                deleted_groups.setdefault(canonical_name, []).append(str(file_id))
+
+            for canonical_name, group in deleted_groups.items():
+                if len(group) <= 1:
+                    continue
+                preferred_deleted = ""
+                for candidate in group:
+                    if candidate in latest_by_id:
+                        preferred_deleted = candidate
+                        break
+                if not preferred_deleted:
+                    preferred_deleted = group[0]
+                for candidate in group:
+                    if candidate == preferred_deleted:
+                        continue
+                    files.pop(candidate, None)
+                    changed = True
+
+            active_by_canonical_name: Dict[str, str] = {}
+            for file_id, raw_entry in list(files.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                if str(raw_entry.get("status", "")).strip() == "deleted":
+                    continue
+                canonical_name = str(raw_entry.get("canonical_name", "")).strip()
+                if canonical_name:
+                    active_by_canonical_name[canonical_name] = str(file_id)
+
+            for file_id, raw_entry in list(files.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                if str(raw_entry.get("status", "")).strip() != "deleted":
+                    continue
+                canonical_name = str(raw_entry.get("canonical_name", "")).strip()
+                if not canonical_name or canonical_name not in active_by_canonical_name:
+                    continue
+                if str(file_id) in latest_by_id:
+                    continue
+                files.pop(str(file_id), None)
+                changed = True
+
+            for file_id, raw_entry in list(files.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                entry = self._normalize_source_index_entry(source_dir, raw_entry)
+                names_to_check = [
+                    str(entry.get("current_name", "")).strip(),
+                    str(entry.get("canonical_name", "")).strip(),
+                ]
+                names_to_check.extend(
+                    str(name).strip()
+                    for name in entry.get("known_names", [])
+                    if str(name).strip()
+                )
+                if not names_to_check:
+                    continue
+                if any(self._is_source_file_name_candidate(name) for name in names_to_check):
+                    continue
+                files.pop(str(file_id), None)
+                changed = True
+
+            for current_name in sorted(current_names, key=str.lower):
+                if current_name in active_by_name:
+                    continue
+                latest_row = latest_by_name.get(current_name)
+                canonical_name = current_name
+                status = "active"
+                checked_out_by = ""
+                checked_out_at = ""
+                if current_name in locked_aliases:
+                    canonical_name, latest_row = locked_aliases[current_name]
+                    status = "checked_out"
+                    checked_out_by = str(latest_row.get("user_initials", "")).strip()
+                    checked_out_at = str(latest_row.get("timestamp", "")).strip()
+                elif latest_row and str(latest_row.get("action", "")).strip() == "CHECK_OUT":
+                    canonical_name = current_name
+                    status = "checked_out"
+                    checked_out_by = str(latest_row.get("user_initials", "")).strip()
+                    checked_out_at = str(latest_row.get("timestamp", "")).strip()
+
+                file_id = self._new_file_id(existing_ids)
+                existing_ids.add(file_id)
+                entry = self._normalize_source_index_entry(
+                    source_dir,
+                    {
+                        "file_id": file_id,
+                        "current_name": current_name,
+                        "canonical_name": canonical_name,
+                        "status": status,
+                        "known_names": [current_name, canonical_name],
+                        "legacy_bound_names": [],
+                        "checked_out_by": checked_out_by,
+                        "checked_out_at": checked_out_at,
+                        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    },
+                )
+                files[file_id] = entry
+                active_by_name[current_name] = file_id
+                changed = True
+
+                latest_row = latest_by_name.get(canonical_name)
+                latest_action = str(latest_row.get("action", "")).strip() if latest_row else ""
+                if latest_row and latest_action not in {"DELETE_FILE"}:
+                    if not str(latest_row.get("file_id", "")).strip():
+                        bound_names = [
+                            str(name).strip()
+                            for name in entry.get("legacy_bound_names", [])
+                            if str(name).strip()
+                        ]
+                        if canonical_name not in bound_names:
+                            bound_names.append(canonical_name)
+                            entry["legacy_bound_names"] = bound_names
+                            files[file_id] = entry
+                            changed = True
+                        latest_by_name = self._latest_history_by_name_raw(source_dir)
+
+            for file_id, raw_entry in list(files.items()):
+                if not isinstance(raw_entry, dict):
+                    continue
+                entry = self._normalize_source_index_entry(source_dir, raw_entry)
+                current_name = str(entry.get("current_name", "")).strip()
+                if current_name and current_name not in current_names and str(entry.get("status", "")) != "deleted":
+                    entry["current_name"] = ""
+                    entry["status"] = "deleted"
+                    files[file_id] = entry
+                    changed = True
+
+            rename_names_backfilled = self._backfill_rename_previous_names_unambiguous(source_dir)
+            history_backfilled = self._backfill_history_file_ids_unambiguous(source_dir, index)
+            notes_backfilled = self._backfill_note_file_ids_unambiguous(source_dir, index)
+            if rename_names_backfilled or history_backfilled or notes_backfilled:
+                changed = True
+
+            if changed:
+                self._save_source_index(source_dir, index)
+            return index
+
+        def _source_index_entry_for_file_id(
+            self, source_dir: Path, file_id: str
+        ) -> Optional[Dict[str, object]]:
+            file_id = file_id.strip()
+            if not file_id:
+                return None
+            index = self._ensure_source_index(source_dir)
+            files = index.get("files", {})
+            if not isinstance(files, dict):
+                return None
+            entry = files.get(file_id)
+            if isinstance(entry, dict):
+                return entry
+            return None
+
+        def _source_index_entry_for_current_name(
+            self, source_dir: Path, current_name: str
+        ) -> Optional[Dict[str, object]]:
+            index = self._ensure_source_index(source_dir)
+            files = index.get("files", {})
+            if not isinstance(files, dict):
+                return None
+            normalized_name = current_name.strip()
+            for entry in files.values():
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("current_name", "")).strip() == normalized_name:
+                    return entry
+            return None
+
         def _history_json_file(self, source_dir: Path) -> Path:
             return source_dir / app_module.HISTORY_FILE_NAME
 
@@ -50,9 +431,11 @@ class RecordsMixin:
             return source_dir / app_module.LEGACY_HISTORY_FILE_NAME
 
         def _normalize_history_row(self, row: Dict[str, str]) -> Dict[str, str]:
+            file_id = str(row.get("file_id", "")).strip()
             revision_id = str(row.get("revision_id", "")).strip()
             initials = str(row.get("user_initials", "")).strip()
             full_name = str(row.get("user_full_name", "")).strip()
+            previous_file_name = str(row.get("previous_file_name", "")).strip()
             extras = row.get("__extras__", "")
             if not revision_id and extras:
                 # Legacy CSV rows can become shifted when revision_id was written against old headers.
@@ -63,6 +446,8 @@ class RecordsMixin:
                 "timestamp": str(row.get("timestamp", "")).strip(),
                 "action": str(row.get("action", "")).strip(),
                 "file_name": str(row.get("file_name", "")).strip(),
+                "previous_file_name": previous_file_name,
+                "file_id": file_id,
                 "revision_id": revision_id,
                 "user_initials": initials,
                 "user_full_name": full_name,
@@ -79,7 +464,13 @@ class RecordsMixin:
             history_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
         def _append_history(
-            self, source_dir: Path, action: str, file_name: str, revision_id: str = ""
+            self,
+            source_dir: Path,
+            action: str,
+            file_name: str,
+            revision_id: str = "",
+            file_id: str = "",
+            previous_file_name: str = "",
         ) -> None:
             rows = self._read_history_rows(source_dir)
             rows.append(
@@ -87,6 +478,8 @@ class RecordsMixin:
                     "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
                     "action": action,
                     "file_name": file_name,
+                    "previous_file_name": previous_file_name,
+                    "file_id": file_id,
                     "revision_id": revision_id,
                     "user_initials": self._normalize_initials(),
                     "user_full_name": self._current_full_name(),
@@ -94,6 +487,144 @@ class RecordsMixin:
             )
             self._write_history_rows_json(source_dir, rows)
             self._invalidate_directory_caches(source_dir)
+
+        def _bind_history_name_to_file_id(self, source_dir: Path, file_name: str, file_id: str) -> None:
+            rows = self._read_history_rows(source_dir)
+            updated = False
+            for row in rows:
+                if (
+                    str(row.get("file_name", "")).strip() == file_name
+                    and not str(row.get("file_id", "")).strip()
+                ):
+                    row["file_id"] = file_id
+                    updated = True
+            if updated:
+                self._write_history_rows_json(source_dir, rows)
+                self._invalidate_directory_caches(source_dir)
+
+        def _candidate_file_ids_for_name(
+            self,
+            source_dir: Path,
+            file_name: str,
+            index: Optional[Dict[str, object]] = None,
+        ) -> List[str]:
+            normalized_name = file_name.strip()
+            if not normalized_name:
+                return []
+            index = index or self._ensure_source_index(source_dir)
+            files = index.get("files", {})
+            if not isinstance(files, dict):
+                return []
+
+            def unique(values: List[str]) -> List[str]:
+                seen: set[str] = set()
+                ordered: List[str] = []
+                for value in values:
+                    if not value or value in seen:
+                        continue
+                    seen.add(value)
+                    ordered.append(value)
+                return ordered
+
+            rows = self._read_history_rows(source_dir)
+            history_same_name = unique(
+                [
+                    str(row.get("file_id", "")).strip()
+                    for row in rows
+                    if str(row.get("file_name", "")).strip() == normalized_name
+                    and str(row.get("file_id", "")).strip()
+                ]
+            )
+            history_previous_name = unique(
+                [
+                    str(row.get("file_id", "")).strip()
+                    for row in rows
+                    if str(row.get("previous_file_name", "")).strip() == normalized_name
+                    and str(row.get("file_id", "")).strip()
+                ]
+            )
+            current_matches = unique(
+                [
+                    str(file_id).strip()
+                    for file_id, entry in files.items()
+                    if isinstance(entry, dict)
+                    and str(entry.get("current_name", "")).strip() == normalized_name
+                ]
+            )
+            canonical_matches = unique(
+                [
+                    str(file_id).strip()
+                    for file_id, entry in files.items()
+                    if isinstance(entry, dict)
+                    and str(entry.get("canonical_name", "")).strip() == normalized_name
+                ]
+            )
+            legacy_matches = unique(
+                [
+                    str(file_id).strip()
+                    for file_id, entry in files.items()
+                    if isinstance(entry, dict)
+                    and normalized_name in [
+                        str(name).strip()
+                        for name in entry.get("legacy_bound_names", [])
+                        if str(name).strip()
+                    ]
+                ]
+            )
+            known_matches = unique(
+                [
+                    str(file_id).strip()
+                    for file_id, entry in files.items()
+                    if isinstance(entry, dict)
+                    and normalized_name in [
+                        str(name).strip()
+                        for name in entry.get("known_names", [])
+                        if str(name).strip()
+                    ]
+                ]
+            )
+
+            for group in (
+                history_same_name,
+                history_previous_name,
+                current_matches,
+                canonical_matches,
+                legacy_matches,
+                known_matches,
+            ):
+                if len(group) == 1:
+                    return group
+
+            combined = unique(
+                history_same_name
+                + history_previous_name
+                + current_matches
+                + canonical_matches
+                + legacy_matches
+                + known_matches
+            )
+            if len(combined) == 1:
+                return combined
+            return []
+
+        def _resolve_history_row_file_id(
+            self, source_dir: Path, row: Dict[str, str], index: Optional[Dict[str, object]] = None
+        ) -> str:
+            file_id = str(row.get("file_id", "")).strip()
+            if file_id:
+                return file_id
+            file_name = str(row.get("file_name", "")).strip()
+            if not file_name:
+                return ""
+            candidates = self._candidate_file_ids_for_name(source_dir, file_name, index)
+            if len(candidates) == 1:
+                return candidates[0]
+            previous_file_name = str(row.get("previous_file_name", "")).strip()
+            if previous_file_name:
+                candidates = self._candidate_file_ids_for_name(source_dir, previous_file_name, index)
+                if len(candidates) == 1:
+                    return candidates[0]
+            return ""
 
         def _read_history_rows(self, source_dir: Path) -> List[Dict[str, str]]:
             cache_key = str(source_dir)
@@ -150,20 +681,40 @@ class RecordsMixin:
                     latest_by_file[file_name] = row
             return latest_by_file
 
+        def _latest_history_by_file_id(self, source_dir: Path) -> Dict[str, Dict[str, str]]:
+            latest_by_id: Dict[str, Dict[str, str]] = {}
+            for row in self._read_history_rows(source_dir):
+                file_id = str(row.get("file_id", "")).strip()
+                if file_id:
+                    latest_by_id[file_id] = row
+            return latest_by_id
+
         def _history_lookup_for_directory(self, source_dir: Path) -> Dict[str, Dict[str, str]]:
             lookup: Dict[str, Dict[str, str]] = {}
-            for original_name, row in self._latest_history_by_file(source_dir).items():
-                mapped_row = dict(row)
-                mapped_row["original_file_name"] = original_name
-                lookup[original_name] = mapped_row
-
-                if row.get("action") == "CHECK_OUT":
-                    initials = row.get("user_initials", "")
-                    if initials:
-                        original_path = source_dir / original_name
-                        locked_name = self._locked_name_for(original_path, initials).name
-                        lookup[locked_name] = mapped_row
-
+            index = self._ensure_source_index(source_dir)
+            files = index.get("files", {})
+            latest_by_id: Dict[str, Dict[str, str]] = {}
+            for row in self._read_history_rows(source_dir):
+                file_id = self._resolve_history_row_file_id(source_dir, row, index)
+                if file_id:
+                    latest_by_id[file_id] = row
+            if not isinstance(files, dict):
+                return lookup
+            for file_id, entry in files.items():
+                if not isinstance(entry, dict):
+                    continue
+                current_name = str(entry.get("current_name", "")).strip()
+                if not current_name:
+                    continue
+                latest_row = latest_by_id.get(str(file_id))
+                if not isinstance(latest_row, dict) or not str(latest_row.get("action", "")).strip():
+                    continue
+                mapped_row = dict(latest_row)
+                mapped_row["file_id"] = str(file_id)
+                mapped_row["original_file_name"] = str(
+                    entry.get("canonical_name", current_name) or current_name
+                )
+                lookup[current_name] = mapped_row
             return lookup
 
         def _format_history_timestamp(self, raw_timestamp: str) -> str:
@@ -183,19 +734,39 @@ class RecordsMixin:
             meridiem = "AM" if dt.hour < 12 else "PM"
             return f"{dt.strftime('%A, %B')} {day}{suffix}, {dt.year} @ {hour}:{minute} {meridiem}"
 
-        def _history_rows_for_file(self, source_dir: Path, file_name: str) -> List[List[str]]:
+        def _history_rows_for_file_id(self, source_dir: Path, file_id: str) -> List[List[str]]:
+            rows: List[List[str]] = []
+            index = self._ensure_source_index(source_dir)
+            for row in self._read_history_rows(source_dir):
+                resolved_file_id = self._resolve_history_row_file_id(source_dir, row, index)
+                if resolved_file_id != file_id:
+                    continue
+                rows.append(
+                    [
+                        self._format_history_timestamp(row.get("timestamp", "")),
+                        row.get("action", ""),
+                        row.get("revision_id", ""),
+                        row.get("user_initials", ""),
+                        row.get("user_full_name", ""),
+                    ]
+                )
+            rows.reverse()
+            return rows
+
+        def _history_rows_for_file_name_legacy(self, source_dir: Path, file_name: str) -> List[List[str]]:
             rows: List[List[str]] = []
             for row in self._read_history_rows(source_dir):
-                if row.get("file_name") == file_name:
-                    rows.append(
-                        [
-                            self._format_history_timestamp(row.get("timestamp", "")),
-                            row.get("action", ""),
-                            row.get("revision_id", ""),
-                            row.get("user_initials", ""),
-                            row.get("user_full_name", ""),
-                        ]
-                    )
+                if str(row.get("file_name", "")).strip() != file_name:
+                    continue
+                rows.append(
+                    [
+                        self._format_history_timestamp(row.get("timestamp", "")),
+                        row.get("action", ""),
+                        row.get("revision_id", ""),
+                        row.get("user_initials", ""),
+                        row.get("user_full_name", ""),
+                    ]
+                )
             rows.reverse()
             return rows
 
@@ -223,6 +794,7 @@ class RecordsMixin:
                 notes.append(
                     {
                         "id": str(entry.get("id", "")).strip() or str(uuid4()),
+                        "file_id": str(entry.get("file_id", "")).strip(),
                         "file_name": str(entry.get("file_name", "")).strip(),
                         "parent_id": parent_id,
                         "subject": str(entry.get("subject", "")).strip(),
@@ -247,6 +819,113 @@ class RecordsMixin:
             tmp_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             os.replace(tmp_file, notes_file)
 
+        def _rename_directory_note_entries(self, source_dir: Path, old_name: str, new_name: str) -> None:
+            notes = self._read_directory_notes(source_dir)
+            updated = False
+            for note in notes:
+                if str(note.get("file_name", "")).strip() == old_name:
+                    note["file_name"] = new_name
+                    updated = True
+            if updated:
+                self._write_directory_notes(source_dir, notes)
+
+        def _remove_directory_note_entries(self, source_dir: Path, file_names: List[str]) -> None:
+            names = {name.strip() for name in file_names if name.strip()}
+            if not names:
+                return
+            notes = self._read_directory_notes(source_dir)
+            filtered = [note for note in notes if str(note.get("file_name", "")).strip() not in names]
+            if len(filtered) != len(notes):
+                self._write_directory_notes(source_dir, filtered)
+
+        def _bind_notes_name_to_file_id(self, source_dir: Path, file_name: str, file_id: str) -> None:
+            notes = self._read_directory_notes(source_dir)
+            updated = False
+            for note in notes:
+                if (
+                    str(note.get("file_name", "")).strip() == file_name
+                    and not str(note.get("file_id", "")).strip()
+                ):
+                    note["file_id"] = file_id
+                    updated = True
+            if updated:
+                self._write_directory_notes(source_dir, notes)
+
+        def _backfill_history_file_ids_unambiguous(
+            self, source_dir: Path, index: Optional[Dict[str, object]] = None
+        ) -> bool:
+            rows = self._read_history_rows(source_dir)
+            updated = False
+            for row in rows:
+                if str(row.get("file_id", "")).strip():
+                    continue
+                resolved_file_id = self._resolve_history_row_file_id(source_dir, row, index)
+                if not resolved_file_id:
+                    continue
+                row["file_id"] = resolved_file_id
+                updated = True
+            if updated:
+                self._write_history_rows_json(source_dir, rows)
+                self._invalidate_directory_caches(source_dir)
+            return updated
+
+        def _backfill_rename_previous_names_unambiguous(self, source_dir: Path) -> bool:
+            rows = self._read_history_rows(source_dir)
+            last_name_by_file_id: Dict[str, str] = {}
+            updated = False
+            for row in rows:
+                file_id = str(row.get("file_id", "")).strip()
+                file_name = str(row.get("file_name", "")).strip()
+                if not file_id or not file_name:
+                    continue
+                action = str(row.get("action", "")).strip()
+                if action == "RENAME" and not str(row.get("previous_file_name", "")).strip():
+                    previous_name = last_name_by_file_id.get(file_id, "").strip()
+                    if previous_name and previous_name != file_name:
+                        row["previous_file_name"] = previous_name
+                        updated = True
+                last_name_by_file_id[file_id] = file_name
+            if updated:
+                self._write_history_rows_json(source_dir, rows)
+                self._invalidate_directory_caches(source_dir)
+            return updated
+
+        def _backfill_note_file_ids_unambiguous(
+            self, source_dir: Path, index: Optional[Dict[str, object]] = None
+        ) -> bool:
+            notes = self._read_directory_notes(source_dir)
+            if not notes:
+                return False
+            index = index or self._ensure_source_index(source_dir)
+            files = index.get("files", {})
+            valid_file_ids = set(files.keys()) if isinstance(files, dict) else set()
+            updated = False
+            for note in notes:
+                current_file_id = str(note.get("file_id", "")).strip()
+                file_name = str(note.get("file_name", "")).strip()
+                if current_file_id and current_file_id in valid_file_ids:
+                    continue
+                candidates = self._candidate_file_ids_for_name(source_dir, file_name, index)
+                if len(candidates) != 1:
+                    continue
+                resolved_file_id = candidates[0]
+                if current_file_id != resolved_file_id:
+                    note["file_id"] = resolved_file_id
+                    updated = True
+            if updated:
+                self._write_directory_notes(source_dir, notes)
+            return updated
+
+        def _sync_note_file_name(self, source_dir: Path, file_id: str, file_name: str) -> None:
+            notes = self._read_directory_notes(source_dir)
+            updated = False
+            for note in notes:
+                if str(note.get("file_id", "")).strip() == file_id and str(note.get("file_name", "")).strip() != file_name:
+                    note["file_name"] = file_name
+                    updated = True
+            if updated:
+                self._write_directory_notes(source_dir, notes)
+
         def _note_preview(self, body: str, limit: int = 80) -> str:
             collapsed = " ".join(body.split())
             if len(collapsed) <= limit:
@@ -259,18 +938,44 @@ class RecordsMixin:
                 return
             notes = self._read_directory_notes(self.current_directory)
             by_file: Dict[str, List[Dict[str, str]]] = {}
+            index = self._ensure_source_index(self.current_directory)
+            notes_changed = False
             for note in notes:
-                file_name = note.get("file_name", "").strip()
-                if not file_name:
+                file_id = str(note.get("file_id", "")).strip()
+                if not file_id:
+                    file_id = self._resolve_history_row_file_id(
+                        self.current_directory,
+                        {"file_name": str(note.get("file_name", "")).strip(), "file_id": ""},
+                        index,
+                    )
+                    if file_id:
+                        note["file_id"] = file_id
+                        notes_changed = True
+                if not file_id:
                     continue
-                by_file.setdefault(file_name, []).append(note)
-            for file_name in sorted(by_file.keys(), key=str.lower):
-                file_notes = by_file[file_name]
+                by_file.setdefault(file_id, []).append(note)
+            if notes_changed:
+                self._write_directory_notes(self.current_directory, notes)
+            for file_id in sorted(
+                by_file.keys(),
+                key=lambda current_file_id: str(
+                    (
+                        self._source_index_entry_for_file_id(self.current_directory, current_file_id) or {}
+                    ).get("canonical_name", current_file_id)
+                ).lower(),
+            ):
+                file_notes = by_file[file_id]
                 latest = max(file_notes, key=lambda item: item.get("updated_at", ""))
+                entry = self._source_index_entry_for_file_id(self.current_directory, file_id)
+                file_name = ""
+                if entry:
+                    file_name = str(entry.get("canonical_name", "")).strip()
+                if not file_name:
+                    file_name = str(latest.get("file_name", "")).strip()
                 row_idx = self.directory_notes_table.rowCount()
                 self.directory_notes_table.insertRow(row_idx)
                 file_item = QTableWidgetItem(file_name)
-                file_item.setData(Qt.UserRole, file_name)
+                file_item.setData(Qt.UserRole, file_id)
                 count_item = QTableWidgetItem(str(len(file_notes)))
                 updated_item = QTableWidgetItem(
                     self._format_checkout_timestamp(str(latest.get("updated_at", "")))
@@ -285,10 +990,13 @@ class RecordsMixin:
         def _open_notes_for_selected_source_file(self) -> None:
             selected = self.files_list.selectedItems()
             if selected:
-                original_name = str(selected[0].data(Qt.UserRole + 1) or "").strip()
-                if not original_name:
-                    original_name = Path(str(selected[0].data(Qt.UserRole))).name
-                self._open_file_notes_window(original_name)
+                file_id = str(selected[0].data(Qt.UserRole + 2) or "").strip()
+                if not file_id:
+                    path = Path(str(selected[0].data(Qt.UserRole)))
+                    entry = self._source_index_entry_for_current_name(path.parent, path.name)
+                    if entry:
+                        file_id = str(entry.get("file_id", "")).strip()
+                self._open_file_notes_window(file_id)
                 return
             controlled_rows = self.controlled_files_table.selectionModel().selectedRows()
             if controlled_rows:
@@ -296,28 +1004,15 @@ class RecordsMixin:
                 if item:
                     entry = item.data(Qt.UserRole)
                     if isinstance(entry, dict):
-                        self._open_file_notes_window(str(entry.get("file_name", item.text())))
+                        self._open_file_notes_window(str(entry.get("file_id", "")))
                         return
             rows = self.directory_notes_table.selectionModel().selectedRows()
             if rows:
                 item = self.directory_notes_table.item(rows[0].row(), 0)
                 if item:
-                    file_name = str(item.data(Qt.UserRole) or item.text())
-                    self._open_file_notes_window(file_name)
+                    self._open_file_notes_window(str(item.data(Qt.UserRole) or ""))
                     return
             self._error("Select a file first.")
-
-        def _canonical_note_file_name(self, file_name: str, source_dir: Path) -> str:
-            normalized = file_name.strip()
-            if not normalized:
-                return normalized
-            lookup = self._history_lookup_for_directory(source_dir)
-            row = lookup.get(normalized)
-            if row:
-                original = str(row.get("original_file_name", "")).strip()
-                if original:
-                    return original
-            return normalized
 
         def _show_directory_notes_context_menu(self, pos: QPoint) -> None:
             row = self.directory_notes_table.rowAt(pos.y())
@@ -333,13 +1028,35 @@ class RecordsMixin:
             elif chosen == refresh_action:
                 self._refresh_directory_notes_summary()
 
-        def _open_file_notes_window(self, file_name: str) -> None:
+        def _open_file_notes_window(self, file_id: str) -> None:
             current_directory = self._validate_current_directory()
             if not current_directory:
                 return
-            file_name = self._canonical_note_file_name(file_name, current_directory)
+            file_id = file_id.strip()
+            if not file_id:
+                self._error("Select a file first.")
+                return
+            entry = self._source_index_entry_for_file_id(current_directory, file_id)
+            file_name = (
+                str(entry.get("canonical_name", "")).strip()
+                if entry
+                else ""
+            ) or file_id
             notes = self._read_directory_notes(current_directory)
-            file_notes = [note for note in notes if note.get("file_name", "") == file_name]
+            notes_changed = False
+            for note in notes:
+                if str(note.get("file_id", "")).strip():
+                    continue
+                resolved_file_id = self._resolve_history_row_file_id(
+                    current_directory,
+                    {"file_name": str(note.get("file_name", "")).strip(), "file_id": ""},
+                )
+                if resolved_file_id:
+                    note["file_id"] = resolved_file_id
+                    notes_changed = True
+            if notes_changed:
+                self._write_directory_notes(current_directory, notes)
+            file_notes = [note for note in notes if str(note.get("file_id", "")).strip() == file_id]
 
             dialog = QDialog(self)
             dialog.setWindowTitle(f"File Notes - {file_name}")
@@ -417,6 +1134,7 @@ class RecordsMixin:
                 timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
                 return {
                     "id": existing.get("id", "") if existing else str(uuid4()),
+                    "file_id": file_id,
                     "file_name": file_name,
                     "parent_id": existing.get("parent_id", "") if existing else "",
                     "subject": subject,
@@ -443,7 +1161,7 @@ class RecordsMixin:
                     return
                 created["parent_id"] = str(parent_id).strip()
                 file_notes.append(created)
-                all_notes = [note for note in notes if note.get("file_name", "") != file_name] + file_notes
+                all_notes = [note for note in notes if str(note.get("file_id", "")).strip() != file_id] + file_notes
                 self._write_directory_notes(current_directory, all_notes)
                 refresh_tree()
                 self._refresh_directory_notes_summary()
@@ -461,7 +1179,7 @@ class RecordsMixin:
                         updated["parent_id"] = note.get("parent_id", "")
                         file_notes[idx] = updated
                         break
-                all_notes = [note for note in notes if note.get("file_name", "") != file_name] + file_notes
+                all_notes = [note for note in notes if str(note.get("file_id", "")).strip() != file_id] + file_notes
                 self._write_directory_notes(current_directory, all_notes)
                 refresh_tree()
                 self._refresh_directory_notes_summary()
@@ -483,7 +1201,7 @@ class RecordsMixin:
                 remaining = [note for note in file_notes if note.get("id", "") not in to_remove]
                 file_notes.clear()
                 file_notes.extend(remaining)
-                all_notes = [note for note in notes if note.get("file_name", "") != file_name] + file_notes
+                all_notes = [note for note in notes if str(note.get("file_id", "")).strip() != file_id] + file_notes
                 self._write_directory_notes(current_directory, all_notes)
                 refresh_tree()
                 self._refresh_directory_notes_summary()
@@ -554,7 +1272,9 @@ class RecordsMixin:
             if not latest_row:
                 return
 
-            action = latest_row.get("action", "")
+            action = str(latest_row.get("action", "")).strip()
+            if not action:
+                return
             initials = latest_row.get("user_initials", "")
             full_name = latest_row.get("user_full_name", "")
             tooltip_lines = [str(source_file)]
@@ -574,24 +1294,30 @@ class RecordsMixin:
             item.setToolTip("\n".join(tooltip_lines))
 
         def _checked_out_files_for_directory(self, source_dir: Path) -> List[Dict[str, str]]:
-            latest_by_file = self._latest_history_by_file(source_dir)
             active_entries: List[Dict[str, str]] = []
-            for file_name, row in latest_by_file.items():
-                if row.get("action") != "CHECK_OUT":
+            index = self._ensure_source_index(source_dir)
+            files = index.get("files", {})
+            latest_by_id = self._latest_history_by_file_id(source_dir)
+            if not isinstance(files, dict):
+                return active_entries
+            for file_id, entry in files.items():
+                if not isinstance(entry, dict):
                     continue
-
-                initials = row.get("user_initials", "")
-                source_file = source_dir / file_name
-                locked_source_file = (
-                    self._locked_name_for(source_file, initials) if initials else source_file
-                )
+                if str(entry.get("status", "")).strip() != "checked_out":
+                    continue
+                file_name = str(entry.get("canonical_name", "")).strip()
+                locked_name = str(entry.get("current_name", "")).strip()
+                if not file_name or not locked_name:
+                    continue
+                latest_row = latest_by_id.get(str(file_id), {})
                 active_entries.append(
                     {
                         "file_name": file_name,
-                        "initials": initials,
-                        "full_name": row.get("user_full_name", ""),
-                        "locked_source_file": str(locked_source_file),
-                        "checked_out_at": row.get("timestamp", ""),
+                        "file_id": str(file_id),
+                        "initials": str(entry.get("checked_out_by", "")).strip(),
+                        "full_name": str(latest_row.get("user_full_name", "")).strip(),
+                        "locked_source_file": str(source_dir / locked_name),
+                        "checked_out_at": str(entry.get("checked_out_at", "")).strip(),
                     }
                 )
 
@@ -631,6 +1357,14 @@ class RecordsMixin:
                     history_lookup = self._history_lookup_for_directory(current_directory)
                     for source_file in selected_files:
                         latest_row = history_lookup.get(source_file.name)
+                        file_entry = self._source_index_entry_for_current_name(
+                            current_directory, source_file.name
+                        )
+                        file_id = (
+                            str(file_entry.get("file_id", "")).strip()
+                            if file_entry
+                            else ""
+                        )
                         if latest_row and latest_row.get("action") == "CHECK_OUT":
                             original_name = latest_row.get("original_file_name", source_file.name)
                             checked_out_by = latest_row.get("user_initials", "")
@@ -668,6 +1402,7 @@ class RecordsMixin:
                                 project_dir=str(project_dir),
                                 source_root=str(source_root),
                                 checked_out_at=checked_out_at,
+                                file_id=file_id,
                             )
                             self.records.append(new_record)
                             self._create_revision_snapshot_for_record(
@@ -675,7 +1410,34 @@ class RecordsMixin:
                                 note="Baseline snapshot captured at checkout.",
                                 origin="checkout_baseline",
                             )
-                            self._append_history(source_file.parent, "CHECK_OUT", source_file.name)
+                            index = self._ensure_source_index(source_file.parent)
+                            files = index.get("files", {})
+                            if isinstance(files, dict) and file_id and isinstance(files.get(file_id), dict):
+                                entry = dict(files[file_id])  # type: ignore[index]
+                                known_names = [
+                                    str(name).strip()
+                                    for name in entry.get("known_names", [])
+                                    if str(name).strip()
+                                ]
+                                for candidate in (source_file.name, locked_source_file.name):
+                                    if candidate not in known_names:
+                                        known_names.append(candidate)
+                                entry["file_id"] = file_id
+                                entry["current_name"] = locked_source_file.name
+                                entry["canonical_name"] = source_file.name
+                                entry["status"] = "checked_out"
+                                entry["checked_out_by"] = initials
+                                entry["checked_out_at"] = checked_out_at
+                                entry["known_names"] = known_names
+                                files[file_id] = entry
+                                self._save_source_index(source_file.parent, index)
+                            new_record.file_id = file_id
+                            self._append_history(
+                                source_file.parent,
+                                "CHECK_OUT",
+                                source_file.name,
+                                file_id=file_id,
+                            )
                             self._invalidate_directory_caches(source_file.parent)
                         except OSError as exc:
                             errors.append(f"{source_file.name}: {exc}")
@@ -714,9 +1476,14 @@ class RecordsMixin:
         def _file_versions_root(self, project_dir: Path) -> Path:
             return project_dir / app_module.FILE_VERSIONS_DIR
 
-        def _record_version_key(self, record: CheckoutRecord) -> str:
+        def _legacy_record_version_key(self, record: CheckoutRecord) -> str:
             key_source = "|".join([record.project_dir, record.source_file, record.locked_source_file])
             return hashlib.sha256(key_source.encode("utf-8")).hexdigest()[:16]
+
+        def _record_version_key(self, record: CheckoutRecord) -> str:
+            if record.file_id:
+                return record.file_id
+            return self._legacy_record_version_key(record)
 
         def _load_file_versions_registry(self, project_dir: Path) -> Dict[str, object]:
             registry_path = self._file_versions_registry_path(project_dir)
@@ -784,7 +1551,10 @@ class RecordsMixin:
             files = registry.get("files", {})
             if not isinstance(files, dict):
                 return []
-            file_entry = files.get(self._record_version_key(record), {})
+            key = self._record_version_key(record)
+            file_entry = files.get(key)
+            if file_entry is None and record.file_id:
+                file_entry = files.get(self._legacy_record_version_key(record), {})
             if not isinstance(file_entry, dict):
                 return []
             revisions = file_entry.get("revisions", [])
@@ -814,8 +1584,16 @@ class RecordsMixin:
 
             key = self._record_version_key(record)
             file_entry = files.get(key)
+            if not isinstance(file_entry, dict) and record.file_id:
+                legacy_key = self._legacy_record_version_key(record)
+                legacy_entry = files.get(legacy_key)
+                if isinstance(legacy_entry, dict):
+                    file_entry = dict(legacy_entry)
+                    files[key] = file_entry
+                    files.pop(legacy_key, None)
             if not isinstance(file_entry, dict):
                 file_entry = {
+                    "file_id": record.file_id,
                     "source_file": record.source_file,
                     "locked_source_file": record.locked_source_file,
                     "local_file": record.local_file,
@@ -964,11 +1742,15 @@ class RecordsMixin:
             source_dir = source_path.parent
             source_name = source_path.name
             indexed: Dict[str, Dict[str, str]] = {}
+            index = self._ensure_source_index(source_dir)
             for row in self._read_history_rows(source_dir):
                 revision_id = str(row.get("revision_id", "")).strip()
                 if not revision_id:
                     continue
-                if str(row.get("file_name", "")).strip() != source_name:
+                if record.file_id:
+                    if self._resolve_history_row_file_id(source_dir, row, index) != record.file_id:
+                        continue
+                elif str(row.get("file_name", "")).strip() != source_name:
                     continue
                 action = str(row.get("action", "")).strip()
                 if "CHECK_IN" not in action:
@@ -1073,9 +1855,12 @@ class RecordsMixin:
             ]
 
         def _record_index_for_controlled_file(self, entry: Dict[str, str]) -> int:
+            file_id = str(entry.get("file_id", "")).strip()
             file_name = str(entry.get("file_name", ""))
             locked_source_file = str(entry.get("locked_source_file", ""))
             for idx, record in enumerate(self.records):
+                if file_id and record.file_id == file_id:
+                    return idx
                 if Path(record.source_file).name == file_name and record.locked_source_file == locked_source_file:
                     return idx
                 if record.locked_source_file == locked_source_file:
@@ -1147,8 +1932,10 @@ class RecordsMixin:
                         continue
 
                     revision_id = ""
+                    file_id = ""
                     if action.record_idx >= 0 and 0 <= action.record_idx < len(self.records):
                         record = self.records[action.record_idx]
+                        file_id = record.file_id
                         checkin_revision = self._create_revision_snapshot_for_record(
                             record,
                             note=f"Check-in snapshot ({self._history_action_for_checkin(action, workflow)}).",
@@ -1163,7 +1950,29 @@ class RecordsMixin:
                         self._history_action_for_checkin(action, workflow),
                         source_file.name,
                         revision_id,
+                        file_id=file_id,
                     )
+                    if file_id:
+                        index = self._ensure_source_index(source_file.parent)
+                        files = index.get("files", {})
+                        if isinstance(files, dict) and isinstance(files.get(file_id), dict):
+                            entry = dict(files[file_id])  # type: ignore[index]
+                            known_names = [
+                                str(name).strip()
+                                for name in entry.get("known_names", [])
+                                if str(name).strip()
+                            ]
+                            if source_file.name not in known_names:
+                                known_names.append(source_file.name)
+                            entry["file_id"] = file_id
+                            entry["current_name"] = source_file.name
+                            entry["canonical_name"] = source_file.name
+                            entry["status"] = "active"
+                            entry["checked_out_by"] = ""
+                            entry["checked_out_at"] = ""
+                            entry["known_names"] = known_names
+                            files[file_id] = entry
+                            self._save_source_index(source_file.parent, index)
                     self._invalidate_directory_caches(source_file.parent)
                     if action.record_idx >= 0:
                         completed_indexes.append(action.record_idx)
@@ -1500,6 +2309,14 @@ class RecordsMixin:
                 return
             self._checkin_record_indexes(set(self._selected_record_indexes()))
 
+        def _selected_source_file_ids(self) -> set[str]:
+            file_ids: set[str] = set()
+            for item in self.files_list.selectedItems():
+                file_id = str(item.data(Qt.UserRole + 2) or "").strip()
+                if file_id:
+                    file_ids.add(file_id)
+            return file_ids
+
         def _checkin_selected_source_files_if_owned(self) -> None:
             if not self._validate_identity():
                 return
@@ -1509,11 +2326,15 @@ class RecordsMixin:
                 return
             initials = self._normalize_initials()
             selected_paths = {str(path) for path in selected_files}
+            selected_file_ids = self._selected_source_file_ids()
             selected_record_indexes: set[int] = set()
             for idx, record in enumerate(self.records):
                 if record.record_type != "checked_out":
                     continue
                 if record.initials != initials:
+                    continue
+                if record.file_id and record.file_id in selected_file_ids:
+                    selected_record_indexes.add(idx)
                     continue
                 if record.source_file in selected_paths or record.locked_source_file in selected_paths:
                     selected_record_indexes.add(idx)
@@ -1552,7 +2373,29 @@ class RecordsMixin:
 
                     try:
                         shutil.copy2(local_file, target_file)
-                        self._append_history(current_directory, "ADD_FILE", target_file.name)
+                        index = self._ensure_source_index(current_directory)
+                        files = index.get("files", {})
+                        file_id = ""
+                        if isinstance(files, dict):
+                            file_id = self._new_file_id({str(key).strip() for key in files.keys()})
+                            files[file_id] = self._normalize_source_index_entry(
+                                current_directory,
+                                {
+                                    "file_id": file_id,
+                                    "current_name": target_file.name,
+                                    "canonical_name": target_file.name,
+                                    "status": "active",
+                                    "known_names": [target_file.name],
+                                    "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                                },
+                            )
+                            self._save_source_index(current_directory, index)
+                        self._append_history(
+                            current_directory,
+                            "ADD_FILE",
+                            target_file.name,
+                            file_id=file_id,
+                        )
                         self._invalidate_directory_caches(current_directory)
                     except OSError as exc:
                         errors.append(f"{local_file.name}: {exc}")
@@ -1583,6 +2426,8 @@ class RecordsMixin:
             menu = QMenu(self)
             actions = [
                 ("Open Selected", "open"),
+                ("Rename Selected", "rename"),
+                ("Delete Selected", "delete"),
                 ("Check Out Selected", "checkout"),
                 ("Check In Selected (If Mine)", "checkin_mine"),
                 ("Copy As Reference", "reference"),
@@ -1603,6 +2448,12 @@ class RecordsMixin:
         def _handle_source_file_context_action(self, action_id: str) -> None:
             if action_id == "open":
                 self._open_selected_source_files()
+                return
+            if action_id == "rename":
+                self._rename_selected_source_file()
+                return
+            if action_id == "delete":
+                self._delete_selected_source_files()
                 return
             if action_id == "checkout":
                 self._checkout_selected()
@@ -1635,6 +2486,196 @@ class RecordsMixin:
                 self._error("Select at least one source file to open.")
                 return
             self._open_paths(selected_files)
+
+        def _rename_selected_source_file(self) -> None:
+            current_directory = self._validate_current_directory()
+            if not current_directory:
+                return
+
+            selected_items = self.files_list.selectedItems()
+            if len(selected_items) != 1:
+                self._error("Select exactly one source file to rename.")
+                return
+
+            selected_item = selected_items[0]
+            source_path = Path(str(selected_item.data(Qt.UserRole) or ""))
+            if not source_path.exists():
+                self._error("The selected source file no longer exists.")
+                self._refresh_source_files()
+                return
+
+            current_name = source_path.name
+            file_id = str(selected_item.data(Qt.UserRole + 2) or "").strip()
+            entry = self._source_index_entry_for_file_id(current_directory, file_id)
+            original_name = (
+                str(entry.get("canonical_name", "")).strip()
+                if entry
+                else str(selected_item.data(Qt.UserRole + 1) or current_name).strip()
+            ) or current_name
+            history_row = self._history_lookup_for_directory(current_directory).get(current_name)
+            if history_row and str(history_row.get("action", "")).strip() == "CHECK_OUT":
+                self._error("Checked-out files cannot be renamed in the current version.")
+                return
+
+            new_name, accepted = QInputDialog.getText(
+                self,
+                "Rename File",
+                "New file name:",
+                text=current_name,
+            )
+            if not accepted:
+                return
+
+            new_name = new_name.strip()
+            if not new_name:
+                self._error("File name is required.")
+                return
+            if new_name == current_name:
+                return
+            if Path(new_name).name != new_name or any(sep in new_name for sep in ("\\", "/")):
+                self._error("Enter a file name only, not a path.")
+                return
+
+            target_path = current_directory / new_name
+            if target_path.exists():
+                self._error(f"A file named '{new_name}' already exists in this folder.")
+                return
+
+            with self._busy_action("Renaming file..."):
+                try:
+                    source_path.rename(target_path)
+                    if entry and file_id:
+                        index = self._ensure_source_index(current_directory)
+                        files = index.get("files", {})
+                        if isinstance(files, dict) and isinstance(files.get(file_id), dict):
+                            updated_entry = dict(files[file_id])  # type: ignore[index]
+                            known_names = [
+                                str(name).strip()
+                                for name in updated_entry.get("known_names", [])
+                                if str(name).strip()
+                            ]
+                            for candidate in (current_name, original_name, new_name):
+                                if candidate and candidate not in known_names:
+                                    known_names.append(candidate)
+                            updated_entry["file_id"] = file_id
+                            updated_entry["current_name"] = new_name
+                            updated_entry["canonical_name"] = new_name
+                            updated_entry["known_names"] = known_names
+                            files[file_id] = updated_entry
+                            self._save_source_index(current_directory, index)
+                        self._sync_note_file_name(current_directory, file_id, new_name)
+                    self._append_history(
+                        current_directory,
+                        "RENAME",
+                        new_name,
+                        file_id=file_id,
+                        previous_file_name=original_name,
+                    )
+                    self._refresh_source_files()
+                except OSError as exc:
+                    self._error(f"Could not rename file:\n{exc}")
+                    return
+
+            self._info(f"Renamed '{current_name}' to '{new_name}'.")
+
+        def _delete_selected_source_files(self) -> None:
+            current_directory = self._validate_current_directory()
+            if not current_directory:
+                return
+
+            selected_files = self._selected_source_file_paths()
+            if not selected_files:
+                self._error("Select at least one source file to delete.")
+                return
+
+            history_lookup = self._history_lookup_for_directory(current_directory)
+            blocked: List[str] = []
+            deletions: List[tuple[Path, str, str]] = []
+            seen_paths: set[str] = set()
+            for item in self.files_list.selectedItems():
+                file_path = Path(str(item.data(Qt.UserRole) or ""))
+                if not str(file_path):
+                    continue
+                if str(file_path) in seen_paths:
+                    continue
+                seen_paths.add(str(file_path))
+                current_name = file_path.name
+                file_id = str(item.data(Qt.UserRole + 2) or "").strip()
+                entry = self._source_index_entry_for_file_id(current_directory, file_id)
+                original_name = (
+                    str(entry.get("canonical_name", "")).strip()
+                    if entry
+                    else str(item.data(Qt.UserRole + 1) or current_name).strip()
+                ) or current_name
+                history_row = history_lookup.get(current_name)
+                if history_row and str(history_row.get("action", "")).strip() == "CHECK_OUT":
+                    blocked.append(current_name)
+                    continue
+                deletions.append((file_path, original_name, file_id))
+
+            if blocked:
+                self._error(
+                    "Checked-out files cannot be deleted in the current version:\n"
+                    + "\n".join(sorted(blocked, key=str.lower))
+                )
+                return
+            if not deletions:
+                self._error("Select at least one source file to delete.")
+                return
+
+            confirm = QMessageBox.question(
+                self,
+                "Delete Source File(s)",
+                f"Delete {len(deletions)} selected source file(s)? This cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+
+            deleted_names: List[str] = []
+            errors: List[str] = []
+            with self._busy_action("Deleting source file(s)..."):
+                for file_path, original_name, file_id in deletions:
+                    try:
+                        if not file_path.exists():
+                            errors.append(f"Missing source file: {file_path.name}")
+                            continue
+                        file_path.unlink()
+                        deleted_names.append(original_name)
+                        if file_id:
+                            index = self._ensure_source_index(current_directory)
+                            files = index.get("files", {})
+                            if isinstance(files, dict) and isinstance(files.get(file_id), dict):
+                                updated_entry = dict(files[file_id])  # type: ignore[index]
+                                known_names = [
+                                    str(name).strip()
+                                    for name in updated_entry.get("known_names", [])
+                                    if str(name).strip()
+                                ]
+                                if original_name not in known_names:
+                                    known_names.append(original_name)
+                                updated_entry["file_id"] = file_id
+                                updated_entry["current_name"] = ""
+                                updated_entry["canonical_name"] = original_name
+                                updated_entry["status"] = "deleted"
+                                updated_entry["known_names"] = known_names
+                                files[file_id] = updated_entry
+                                self._save_source_index(current_directory, index)
+                        self._append_history(
+                            current_directory,
+                            "DELETE_FILE",
+                            original_name,
+                            file_id=file_id,
+                        )
+                    except OSError as exc:
+                        errors.append(f"{file_path.name}: {exc}")
+                self._refresh_source_files()
+
+            if errors:
+                self._error("Some files could not be deleted:\n" + "\n".join(errors))
+            elif deleted_names:
+                self._info(f"Deleted {len(deleted_names)} source file(s).")
 
         def _open_record_row(self, row: int, _column: int) -> None:
             table = self.sender()
@@ -2071,8 +3112,17 @@ class RecordsMixin:
                 return
 
             file_path = Path(selected_items[0].data(Qt.UserRole))
-            original_name = str(selected_items[0].data(Qt.UserRole + 1) or file_path.name)
-            rows = self._history_rows_for_file(file_path.parent, original_name)
+            file_id = str(selected_items[0].data(Qt.UserRole + 2) or "").strip()
+            entry = self._source_index_entry_for_file_id(file_path.parent, file_id)
+            original_name = (
+                str(entry.get("canonical_name", "")).strip()
+                if entry
+                else str(selected_items[0].data(Qt.UserRole + 1) or file_path.name)
+            ) or file_path.name
+            if file_id:
+                rows = self._history_rows_for_file_id(file_path.parent, file_id)
+            else:
+                rows = self._history_rows_for_file_name_legacy(file_path.parent, original_name)
 
             dialog = QDialog(self)
             dialog.setWindowTitle(f"Document History - {original_name}")
@@ -2247,19 +3297,28 @@ class RecordsMixin:
                     for entry in raw_records:
                         if not isinstance(entry, dict):
                             continue
-                        self.records.append(
-                            CheckoutRecord(
-                                source_file=str(entry.get("source_file", "")),
-                                locked_source_file=str(entry.get("locked_source_file", "")),
-                                local_file=str(entry.get("local_file", "")),
-                                initials=str(entry.get("initials", "")),
-                                project_name=str(entry.get("project_name", "")),
-                                project_dir=str(entry.get("project_dir", "")),
-                                source_root=str(entry.get("source_root", "")),
-                                checked_out_at=str(entry.get("checked_out_at", "")),
-                                record_type=str(entry.get("record_type", "checked_out") or "checked_out"),
-                            )
+                        record = CheckoutRecord(
+                            source_file=str(entry.get("source_file", "")),
+                            locked_source_file=str(entry.get("locked_source_file", "")),
+                            local_file=str(entry.get("local_file", "")),
+                            initials=str(entry.get("initials", "")),
+                            project_name=str(entry.get("project_name", "")),
+                            project_dir=str(entry.get("project_dir", "")),
+                            source_root=str(entry.get("source_root", "")),
+                            checked_out_at=str(entry.get("checked_out_at", "")),
+                            record_type=str(entry.get("record_type", "checked_out") or "checked_out"),
+                            file_id=str(entry.get("file_id", "")).strip(),
                         )
+                        if not record.file_id and record.source_file:
+                            source_path = Path(record.source_file)
+                            source_dir = source_path.parent
+                            current_name = source_path.name
+                            if record.record_type == "checked_out" and record.locked_source_file:
+                                current_name = Path(record.locked_source_file).name
+                            index_entry = self._source_index_entry_for_current_name(source_dir, current_name)
+                            if index_entry:
+                                record.file_id = str(index_entry.get("file_id", "")).strip()
+                        self.records.append(record)
                 except (OSError, ValueError, TypeError):
                     self.records = []
 

@@ -425,6 +425,8 @@ class UiMixin:
                     [
                         ("Refresh", self._refresh_source_files),
                         ("Open Selected", self._open_selected_source_files),
+                        ("Rename Selected", self._rename_selected_source_file),
+                        ("Delete Selected", self._delete_selected_source_files),
                         ("Check Out Selected", self._checkout_selected),
                         ("Check In Selected (If Mine)", self._checkin_selected_source_files_if_owned),
                         ("View History", self._show_selected_file_history),

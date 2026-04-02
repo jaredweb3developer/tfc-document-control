@@ -169,3 +169,74 @@ def test_revision_checkin_lookup_maps_checked_in_revisions(app_env):
     assert "R260306120000-ABCD" in indexed
     assert indexed["R260306120000-ABCD"]["action"] == "CHECK_IN_MODIFIED"
     assert "R999" not in indexed
+
+
+def test_rename_then_checkout_then_checkin_preserves_file_id_lineage(app_env):
+    # A file renamed before checkout should keep one file_id through checkout, revision, and check-in.
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    source_dir = tmp / "src-rename-checkin"
+    source_dir.mkdir(parents=True)
+    source_file = source_dir / "A.dwg"
+    source_file.write_text("SOURCE", encoding="utf-8")
+
+    project_dir = tmp / "Projects" / "RenameCheckin"
+    project_dir.mkdir(parents=True)
+    app.current_project_dir = str(project_dir)
+    app.current_directory = source_dir
+    app.initials_edit.setText("JWH")
+    app.full_name_edit.setText("Jared Hodgkins")
+    app._append_history(source_dir, "ADD_FILE", "A.dwg")
+    app._refresh_source_files()
+
+    index_before = app._ensure_source_index(source_dir)
+    files_before = index_before.get("files", {})
+    assert isinstance(files_before, dict)
+    original_file_id = next(iter(files_before.keys()))
+
+    # Rename A.dwg -> B.dwg
+    source_file.rename(source_dir / "B.dwg")
+    index_entry = dict(files_before[original_file_id])
+    index_entry["current_name"] = "B.dwg"
+    index_entry["canonical_name"] = "B.dwg"
+    index_entry["known_names"] = ["A.dwg", "B.dwg"]
+    files_before[original_file_id] = index_entry
+    app._save_source_index(source_dir, index_before)
+    app._append_history(source_dir, "RENAME", "B.dwg", file_id=original_file_id, previous_file_name="A.dwg")
+
+    app._refresh_source_files()
+    item = app.files_list.item(0)
+    item.setSelected(True)
+    app.files_list.setCurrentItem(item)
+
+    app._checkout_selected()
+
+    assert len(app.records) == 1
+    record = app.records[0]
+    assert record.file_id == original_file_id
+
+    local_path = Path(record.local_file)
+    local_path.write_text("MODIFIED", encoding="utf-8")
+
+    action = PendingCheckinAction(
+        file_name="B.dwg",
+        source_file=str(source_dir / "B.dwg"),
+        locked_source_file=str(source_dir / "B-JWH.dwg"),
+        action_mode="modified",
+        local_file=str(local_path),
+        record_idx=0,
+        reason="test",
+    )
+    errors = app._perform_pending_checkin_actions([action], "standard")
+    assert errors == []
+
+    history_rows = app._read_history_rows(source_dir)
+    file_ids = [row.get("file_id", "") for row in history_rows]
+    assert original_file_id in file_ids
+    assert history_rows[-1]["action"] == "CHECK_IN_MODIFIED"
+    assert history_rows[-1]["file_id"] == original_file_id
+
+    registry = json.loads((project_dir / "file_versions.json").read_text(encoding="utf-8"))
+    files = registry.get("files", {})
+    assert original_file_id in files

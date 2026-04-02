@@ -5,6 +5,29 @@ from app import *
 
 
 class SourcesMixin:
+        def _is_source_file_name_candidate(self, file_name: str) -> bool:
+            normalized_name = file_name.strip()
+            if not normalized_name:
+                return False
+            if normalized_name in {
+                app_module.SOURCE_INDEX_FILE,
+                app_module.HISTORY_FILE_NAME,
+                app_module.LEGACY_HISTORY_FILE_NAME,
+                app_module.DIRECTORY_NOTES_FILE,
+            }:
+                return False
+            suffix = Path(normalized_name).suffix.lower()
+            if suffix in {".bak", ".tmp"}:
+                return False
+            if normalized_name.lower() == "plot.log":
+                return False
+            return True
+
+        def _is_source_file_candidate(self, entry: Path) -> bool:
+            if not entry.is_file():
+                return False
+            return self._is_source_file_name_candidate(entry.name)
+
         def _refresh_source_roots(self, sources: List[str], selected_source: str = "") -> None:
             self.source_roots_list.clear()
             valid_sources = [Path(source) for source in sources if Path(source).is_dir()]
@@ -153,11 +176,7 @@ class SourcesMixin:
             entries: List[Path] = []
             try:
                 for entry in directory.iterdir():
-                    if entry.is_file() and entry.name not in {
-                        app_module.HISTORY_FILE_NAME,
-                        app_module.LEGACY_HISTORY_FILE_NAME,
-                        app_module.DIRECTORY_NOTES_FILE,
-                    }:
+                    if self._is_source_file_candidate(entry):
                         entries.append(entry)
             except OSError:
                 entries = []
@@ -223,6 +242,7 @@ class SourcesMixin:
                         history_row.get("original_file_name", item.name) if history_row else item.name
                     )
                     list_item.setData(Qt.UserRole + 1, original_name)
+                    list_item.setData(Qt.UserRole + 2, str(history_row.get("file_id", "")) if history_row else "")
                     self._apply_file_history_style(list_item, item, history_row)
                     self.files_list.addItem(list_item)
                     shown_count += 1
@@ -469,6 +489,8 @@ class SourcesMixin:
                         if not source_file.exists():
                             errors.append(f"Missing source file: {source_file.name}")
                             continue
+                        file_entry = self._source_index_entry_for_current_name(current_directory, source_file.name)
+                        file_id = str(file_entry.get("file_id", "")).strip() if file_entry else ""
                         try:
                             relative_path = source_file.relative_to(source_root)
                         except ValueError:
@@ -490,6 +512,7 @@ class SourcesMixin:
                                     source_root=str(source_root),
                                     checked_out_at=copied_at,
                                     record_type="reference_copy",
+                                    file_id=file_id,
                                 )
                             )
                         except OSError as exc:

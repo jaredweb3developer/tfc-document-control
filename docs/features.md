@@ -33,6 +33,7 @@
 
 - JSON history storage is the primary format.
 - Legacy CSV history remains readable for backward compatibility.
+- Source directories now maintain a hidden source-index registry for stable `file_id` assignment.
 - File revision snapshots are stored in per-project version storage.
 - Revision snapshots track hash, revision id, and optional note metadata.
 - A checked-out record can be switched to a saved revision after saved-state checks.
@@ -57,6 +58,10 @@
 - Directory notes support per-file notes and file-note windows.
 - Context menus are available across source files, records, projects, favorites, notes, milestones, and source roots.
 - Location actions can open files or parent directories for source, local, and reference-backed records.
+- Source files are transitioning to stable `file_id` identity while retaining visible on-disk checkout rename behavior.
+- Rename now appends `RENAME` history linked by `file_id` instead of rewriting old history rows by filename.
+- Delete now retires the file in the source index and appends `DELETE_FILE` history without erasing attached note/history records.
+- Checked-out source files still remain rename/delete-blocked in the current slice while checkout and revision path handling finish migrating.
 
 ## Persistence Files
 

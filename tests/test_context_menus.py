@@ -7,6 +7,8 @@ def test_source_file_context_actions_dispatch(app_env, monkeypatch):
     called = []
 
     monkeypatch.setattr(app, "_open_selected_source_files", lambda: called.append("open"))
+    monkeypatch.setattr(app, "_rename_selected_source_file", lambda: called.append("rename"))
+    monkeypatch.setattr(app, "_delete_selected_source_files", lambda: called.append("delete"))
     monkeypatch.setattr(app, "_checkout_selected", lambda: called.append("checkout"))
     monkeypatch.setattr(
         app, "_checkin_selected_source_files_if_owned", lambda: called.append("checkin_mine")
@@ -20,6 +22,8 @@ def test_source_file_context_actions_dispatch(app_env, monkeypatch):
 
     for action_id in [
         "open",
+        "rename",
+        "delete",
         "checkout",
         "checkin_mine",
         "reference",
@@ -33,6 +37,8 @@ def test_source_file_context_actions_dispatch(app_env, monkeypatch):
 
     assert called == [
         "open",
+        "rename",
+        "delete",
         "checkout",
         "checkin_mine",
         "reference",
