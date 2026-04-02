@@ -988,7 +988,7 @@ class RecordsMixin:
             self.directory_notes_table.setColumnWidth(0, max(self.directory_notes_table.columnWidth(0), 220))
 
         def _open_notes_for_selected_source_file(self) -> None:
-            selected = self.files_list.selectedItems()
+            selected = self._selected_source_file_items()
             if selected:
                 file_id = str(selected[0].data(Qt.UserRole + 2) or "").strip()
                 if not file_id:
@@ -2311,7 +2311,7 @@ class RecordsMixin:
 
         def _selected_source_file_ids(self) -> set[str]:
             file_ids: set[str] = set()
-            for item in self.files_list.selectedItems():
+            for item in self._selected_source_file_items():
                 file_id = str(item.data(Qt.UserRole + 2) or "").strip()
                 if file_id:
                     file_ids.add(file_id)
@@ -2407,21 +2407,23 @@ class RecordsMixin:
             else:
                 self._info("File(s) added to source folder.")
 
-        def _open_source_item(self, item: QListWidgetItem) -> None:
-            self._open_paths([Path(item.data(Qt.UserRole))])
+        def _open_source_item(self, item: QTableWidgetItem) -> None:
+            self._open_paths([Path(str(item.data(Qt.UserRole)))])
 
-        def _show_source_file_context_menu_for_item(self, item: QListWidgetItem) -> None:
-            self.files_list.setCurrentItem(item)
-            item.setSelected(True)
-            rect = self.files_list.visualItemRect(item)
+        def _show_source_file_context_menu_for_item(self, item: QTableWidgetItem) -> None:
+            row = item.row()
+            self.files_list.clearSelection()
+            self.files_list.selectRow(row)
+            self.files_list.setCurrentCell(row, 0)
+            rect = self.files_list.visualRect(self.files_list.model().index(row, 0))
             self._show_source_file_context_menu(rect.center())
 
         def _show_source_file_context_menu(self, pos: QPoint) -> None:
-            item = self.files_list.itemAt(pos)
-            if item is not None and not item.isSelected():
+            row = self.files_list.rowAt(pos.y())
+            if row >= 0 and self.files_list.item(row, 0) is not None and not self.files_list.item(row, 0).isSelected():
                 self.files_list.clearSelection()
-                item.setSelected(True)
-                self.files_list.setCurrentItem(item)
+                self.files_list.selectRow(row)
+                self.files_list.setCurrentCell(row, 0)
 
             menu = QMenu(self)
             actions = [
@@ -2441,7 +2443,7 @@ class RecordsMixin:
             for label, action_id in actions:
                 action = menu.addAction(label)
                 action_map[action] = action_id
-            chosen = menu.exec(self.files_list.mapToGlobal(pos))
+            chosen = menu.exec(self.files_list.viewport().mapToGlobal(pos))
             if chosen in action_map:
                 self._handle_source_file_context_action(action_map[chosen])
 
@@ -2492,7 +2494,7 @@ class RecordsMixin:
             if not current_directory:
                 return
 
-            selected_items = self.files_list.selectedItems()
+            selected_items = self._selected_source_file_items()
             if len(selected_items) != 1:
                 self._error("Select exactly one source file to rename.")
                 return
@@ -2592,7 +2594,7 @@ class RecordsMixin:
             blocked: List[str] = []
             deletions: List[tuple[Path, str, str]] = []
             seen_paths: set[str] = set()
-            for item in self.files_list.selectedItems():
+            for item in self._selected_source_file_items():
                 file_path = Path(str(item.data(Qt.UserRole) or ""))
                 if not str(file_path):
                     continue
@@ -3115,7 +3117,7 @@ class RecordsMixin:
                 self._info("Force check-in complete.")
 
         def _show_selected_file_history(self) -> None:
-            selected_items = self.files_list.selectedItems()
+            selected_items = self._selected_source_file_items()
             if not selected_items:
                 self._error("Select a file to view history.")
                 return

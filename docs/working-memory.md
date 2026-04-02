@@ -7,10 +7,10 @@ Update it at the end of any meaningful change so the next session does not need 
 
 ## Current Snapshot
 
-- Active maintainability milestone: `0.2.0`.
+- Active maintainability milestone: `0.2.1`.
 - `app.py` has been reduced to a compatibility entrypoint plus shared constants/dataclasses.
 - The application behavior still lives primarily inside `DocumentControlApp`, but the implementation is now split across mixins under `document_control/mixins/`.
-- Full local test status after the `0.1.4` structural refactor: `83 passed`.
+- Automated pytest remains constrained in this environment by Windows temp-directory cleanup permissions; current branch confidence is based on targeted manual testing on copied project/source data.
 
 ## What Must Stay Stable
 
@@ -76,6 +76,14 @@ Append a short block for each meaningful session:
 - Behavior changed: Source-index reconciliation is more conservative and stable; unambiguous legacy history and note rows are backfilled to `file_id`; false history highlighting for unmanaged files was removed; excluded artifacts like `.bak`, `.tmp`, and `plot.log` are filtered from managed source indexing; repeated rename + checkout/checkin flows now preserve one document lineage more reliably on migrated folders.
 - Tests run: Manual verification on multiple copied source folders from `0.1.3` / `0.1.4` and CSV-only legacy history, including repeated restart persistence, rename + repeated checkout/checkin, note continuity, revision accessibility after rename, and passive migration inspection of generated `.doc_control_history.json`, `.doc_control_index.json`, and `.doc_file_notes.json`. Automated Python compile/pytest verification remained blocked in this environment by local Python/runtime and temp-permission issues.
 - Risks or follow-up: `0.1.5`-damaged metadata remains only partially repairable automatically; `0.2.0` should be treated as the pinned migration baseline for the current small active user group, with new colleague-driven changes continuing on `0.2.1` rather than reopening migration logic unless a real new defect appears.
+
+### 2026-04-02 (`0.2.1` branch)
+
+- Goal: Implement the agreed post-migration functional improvements and pin `0.2.1` as the next working baseline.
+- Files/areas changed: `app.py`, `document_control/mixins/ui.py`, `document_control/mixins/sources.py`, `document_control/mixins/notes.py`, `document_control/mixins/records.py`, `tests/test_source_relink.py`, `tests/test_project_note_transfer.py`, `docs/0.2.1-functional-implementation-plan.md`, `docs/working-memory.md`.
+- Behavior changed: Missing tracked source directories remain visible and can be manually relinked to a moved folder without replacing the project-level source identity; project notes can be copied or moved between projects using the same searchable project picker pattern used by favorites; the source Files area now uses a table with Explorer-style `Name`, `Date modified`, `Type`, and `Size` columns; file-table columns can be sorted by clicking the header, with date and size sorting using real sortable values rather than plain string order.
+- Tests run: Manual validation on copied project and source folders covered source-directory relink with restart persistence, project-note copy/move between projects with metadata inspection in `dctl.json`, source-file detail display, and file-table header sorting by all columns. Targeted pytest attempts for the new tests remained blocked by the same Windows temp cleanup `WinError 5`.
+- Risks or follow-up: Individual externally moved source files still do not have identity-preserving relink support; that item remains deferred for `0.2.2`. File-table sorting has only been manually validated so far in this environment.
 
 ## Maintenance Rule
 

@@ -116,6 +116,17 @@ class PendingCheckinAction:
     reason: str = ""
 
 
+class SortableTableWidgetItem(QTableWidgetItem):
+    def __init__(self, text: str = "", sort_value: object = None):
+        super().__init__(text)
+        self._sort_value = text if sort_value is None else sort_value
+
+    def __lt__(self, other: object) -> bool:
+        if isinstance(other, SortableTableWidgetItem):
+            return self._sort_value < other._sort_value
+        return super().__lt__(other)
+
+
 sys.modules.setdefault("app", sys.modules[__name__])
 
 from document_control.window import DocumentControlApp, main

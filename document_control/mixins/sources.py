@@ -5,6 +5,38 @@ from app import *
 
 
 class SourcesMixin:
+        def _format_source_file_size(self, size_bytes: int) -> str:
+            size = float(max(size_bytes, 0))
+            units = ["B", "KB", "MB", "GB", "TB"]
+            unit_index = 0
+            while size >= 1024 and unit_index < len(units) - 1:
+                size /= 1024.0
+                unit_index += 1
+            if unit_index == 0:
+                return f"{int(size)} {units[unit_index]}"
+            return f"{size:.1f} {units[unit_index]}"
+
+        def _source_file_details_text(self, file_path: Path) -> str:
+            try:
+                stat = file_path.stat()
+            except OSError:
+                return ""
+            modified_at = datetime.fromtimestamp(stat.st_mtime).astimezone()
+            modified_text = modified_at.strftime("%Y-%m-%d %I:%M %p")
+            size_text = self._format_source_file_size(int(stat.st_size))
+            return f"Modified: {modified_text}   Size: {size_text}"
+
+        def _selected_source_file_items(self) -> List[QTableWidgetItem]:
+            selection_model = self.files_list.selectionModel() if hasattr(self, "files_list") else None
+            if selection_model is None:
+                return []
+            items: List[QTableWidgetItem] = []
+            for index in selection_model.selectedRows():
+                item = self.files_list.item(index.row(), 0)
+                if item is not None:
+                    items.append(item)
+            return items
+
         def _source_root_item_label(self, source_path: Path) -> str:
             label = source_path.name or str(source_path)
             if not source_path.is_dir():
@@ -60,7 +92,7 @@ class SourcesMixin:
             else:
                 self.current_directory = None
                 self.current_folder_label.setText("Current folder: -")
-                self.files_list.clear()
+                self.files_list.setRowCount(0)
                 self._set_directory_tree_root(None)
 
         def _create_directory_item(self, path: Path) -> QTreeWidgetItem:
@@ -238,8 +270,14 @@ class SourcesMixin:
         def _refresh_source_files(self) -> None:
             current_dir = str(self.current_directory) if self.current_directory else ""
             with self._debug_timed("refresh_source_files", directory=current_dir):
-                self.files_list.clear()
+                header = self.files_list.horizontalHeader()
+                sort_column = header.sortIndicatorSection()
+                sort_order = header.sortIndicatorOrder()
+                sorting_enabled = self.files_list.isSortingEnabled()
+                self.files_list.setSortingEnabled(False)
+                self.files_list.setRowCount(0)
                 if not self.current_directory or not self.current_directory.is_dir():
+                    self.files_list.setSortingEnabled(sorting_enabled)
                     self.controlled_files_table.setRowCount(0)
                     self.directory_notes_table.setRowCount(0)
                     return
@@ -252,18 +290,59 @@ class SourcesMixin:
                         continue
                     if search_term and search_term not in item.name.lower():
                         continue
-                    list_item = QListWidgetItem(item.name)
-                    list_item.setData(Qt.UserRole, str(item))
+                    try:
+                        stat = item.stat()
+                    except OSError:
+                        stat = None
+                    modified_text = ""
+                    size_text = ""
+                    modified_sort_value = 0.0
+                    size_sort_value = -1
+                    if stat is not None:
+                        modified_sort_value = float(stat.st_mtime)
+                        size_sort_value = int(stat.st_size)
+                        modified_text = datetime.fromtimestamp(stat.st_mtime).astimezone().strftime(
+                            "%Y-%m-%d %I:%M %p"
+                        )
+                        size_text = self._format_source_file_size(int(stat.st_size))
+                    suffix = item.suffix.lower()
+                    file_type = f"{suffix[1:].upper()} File" if suffix else "File"
+                    row_idx = self.files_list.rowCount()
+                    self.files_list.insertRow(row_idx)
+                    name_item = SortableTableWidgetItem(item.name, item.name.lower())
+                    name_item.setData(Qt.UserRole, str(item))
                     history_row = history_lookup.get(item.name)
                     original_name = (
                         history_row.get("original_file_name", item.name) if history_row else item.name
                     )
-                    list_item.setData(Qt.UserRole + 1, original_name)
-                    list_item.setData(Qt.UserRole + 2, str(history_row.get("file_id", "")) if history_row else "")
-                    self._apply_file_history_style(list_item, item, history_row)
-                    self.files_list.addItem(list_item)
+                    name_item.setData(Qt.UserRole + 1, original_name)
+                    name_item.setData(Qt.UserRole + 2, str(history_row.get("file_id", "")) if history_row else "")
+                    tooltip_lines = [str(item)]
+                    if modified_text:
+                        tooltip_lines.append(f"Modified: {modified_text}")
+                    if size_text:
+                        tooltip_lines.append(f"Size: {size_text}")
+                    tooltip = "\n".join(tooltip_lines)
+                    name_item.setToolTip(tooltip)
+                    modified_item = SortableTableWidgetItem(modified_text, modified_sort_value)
+                    modified_item.setToolTip(tooltip)
+                    type_item = SortableTableWidgetItem(file_type, file_type.lower())
+                    type_item.setToolTip(tooltip)
+                    size_item = SortableTableWidgetItem(size_text, size_sort_value)
+                    size_item.setToolTip(tooltip)
+                    size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    self._apply_file_history_style(name_item, item, history_row)
+                    self.files_list.setItem(row_idx, 0, name_item)
+                    self.files_list.setItem(row_idx, 1, modified_item)
+                    self.files_list.setItem(row_idx, 2, type_item)
+                    self.files_list.setItem(row_idx, 3, size_item)
                     shown_count += 1
 
+                self.files_list.setSortingEnabled(sorting_enabled)
+                if sorting_enabled:
+                    self.files_list.sortItems(sort_column, sort_order)
+                self.files_list.resizeColumnsToContents()
+                self.files_list.setColumnWidth(0, max(self.files_list.columnWidth(0), 220))
                 self._refresh_controlled_files()
                 self._debug_event(
                     "source_files_refreshed",
@@ -490,7 +569,7 @@ class SourcesMixin:
             self._move_selected_source_to(self.source_roots_list.count() - 1)
 
         def _selected_source_file_paths(self) -> List[Path]:
-            return [Path(item.data(Qt.UserRole)) for item in self.files_list.selectedItems()]
+            return [Path(str(item.data(Qt.UserRole))) for item in self._selected_source_file_items()]
 
         def _path_for_list_item(self, list_widget: QListWidget, item: QListWidgetItem) -> Optional[Path]:
             if list_widget in {
