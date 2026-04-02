@@ -5,6 +5,20 @@ from app import *
 
 
 class SourcesMixin:
+        def _source_root_item_label(self, source_path: Path) -> str:
+            label = source_path.name or str(source_path)
+            if not source_path.is_dir():
+                return f"{label} [Missing]"
+            return label
+
+        def _style_source_root_item(self, item: QListWidgetItem, source_path: Path) -> None:
+            if source_path.is_dir():
+                item.setForeground(QBrush())
+                item.setToolTip(str(source_path))
+                return
+            item.setForeground(QBrush(QColor("#b91c1c")))
+            item.setToolTip(f"{source_path}\nTracked source directory is missing. Use relink to reconnect it.")
+
         def _is_source_file_name_candidate(self, file_name: str) -> bool:
             normalized_name = file_name.strip()
             if not normalized_name:
@@ -30,12 +44,11 @@ class SourcesMixin:
 
         def _refresh_source_roots(self, sources: List[str], selected_source: str = "") -> None:
             self.source_roots_list.clear()
-            valid_sources = [Path(source) for source in sources if Path(source).is_dir()]
             selected_item: Optional[QListWidgetItem] = None
-            for source in valid_sources:
-                item = QListWidgetItem(source.name or str(source))
+            for source in [Path(source) for source in sources if str(source).strip()]:
+                item = QListWidgetItem(self._source_root_item_label(source))
                 item.setData(Qt.UserRole, str(source))
-                item.setToolTip(str(source))
+                self._style_source_root_item(item, source)
                 self.source_roots_list.addItem(item)
                 if str(source) == selected_source:
                     selected_item = item
@@ -130,7 +143,11 @@ class SourcesMixin:
             if not item:
                 self._error("Select a tracked source directory.")
                 return
-            self._open_paths([Path(str(item.data(Qt.UserRole)))])
+            path = Path(str(item.data(Qt.UserRole)))
+            if not path.is_dir():
+                self._error(f"Tracked source directory is missing:\n{path}")
+                return
+            self._open_paths([path])
 
         def _on_source_root_changed(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
             if not current:
@@ -335,6 +352,74 @@ class SourcesMixin:
             )
             self._refresh_source_roots(sources, selected_source)
             self._save_settings()
+
+        def _relink_selected_source_directory(self) -> None:
+            project_dir = self._validate_current_project()
+            item = self.source_roots_list.currentItem()
+            if not project_dir or not item:
+                self._error("Select a tracked source directory to relink.")
+                return
+
+            old_source_path = Path(str(item.data(Qt.UserRole)))
+            start_dir = str(old_source_path.parent if str(old_source_path.parent).strip() else Path.home())
+            selected = QFileDialog.getExistingDirectory(self, "Relink Source Directory", start_dir)
+            if not selected:
+                return
+
+            new_source_path = Path(selected)
+            if not new_source_path.is_dir():
+                self._error("Selected replacement directory does not exist.")
+                return
+
+            config = self._read_project_config(project_dir)
+            sources = [str(source).strip() for source in config.get("sources", []) if str(source).strip()]
+            if str(old_source_path) not in sources:
+                self._error("Selected source directory is no longer tracked in this project.")
+                return
+            if str(new_source_path) in sources and str(new_source_path) != str(old_source_path):
+                self._error("That directory is already tracked by this project.")
+                return
+
+            replacement_index = new_source_path / app_module.SOURCE_INDEX_FILE
+            replacement_history = new_source_path / app_module.HISTORY_FILE_NAME
+            replacement_history_csv = new_source_path / app_module.LEGACY_HISTORY_FILE_NAME
+            if not (replacement_index.exists() or replacement_history.exists() or replacement_history_csv.exists()):
+                answer = QMessageBox.question(
+                    self,
+                    "Relink Source Directory",
+                    (
+                        "The selected directory does not contain existing document-control metadata.\n\n"
+                        "Relink anyway?"
+                    ),
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+
+            updated_sources = [str(new_source_path) if source == str(old_source_path) else source for source in sources]
+            raw_source_ids = config.get("source_ids", {})
+            existing_source_ids = dict(raw_source_ids) if isinstance(raw_source_ids, dict) else {}
+            source_key = existing_source_ids.pop(str(old_source_path), "")
+            if source_key:
+                existing_source_ids[str(new_source_path)] = source_key
+            selected_source = str(config.get("selected_source", "")).strip()
+            if selected_source == str(old_source_path):
+                selected_source = str(new_source_path)
+
+            with self._busy_action("Relinking source directory..."):
+                self._save_project_config(
+                    project_dir,
+                    name=self._current_project_name(),
+                    sources=updated_sources,
+                    extension_filters=self._current_extension_filters(),
+                    filter_mode=self.file_filter_mode_combo.currentText(),
+                    selected_source=selected_source,
+                    source_ids=existing_source_ids,
+                )
+                self._refresh_source_roots(updated_sources, selected_source)
+                self._save_settings()
+            self._info(f"Relinked source directory to:\n{new_source_path}")
 
         def _track_current_directory(self) -> None:
             project_dir = self._validate_current_project()

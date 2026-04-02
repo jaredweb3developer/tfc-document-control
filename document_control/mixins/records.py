@@ -3002,6 +3002,7 @@ class RecordsMixin:
             menu = QMenu(self)
             track_browse_action = menu.addAction("Track Dir (Browse)")
             track_current_action = menu.addAction("Track Directory")
+            relink_action = menu.addAction("Relink Directory")
             view_location_action = menu.addAction("View Location")
             untrack_action = menu.addAction("Untrack Dir")
             move_up_action = menu.addAction("Move Up")
@@ -3013,6 +3014,8 @@ class RecordsMixin:
                 self._add_source_directory()
             elif chosen == track_current_action:
                 self._track_current_directory()
+            elif chosen == relink_action:
+                self._relink_selected_source_directory()
             elif chosen == view_location_action:
                 self._view_selected_source_directory_location()
             elif chosen == untrack_action:

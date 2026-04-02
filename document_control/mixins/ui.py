@@ -371,6 +371,7 @@ class UiMixin:
                     [
                         ("Track Dir (Browse)", self._add_source_directory),
                         ("Track Directory", self._track_current_directory),
+                        ("Relink Directory", self._relink_selected_source_directory),
                         ("View Location", self._view_selected_source_directory_location),
                         ("Untrack Dir", self._remove_source_directory),
                         ("---", self._track_current_directory),
