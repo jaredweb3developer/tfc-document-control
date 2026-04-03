@@ -15,11 +15,13 @@ class UiMixin:
             main_tab = QWidget()
             main_layout = QVBoxLayout(main_tab)
             self.projects_section = self._build_collapsible_section("Projects", self._build_projects_group())
-            self.source_files_section = self._build_collapsible_section(
-                "Source Files", self._build_source_files_group()
+            self.files_section = self._build_collapsible_section(
+                "Files", self._build_source_files_group()
             )
             main_layout.addWidget(self.projects_section, stretch=1)
-            main_layout.addWidget(self.source_files_section, stretch=1)
+            main_layout.addWidget(self.files_section, stretch=1)
+            # Backward-compatible alias kept for legacy tests and persisted UI references.
+            self.source_files_section = self.files_section
 
             configuration_tab = QWidget()
             configuration_layout = QVBoxLayout(configuration_tab)
@@ -354,12 +356,16 @@ class UiMixin:
             return group
 
         def _build_source_files_group(self) -> QGroupBox:
-            group = QGroupBox("Source Files")
+            group = QGroupBox("Files")
             layout = QVBoxLayout(group)
 
-            self.current_folder_label = QLabel("Current folder: -")
+            self.files_scope_tabs = QTabWidget()
+            source_tab = QWidget()
+            source_layout = QVBoxLayout(source_tab)
+
+            self.current_folder_label = QLabel("Current source folder: -")
             self.current_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            layout.addWidget(self.current_folder_label)
+            source_layout.addWidget(self.current_folder_label)
 
             splitter = QSplitter(Qt.Horizontal)
 
@@ -573,7 +579,117 @@ class UiMixin:
             splitter.addWidget(controlled_panel)
             splitter.setSizes([220, 320, 420, 300])
 
-            layout.addWidget(splitter, stretch=1)
+            source_layout.addWidget(splitter, stretch=1)
+            self.files_scope_tabs.addTab(source_tab, "Source")
+
+            local_tab = QWidget()
+            local_layout = QVBoxLayout(local_tab)
+            self.local_current_folder_label = QLabel("Current local folder: -")
+            self.local_current_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            local_layout.addWidget(self.local_current_folder_label)
+
+            local_splitter = QSplitter(Qt.Horizontal)
+
+            local_tracked_panel = QWidget()
+            local_tracked_layout = QVBoxLayout(local_tracked_panel)
+            local_tracked_header = QHBoxLayout()
+            local_tracked_header.addWidget(QLabel("Tracked Local Directories"))
+            local_tracked_header.addStretch()
+            local_tracked_header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Track Dir (Browse)", self._add_local_directory),
+                        ("Track Directory", self._track_current_local_directory),
+                        ("View Location", self._view_selected_local_directory_location),
+                        ("Untrack Dir", self._remove_local_directory),
+                        ("---", self._track_current_local_directory),
+                        ("Move Up", self._move_selected_local_root_up),
+                        ("Move Down", self._move_selected_local_root_down),
+                        ("Move to Top", self._move_selected_local_root_top),
+                        ("Move to Bottom", self._move_selected_local_root_bottom),
+                    ]
+                )
+            )
+            local_tracked_layout.addLayout(local_tracked_header)
+            self.local_roots_list = QListWidget()
+            self.local_roots_list.currentItemChanged.connect(self._on_local_root_changed)
+            self.local_roots_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.local_roots_list.customContextMenuRequested.connect(self._show_local_roots_context_menu)
+            self.local_roots_list.setMinimumWidth(220)
+            local_tracked_layout.addWidget(self.local_roots_list)
+
+            local_directory_panel = QWidget()
+            local_directory_layout = QVBoxLayout(local_directory_panel)
+            local_directory_header = QHBoxLayout()
+            local_directory_header.addWidget(QLabel("Local Directory Browser"))
+            local_directory_header.addStretch()
+            local_directory_header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Browse", self._browse_local_directory_tree_root),
+                        ("View Location", self._view_local_current_directory_location),
+                        ("Track Directory", self._track_current_local_directory),
+                    ]
+                )
+            )
+            local_directory_layout.addLayout(local_directory_header)
+            self.local_directory_tree = QTreeWidget()
+            self.local_directory_tree.setColumnCount(1)
+            self.local_directory_tree.setHeaderHidden(True)
+            self.local_directory_tree.itemExpanded.connect(self._on_local_tree_item_expanded)
+            self.local_directory_tree.itemClicked.connect(self._on_local_directory_selected)
+            self.local_directory_tree.setAnimated(False)
+            self.local_directory_tree.setUniformRowHeights(True)
+            self.local_directory_tree.setMinimumWidth(300)
+            self.local_directory_tree.setMinimumHeight(260)
+            local_directory_layout.addWidget(self.local_directory_tree, stretch=1)
+
+            local_files_panel = QWidget()
+            local_files_layout = QVBoxLayout(local_files_panel)
+            local_files_header = QHBoxLayout()
+            local_files_header.addWidget(QLabel("Local Files"))
+            local_files_header.addStretch()
+            local_files_header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Refresh", self._refresh_local_files),
+                        ("Open Selected", self._open_selected_local_files),
+                        ("View Location", self._view_local_current_directory_location),
+                        ("Add Local File(s) To Source", self._add_selected_local_files_to_source),
+                    ]
+                )
+            )
+            local_files_layout.addLayout(local_files_header)
+            self.local_file_search_edit = QLineEdit()
+            self.local_file_search_edit.setPlaceholderText("Search local files")
+            self.local_file_search_edit.textChanged.connect(self._on_local_file_search_changed)
+            local_files_layout.addWidget(self.local_file_search_edit)
+            self.local_files_list = QTableWidget(0, 4)
+            self.local_files_list.setHorizontalHeaderLabels(["Name", "Date modified", "Type", "Size"])
+            self.local_files_list.setSelectionBehavior(QTableWidget.SelectRows)
+            self.local_files_list.setSelectionMode(QTableWidget.ExtendedSelection)
+            self.local_files_list.setEditTriggers(QTableWidget.NoEditTriggers)
+            self.local_files_list.setSortingEnabled(True)
+            self.local_files_list.itemDoubleClicked.connect(self._open_local_item)
+            self.local_files_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.local_files_list.customContextMenuRequested.connect(self._show_local_file_context_menu)
+            local_files_header_widget = self.local_files_list.horizontalHeader()
+            local_files_header_widget.setSortIndicatorShown(True)
+            local_files_header_widget.setSectionResizeMode(0, QHeaderView.Stretch)
+            local_files_header_widget.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            local_files_header_widget.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            local_files_header_widget.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            local_files_layout.addWidget(self.local_files_list, stretch=1)
+
+            local_splitter.addWidget(local_tracked_panel)
+            local_splitter.addWidget(local_directory_panel)
+            local_splitter.addWidget(local_files_panel)
+            local_splitter.setSizes([220, 340, 500])
+
+            local_layout.addWidget(local_splitter, stretch=1)
+            self.files_scope_tabs.addTab(local_tab, "Local")
+
+            layout.addWidget(self.files_scope_tabs, stretch=1)
             return group
 
         def _build_checked_out_group(self) -> QGroupBox:

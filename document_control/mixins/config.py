@@ -450,12 +450,14 @@ class ConfigMixin:
             self,
             name: str,
             sources: List[str],
+            local_directories: Optional[List[str]] = None,
             extension_filters: Optional[List[str]] = None,
             filter_mode: str = "No Filter",
             favorites: Optional[List[str]] = None,
             notes: Optional[List[Dict[str, str]]] = None,
             milestones: Optional[List[Dict[str, object]]] = None,
             selected_source: str = "",
+            selected_local_directory: str = "",
             source_ids: Optional[Dict[str, str]] = None,
             client: str = "",
             year_started: str = "",
@@ -468,8 +470,10 @@ class ConfigMixin:
                 "client": client,
                 "year_started": year_started,
                 "sources": sources,
+                "local_directories": local_directories or [],
                 "source_ids": normalized_source_ids,
                 "selected_source": selected_source,
+                "selected_local_directory": selected_local_directory,
                 "extension_filters": extension_filters or [],
                 "filter_mode": filter_mode,
                 "favorites": favorites or [],
@@ -480,25 +484,32 @@ class ConfigMixin:
         def _read_project_config(self, project_dir: Path) -> Dict[str, object]:
             config_path = self._project_config_path(project_dir)
             if not config_path.exists():
-                return self._project_payload(project_dir.name, [], [], "No Filter", [], [])
+                return self._project_payload(project_dir.name, [], [], [], "No Filter", [], [])
 
             try:
                 data = json.loads(config_path.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError):
-                return self._project_payload(project_dir.name, [], [], "No Filter", [], [])
+                return self._project_payload(project_dir.name, [], [], [], "No Filter", [], [])
 
             name = str(data.get("name", project_dir.name)).strip() or project_dir.name
             raw_sources = data.get("sources", [])
+            raw_local_directories = data.get("local_directories", [])
             raw_extension_filters = data.get("extension_filters", [])
             filter_mode = str(data.get("filter_mode", "No Filter")).strip() or "No Filter"
             raw_favorites = data.get("favorites", [])
             raw_notes = data.get("notes", [])
             raw_milestones = data.get("milestones", [])
             selected_source = str(data.get("selected_source", "")).strip()
+            selected_local_directory = str(data.get("selected_local_directory", "")).strip()
             client = str(data.get("client", "")).strip()
             year_started = str(data.get("year_started", "")).strip()
             raw_source_ids = data.get("source_ids", {})
             sources = [str(item) for item in raw_sources if str(item).strip()] if isinstance(raw_sources, list) else []
+            local_directories = (
+                [str(item) for item in raw_local_directories if str(item).strip()]
+                if isinstance(raw_local_directories, list)
+                else []
+            )
             source_ids = dict(raw_source_ids) if isinstance(raw_source_ids, dict) else {}
             extension_filters = (
                 [str(item) for item in raw_extension_filters if str(item).strip()]
@@ -539,12 +550,14 @@ class ConfigMixin:
             return self._project_payload(
                 name,
                 sources,
+                local_directories,
                 extension_filters,
                 filter_mode,
                 favorites,
                 notes,
                 milestones,
                 selected_source,
+                selected_local_directory,
                 source_ids,
                 client,
                 year_started,
@@ -555,12 +568,14 @@ class ConfigMixin:
             project_dir: Path,
             name: str,
             sources: List[str],
+            local_directories: Optional[List[str]] = None,
             extension_filters: Optional[List[str]] = None,
             filter_mode: str = "No Filter",
             favorites: Optional[List[str]] = None,
             notes: Optional[List[Dict[str, str]]] = None,
             milestones: Optional[List[Dict[str, object]]] = None,
             selected_source: str = "",
+            selected_local_directory: str = "",
             source_ids: Optional[Dict[str, str]] = None,
             client: str = "",
             year_started: str = "",
@@ -570,12 +585,14 @@ class ConfigMixin:
             payload = self._project_payload(
                 name,
                 sources,
+                local_directories,
                 extension_filters,
                 filter_mode,
                 favorites,
                 notes,
                 milestones,
                 selected_source,
+                selected_local_directory,
                 source_ids,
                 client,
                 year_started,
@@ -588,12 +605,14 @@ class ConfigMixin:
             *,
             name: Optional[str] = None,
             sources: Optional[List[str]] = None,
+            local_directories: Optional[List[str]] = None,
             extension_filters: Optional[List[str]] = None,
             filter_mode: Optional[str] = None,
             favorites: Optional[List[str]] = None,
             notes: Optional[List[Dict[str, str]]] = None,
             milestones: Optional[List[Dict[str, object]]] = None,
             selected_source: Optional[str] = None,
+            selected_local_directory: Optional[str] = None,
             source_ids: Optional[Dict[str, str]] = None,
             client: Optional[str] = None,
             year_started: Optional[str] = None,
@@ -606,6 +625,9 @@ class ConfigMixin:
                 project_dir,
                 name or str(current.get("name", project_dir.name)),
                 merged_sources,
+                local_directories
+                if local_directories is not None
+                else list(current.get("local_directories", [])),  # type: ignore[arg-type]
                 extension_filters
                 if extension_filters is not None
                 else list(current.get("extension_filters", [])),  # type: ignore[arg-type]
@@ -618,6 +640,9 @@ class ConfigMixin:
                 selected_source
                 if selected_source is not None
                 else str(current.get("selected_source", "")),
+                selected_local_directory
+                if selected_local_directory is not None
+                else str(current.get("selected_local_directory", "")),
                 source_ids
                 if source_ids is not None
                 else dict(current.get("source_ids", {})),  # type: ignore[arg-type]
@@ -632,13 +657,14 @@ class ConfigMixin:
             default_dir = base_dir / app_module.DEFAULT_PROJECT_NAME
             if not self._project_config_path(default_dir).exists():
                 self._write_project_config(
-                    default_dir,
-                    app_module.DEFAULT_PROJECT_NAME,
-                    [],
-                    [],
-                    "No Filter",
-                    [],
-                    [],
+                    project_dir=default_dir,
+                    name=app_module.DEFAULT_PROJECT_NAME,
+                    sources=[],
+                    local_directories=[],
+                    extension_filters=[],
+                    filter_mode="No Filter",
+                    favorites=[],
+                    notes=[],
                 )
             self._register_tracked_project(app_module.DEFAULT_PROJECT_NAME, default_dir)
             self._refresh_tracked_projects_list()

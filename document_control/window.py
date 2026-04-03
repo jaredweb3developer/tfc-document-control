@@ -42,6 +42,9 @@ class DocumentControlApp(
             self.current_project_dir: str = ""
             self.current_directory: Optional[Path] = None
             self.directory_tree_root: Optional[Path] = None
+            self.local_current_directory: Optional[Path] = None
+            self.local_directory_tree_root: Optional[Path] = None
+            self.last_loaded_source_directory: Optional[Path] = None
             self.show_configuration_tab_on_startup = True
             self.filter_presets: List[Dict[str, object]] = []
             self.main_section_toggles: List[QToolButton] = []

@@ -16,11 +16,15 @@
 
 ## Source Browsing
 
+- Files section now includes `Source` and `Local` tabs.
 - Projects can track multiple source directories.
-- Source browser includes directory tree navigation and per-directory file listing.
+- Projects can track multiple local directories for filesystem browsing and file selection.
+- Source and local browsers include directory tree navigation and per-directory file listing.
 - Source file search is debounced.
+- Local file search is available in the Local tab.
 - Controlled files table reflects the selected directory.
 - Directory file caching distinguishes local and probable remote paths.
+- Local files can be selected and copied to a chosen source destination via `Add Local File(s) To Source`.
 
 ## Checkout, Checkin, and Records
 

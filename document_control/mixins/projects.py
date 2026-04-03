@@ -10,6 +10,7 @@ class ProjectsMixin:
             name: str,
             project_dir: Path,
             sources: Optional[List[str]] = None,
+            local_directories: Optional[List[str]] = None,
             extension_filters: Optional[List[str]] = None,
             filter_mode: str = "No Filter",
             favorites: Optional[List[str]] = None,
@@ -28,6 +29,7 @@ class ProjectsMixin:
                         project_dir=project_dir,
                         name=name,
                         sources=source_list,
+                        local_directories=local_directories or [],
                         extension_filters=extension_filters or [],
                         filter_mode=filter_mode,
                         favorites=favorites or [],
@@ -301,6 +303,9 @@ class ProjectsMixin:
                 config = self._read_project_config(project_dir)
                 name = str(config.get("name", project_dir.name))
                 sources = [str(item) for item in config.get("sources", [])]  # type: ignore[arg-type]
+                local_directories = [
+                    str(item) for item in config.get("local_directories", [])
+                ]  # type: ignore[arg-type]
                 extension_filters = [
                     str(item) for item in config.get("extension_filters", [])
                 ]  # type: ignore[arg-type]
@@ -308,6 +313,7 @@ class ProjectsMixin:
                 favorites = [str(item) for item in config.get("favorites", [])]  # type: ignore[arg-type]
                 notes = [dict(item) for item in config.get("notes", [])]  # type: ignore[arg-type]
                 selected_source = str(config.get("selected_source", "")).strip()
+                selected_local_directory = str(config.get("selected_local_directory", "")).strip()
                 client = str(config.get("client", "")).strip()
                 year_started = str(config.get("year_started", "")).strip()
 
@@ -320,6 +326,7 @@ class ProjectsMixin:
                 self.current_project_label.setText(f"Current Project: {name}")
                 self._register_tracked_project(name, project_dir, client, year_started)
                 self._refresh_source_roots(sources, selected_source)
+                self._refresh_local_roots(local_directories, selected_local_directory)
                 self._refresh_favorites_list(favorites)
                 self._refresh_notes_list(notes)
                 if not sources:

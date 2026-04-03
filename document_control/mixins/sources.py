@@ -37,6 +37,19 @@ class SourcesMixin:
                     items.append(item)
             return items
 
+        def _selected_local_file_items(self) -> List[QTableWidgetItem]:
+            selection_model = (
+                self.local_files_list.selectionModel() if hasattr(self, "local_files_list") else None
+            )
+            if selection_model is None:
+                return []
+            items: List[QTableWidgetItem] = []
+            for index in selection_model.selectedRows():
+                item = self.local_files_list.item(index.row(), 0)
+                if item is not None:
+                    items.append(item)
+            return items
+
         def _source_root_item_label(self, source_path: Path) -> str:
             label = source_path.name or str(source_path)
             if not source_path.is_dir():
@@ -91,9 +104,30 @@ class SourcesMixin:
                 self.source_roots_list.setCurrentRow(0)
             else:
                 self.current_directory = None
-                self.current_folder_label.setText("Current folder: -")
+                self.current_folder_label.setText("Current source folder: -")
                 self.files_list.setRowCount(0)
                 self._set_directory_tree_root(None)
+
+        def _refresh_local_roots(self, roots: List[str], selected_root: str = "") -> None:
+            self.local_roots_list.clear()
+            selected_item: Optional[QListWidgetItem] = None
+            for root in [Path(root) for root in roots if str(root).strip()]:
+                item = QListWidgetItem(self._source_root_item_label(root))
+                item.setData(Qt.UserRole, str(root))
+                self._style_source_root_item(item, root)
+                self.local_roots_list.addItem(item)
+                if str(root) == selected_root:
+                    selected_item = item
+
+            if selected_item:
+                self.local_roots_list.setCurrentItem(selected_item)
+            elif self.local_roots_list.count() > 0:
+                self.local_roots_list.setCurrentRow(0)
+            else:
+                self.local_current_directory = None
+                self.local_current_folder_label.setText("Current local folder: -")
+                self.local_files_list.setRowCount(0)
+                self._set_local_directory_tree_root(None)
 
         def _create_directory_item(self, path: Path) -> QTreeWidgetItem:
             label = path.name or str(path)
@@ -149,6 +183,26 @@ class SourcesMixin:
             root_item.setExpanded(True)
             self.directory_tree.setCurrentItem(root_item)
 
+        def _set_local_directory_tree_root(self, root_path: Optional[Path]) -> None:
+            self.local_directory_tree.clear()
+            self.local_directory_tree_root = root_path
+
+            if root_path is None:
+                drives = QDir.drives()
+                if drives:
+                    for drive in drives:
+                        drive_path = Path(drive.absoluteFilePath())
+                        self.local_directory_tree.addTopLevelItem(self._create_directory_item(drive_path))
+                else:
+                    self.local_directory_tree.addTopLevelItem(self._create_directory_item(Path("/")))
+                return
+
+            root_item = self._create_directory_item(root_path)
+            self.local_directory_tree.addTopLevelItem(root_item)
+            self._populate_directory_children(root_item)
+            root_item.setExpanded(True)
+            self.local_directory_tree.setCurrentItem(root_item)
+
         def _browse_directory_tree_root(self) -> None:
             start_dir = str(
                 self.current_directory
@@ -164,9 +218,32 @@ class SourcesMixin:
             self._set_directory_tree_root(selected_path)
             self._set_current_directory_with_feedback(selected_path, "Loading directory...")
 
+        def _browse_local_directory_tree_root(self) -> None:
+            start_dir = str(
+                self.local_current_directory
+                or self.local_directory_tree_root
+                or self._current_local_root()
+                or self._current_project_path()
+                or Path.home()
+            )
+            path = QFileDialog.getExistingDirectory(self, "Browse Local Directory", start_dir)
+            if not path:
+                return
+
+            selected_path = Path(path)
+            self._set_local_directory_tree_root(selected_path)
+            self._set_local_current_directory_with_feedback(selected_path, "Loading local directory...")
+
         def _view_current_directory_location(self) -> None:
             current_directory = self._validate_current_directory()
             if not current_directory:
+                return
+            self._open_paths([current_directory])
+
+        def _view_local_current_directory_location(self) -> None:
+            current_directory = self.local_current_directory
+            if not current_directory or not current_directory.is_dir():
+                self._error("Select a local directory.")
                 return
             self._open_paths([current_directory])
 
@@ -181,6 +258,17 @@ class SourcesMixin:
                 return
             self._open_paths([path])
 
+        def _view_selected_local_directory_location(self) -> None:
+            item = self.local_roots_list.currentItem()
+            if not item:
+                self._error("Select a tracked local directory.")
+                return
+            path = Path(str(item.data(Qt.UserRole)))
+            if not path.is_dir():
+                self._error(f"Tracked local directory is missing:\n{path}")
+                return
+            self._open_paths([path])
+
         def _on_source_root_changed(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
             if not current:
                 return
@@ -192,11 +280,27 @@ class SourcesMixin:
             self._set_directory_tree_root(root_path)
             self._set_current_directory_with_feedback(root_path, "Loading source directory...")
 
+        def _on_local_root_changed(
+            self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]
+        ) -> None:
+            if not current:
+                return
+            project_dir = self._current_project_path()
+            if project_dir and project_dir.is_dir():
+                self._save_project_config(
+                    project_dir,
+                    selected_local_directory=str(current.data(Qt.UserRole)),
+                )
+            root_path = Path(str(current.data(Qt.UserRole)))
+            self._set_local_directory_tree_root(root_path)
+            self._set_local_current_directory_with_feedback(root_path, "Loading local directory...")
+
         def _set_current_directory(self, directory: Path) -> None:
             if self.current_directory is None or self.current_directory != directory:
                 self._clear_file_search_filter()
             self.current_directory = directory
-            self.current_folder_label.setText(f"Current folder: {directory}")
+            self.last_loaded_source_directory = directory
+            self.current_folder_label.setText(f"Current source folder: {directory}")
             self._refresh_source_files()
 
         def _set_current_directory_with_feedback(self, directory: Path, message: str) -> None:
@@ -208,6 +312,21 @@ class SourcesMixin:
                 return
             with self._busy_action(message):
                 self._set_current_directory(directory)
+
+        def _set_local_current_directory(self, directory: Path) -> None:
+            self.local_current_directory = directory
+            self.local_current_folder_label.setText(f"Current local folder: {directory}")
+            self._refresh_local_files()
+
+        def _set_local_current_directory_with_feedback(self, directory: Path, message: str) -> None:
+            if self._busy_action_depth > 0:
+                self._set_local_current_directory(directory)
+                return
+            if self.local_current_directory is not None and self.local_current_directory == directory:
+                self._set_local_current_directory(directory)
+                return
+            with self._busy_action(message):
+                self._set_local_current_directory(directory)
 
         def _invalidate_directory_caches(self, directory: Path) -> None:
             key = str(directory)
@@ -258,6 +377,9 @@ class SourcesMixin:
             self._debug_event("directory_tree_expanded", directory=str(item.data(0, Qt.UserRole) or ""))
             self._populate_directory_children(item)
 
+        def _on_local_tree_item_expanded(self, item: QTreeWidgetItem) -> None:
+            self._populate_directory_children(item)
+
         def _on_directory_selected(self, item: QTreeWidgetItem, _column: int) -> None:
             path_value = item.data(0, Qt.UserRole)
             if not path_value:
@@ -266,6 +388,20 @@ class SourcesMixin:
             path = Path(path_value)
             if path.is_dir():
                 self._set_current_directory_with_feedback(path, "Loading directory...")
+
+        def _on_local_directory_selected(self, item: QTreeWidgetItem, _column: int) -> None:
+            path_value = item.data(0, Qt.UserRole)
+            if not path_value:
+                return
+            path = Path(path_value)
+            if path.is_dir():
+                self._set_local_current_directory_with_feedback(path, "Loading local directory...")
+
+        def _current_local_root(self) -> Optional[Path]:
+            item = self.local_roots_list.currentItem() if hasattr(self, "local_roots_list") else None
+            if not item:
+                return None
+            return Path(str(item.data(Qt.UserRole)))
 
         def _refresh_source_files(self) -> None:
             current_dir = str(self.current_directory) if self.current_directory else ""
@@ -350,6 +486,82 @@ class SourcesMixin:
                     search=search_term,
                     shown_count=shown_count,
                 )
+
+        def _refresh_local_files(self) -> None:
+            header = self.local_files_list.horizontalHeader()
+            sort_column = header.sortIndicatorSection()
+            sort_order = header.sortIndicatorOrder()
+            sorting_enabled = self.local_files_list.isSortingEnabled()
+            self.local_files_list.setSortingEnabled(False)
+            self.local_files_list.setRowCount(0)
+            if not self.local_current_directory or not self.local_current_directory.is_dir():
+                self.local_files_list.setSortingEnabled(sorting_enabled)
+                return
+
+            search_term = self.local_file_search_edit.text().strip().lower()
+            shown_count = 0
+            entries: List[Path] = []
+            try:
+                entries = [entry for entry in self.local_current_directory.iterdir() if entry.is_file()]
+            except OSError:
+                entries = []
+            entries.sort(key=lambda item: item.name.lower())
+
+            for item in entries:
+                if search_term and search_term not in item.name.lower():
+                    continue
+                try:
+                    stat = item.stat()
+                except OSError:
+                    stat = None
+                modified_text = ""
+                size_text = ""
+                modified_sort_value = 0.0
+                size_sort_value = -1
+                if stat is not None:
+                    modified_sort_value = float(stat.st_mtime)
+                    size_sort_value = int(stat.st_size)
+                    modified_text = datetime.fromtimestamp(stat.st_mtime).astimezone().strftime(
+                        "%Y-%m-%d %I:%M %p"
+                    )
+                    size_text = self._format_source_file_size(int(stat.st_size))
+                suffix = item.suffix.lower()
+                file_type = f"{suffix[1:].upper()} File" if suffix else "File"
+                row_idx = self.local_files_list.rowCount()
+                self.local_files_list.insertRow(row_idx)
+                name_item = SortableTableWidgetItem(item.name, item.name.lower())
+                name_item.setData(Qt.UserRole, str(item))
+                tooltip_lines = [str(item)]
+                if modified_text:
+                    tooltip_lines.append(f"Modified: {modified_text}")
+                if size_text:
+                    tooltip_lines.append(f"Size: {size_text}")
+                tooltip = "\n".join(tooltip_lines)
+                name_item.setToolTip(tooltip)
+                modified_item = SortableTableWidgetItem(modified_text, modified_sort_value)
+                modified_item.setToolTip(tooltip)
+                type_item = SortableTableWidgetItem(file_type, file_type.lower())
+                type_item.setToolTip(tooltip)
+                size_item = SortableTableWidgetItem(size_text, size_sort_value)
+                size_item.setToolTip(tooltip)
+                size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.local_files_list.setItem(row_idx, 0, name_item)
+                self.local_files_list.setItem(row_idx, 1, modified_item)
+                self.local_files_list.setItem(row_idx, 2, type_item)
+                self.local_files_list.setItem(row_idx, 3, size_item)
+                shown_count += 1
+
+            self.local_files_list.setSortingEnabled(sorting_enabled)
+            if sorting_enabled:
+                self.local_files_list.sortItems(sort_column, sort_order)
+            self.local_files_list.resizeColumnsToContents()
+            self.local_files_list.setColumnWidth(0, max(self.local_files_list.columnWidth(0), 220))
+            self._debug_event(
+                "local_files_refreshed",
+                directory=str(self.local_current_directory),
+                search=search_term,
+                shown_count=shown_count,
+            )
 
         def _refresh_controlled_files(self) -> None:
             current_dir = str(self.current_directory) if self.current_directory else ""
@@ -568,8 +780,189 @@ class SourcesMixin:
         def _move_selected_source_bottom(self) -> None:
             self._move_selected_source_to(self.source_roots_list.count() - 1)
 
+        def _local_roots_from_list(self) -> List[str]:
+            roots: List[str] = []
+            for row in range(self.local_roots_list.count()):
+                item = self.local_roots_list.item(row)
+                roots.append(str(item.data(Qt.UserRole)))
+            return roots
+
+        def _add_local_directory(self) -> None:
+            project_dir = self._validate_current_project()
+            if not project_dir:
+                return
+            start_dir = str(self._current_local_root() or self._current_project_path() or Path.home())
+            path = QFileDialog.getExistingDirectory(self, "Track Local Directory", start_dir)
+            if not path:
+                return
+            root_path = Path(path)
+            roots = self._local_roots_from_list()
+            if str(root_path) in roots:
+                self._info("That local directory is already tracked.")
+                return
+            with self._busy_action("Tracking local directory..."):
+                roots.append(str(root_path))
+                self._save_project_config(
+                    project_dir,
+                    local_directories=roots,
+                    selected_local_directory=str(root_path),
+                )
+                self._refresh_local_roots(roots, str(root_path))
+
+        def _track_current_local_directory(self) -> None:
+            project_dir = self._validate_current_project()
+            current_directory = self.local_current_directory
+            if not project_dir or not current_directory or not current_directory.is_dir():
+                self._error("Select a local directory to track.")
+                return
+            roots = self._local_roots_from_list()
+            current_dir_str = str(current_directory)
+            if current_dir_str in roots:
+                self._info("The current local directory is already tracked.")
+                return
+            with self._busy_action("Tracking local directory..."):
+                roots.append(current_dir_str)
+                self._save_project_config(
+                    project_dir,
+                    local_directories=roots,
+                    selected_local_directory=current_dir_str,
+                )
+                self._refresh_local_roots(roots, current_dir_str)
+
+        def _remove_local_directory(self) -> None:
+            project_dir = self._validate_current_project()
+            item = self.local_roots_list.currentItem()
+            if not project_dir or not item:
+                self._error("Select a tracked local directory to remove.")
+                return
+            root_path = str(item.data(Qt.UserRole))
+            roots = [root for root in self._local_roots_from_list() if root != root_path]
+            selected_root = str(self._current_local_root() or "")
+            if selected_root == root_path:
+                selected_root = roots[0] if roots else ""
+            self._save_project_config(
+                project_dir,
+                local_directories=roots,
+                selected_local_directory=selected_root,
+            )
+            self._refresh_local_roots(roots, selected_root)
+
+        def _save_local_roots_from_ui_order(self) -> None:
+            project_dir = self._validate_current_project()
+            if not project_dir:
+                return
+            self._save_project_config(
+                project_dir,
+                local_directories=self._local_roots_from_list(),
+                selected_local_directory=str(self._current_local_root() or ""),
+            )
+
+        def _move_selected_local_root(self, delta: int) -> None:
+            if not self._move_list_widget_item(self.local_roots_list, delta):
+                return
+            self._save_local_roots_from_ui_order()
+
+        def _move_selected_local_root_to(self, target_index: int) -> None:
+            if not self._move_list_widget_item_to(self.local_roots_list, target_index):
+                return
+            self._save_local_roots_from_ui_order()
+
+        def _move_selected_local_root_up(self) -> None:
+            self._move_selected_local_root(-1)
+
+        def _move_selected_local_root_down(self) -> None:
+            self._move_selected_local_root(1)
+
+        def _move_selected_local_root_top(self) -> None:
+            self._move_selected_local_root_to(0)
+
+        def _move_selected_local_root_bottom(self) -> None:
+            self._move_selected_local_root_to(self.local_roots_list.count() - 1)
+
         def _selected_source_file_paths(self) -> List[Path]:
             return [Path(str(item.data(Qt.UserRole))) for item in self._selected_source_file_items()]
+
+        def _selected_local_file_paths(self) -> List[Path]:
+            return [Path(str(item.data(Qt.UserRole))) for item in self._selected_local_file_items()]
+
+        def _on_local_file_search_changed(self, _text: str) -> None:
+            self._refresh_local_files()
+
+        def _open_local_item(self, item: QTableWidgetItem) -> None:
+            self._open_paths([Path(str(item.data(Qt.UserRole)))])
+
+        def _open_selected_local_files(self) -> None:
+            selected_files = self._selected_local_file_paths()
+            if not selected_files:
+                self._error("Select at least one local file to open.")
+                return
+            self._open_paths(selected_files)
+
+        def _choose_source_destination_directory(self, initial_directory: Optional[Path] = None) -> Optional[Path]:
+            tracked_roots = [
+                Path(str(self.source_roots_list.item(row).data(Qt.UserRole)))
+                for row in range(self.source_roots_list.count())
+                if str(self.source_roots_list.item(row).data(Qt.UserRole)).strip()
+            ]
+            start_dir = initial_directory or self.last_loaded_source_directory or self.current_directory
+            if start_dir is None and tracked_roots:
+                start_dir = tracked_roots[0]
+            if start_dir is None:
+                start_dir = self._current_project_path() or Path.home()
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Select Source Destination")
+            dialog.resize(560, 160)
+            layout = QVBoxLayout(dialog)
+            layout.addWidget(QLabel("Choose where to add the selected local file(s):"))
+
+            destination_bar = QHBoxLayout()
+            destination_combo = QComboBox()
+            destination_combo.setEditable(True)
+            for root in tracked_roots:
+                destination_combo.addItem(str(root))
+            if str(start_dir).strip():
+                destination_combo.setCurrentText(str(start_dir))
+            browse_btn = QPushButton("Browse")
+            destination_bar.addWidget(QLabel("Destination"))
+            destination_bar.addWidget(destination_combo, stretch=1)
+            destination_bar.addWidget(browse_btn)
+            layout.addLayout(destination_bar)
+
+            def _browse_destination() -> None:
+                selected = QFileDialog.getExistingDirectory(
+                    dialog, "Select Source Destination", destination_combo.currentText().strip() or str(start_dir)
+                )
+                if selected:
+                    destination_combo.setCurrentText(selected)
+
+            browse_btn.clicked.connect(_browse_destination)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.Accepted:
+                return None
+
+            destination_text = destination_combo.currentText().strip()
+            if not destination_text:
+                self._error("Destination folder is required.")
+                return None
+            destination = Path(destination_text)
+            if not destination.is_dir():
+                self._error("Selected destination folder does not exist.")
+                return None
+            return destination
+
+        def _add_selected_local_files_to_source(self) -> None:
+            selected_files = self._selected_local_file_paths()
+            if not selected_files:
+                self._error("Select at least one local file to add to source.")
+                return
+            destination = self._choose_source_destination_directory(self.last_loaded_source_directory)
+            if not destination:
+                return
+            self._add_local_files_to_source(selected_files, destination)
 
         def _path_for_list_item(self, list_widget: QListWidget, item: QListWidgetItem) -> Optional[Path]:
             if list_widget in {

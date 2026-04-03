@@ -2348,10 +2348,10 @@ class RecordsMixin:
                 return
 
             current_directory = self._validate_current_directory()
-            project_dir = self._validate_current_project()
-            if not current_directory or not project_dir:
+            if not current_directory:
                 return
 
+            project_dir = self._current_project_path() or Path.home()
             start_dir = str(project_dir)
             file_paths, _ = QFileDialog.getOpenFileNames(
                 self,
@@ -2362,24 +2362,39 @@ class RecordsMixin:
             if not file_paths:
                 return
 
+            self._add_local_files_to_source([Path(path) for path in file_paths], current_directory)
+
+        def _add_local_files_to_source(self, file_paths: List[Path], destination_directory: Path) -> None:
+            if not self._validate_identity():
+                return
+            project_dir = self._validate_current_project()
+            if not project_dir:
+                return
+            if not destination_directory.is_dir():
+                self._error("Selected destination source folder does not exist.")
+                return
+            if not file_paths:
+                self._error("Select at least one local file to add.")
+                return
+
             errors: List[str] = []
+            success_count = 0
             with self._busy_action("Adding file(s) to source..."):
-                for file_path in file_paths:
-                    local_file = Path(file_path)
-                    target_file = current_directory / local_file.name
+                for local_file in file_paths:
+                    target_file = destination_directory / local_file.name
                     if target_file.exists():
                         errors.append(f"Already exists in source: {target_file.name}")
                         continue
 
                     try:
                         shutil.copy2(local_file, target_file)
-                        index = self._ensure_source_index(current_directory)
+                        index = self._ensure_source_index(destination_directory)
                         files = index.get("files", {})
                         file_id = ""
                         if isinstance(files, dict):
                             file_id = self._new_file_id({str(key).strip() for key in files.keys()})
                             files[file_id] = self._normalize_source_index_entry(
-                                current_directory,
+                                destination_directory,
                                 {
                                     "file_id": file_id,
                                     "current_name": target_file.name,
@@ -2389,23 +2404,25 @@ class RecordsMixin:
                                     "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                                 },
                             )
-                            self._save_source_index(current_directory, index)
+                            self._save_source_index(destination_directory, index)
                         self._append_history(
-                            current_directory,
+                            destination_directory,
                             "ADD_FILE",
                             target_file.name,
                             file_id=file_id,
                         )
-                        self._invalidate_directory_caches(current_directory)
+                        self._invalidate_directory_caches(destination_directory)
+                        success_count += 1
                     except OSError as exc:
                         errors.append(f"{local_file.name}: {exc}")
 
-                self._refresh_source_files()
+                if self.current_directory == destination_directory:
+                    self._refresh_source_files()
 
             if errors:
                 self._error("Some files failed to add:\n" + "\n".join(errors))
-            else:
-                self._info("File(s) added to source folder.")
+            if success_count > 0:
+                self._info(f"Added {success_count} local file(s) to source.")
 
         def _open_source_item(self, item: QTableWidgetItem) -> None:
             self._open_paths([Path(str(item.data(Qt.UserRole)))])
@@ -2446,6 +2463,32 @@ class RecordsMixin:
             chosen = menu.exec(self.files_list.viewport().mapToGlobal(pos))
             if chosen in action_map:
                 self._handle_source_file_context_action(action_map[chosen])
+
+        def _show_local_file_context_menu(self, pos: QPoint) -> None:
+            row = self.local_files_list.rowAt(pos.y())
+            if (
+                row >= 0
+                and self.local_files_list.item(row, 0) is not None
+                and not self.local_files_list.item(row, 0).isSelected()
+            ):
+                self.local_files_list.clearSelection()
+                self.local_files_list.selectRow(row)
+                self.local_files_list.setCurrentCell(row, 0)
+
+            menu = QMenu(self)
+            open_action = menu.addAction("Open Selected")
+            add_to_source_action = menu.addAction("Add Local File(s) To Source")
+            refresh_action = menu.addAction("Refresh")
+            view_location_action = menu.addAction("View Location")
+            chosen = menu.exec(self.local_files_list.viewport().mapToGlobal(pos))
+            if chosen == open_action:
+                self._open_selected_local_files()
+            elif chosen == add_to_source_action:
+                self._add_selected_local_files_to_source()
+            elif chosen == refresh_action:
+                self._refresh_local_files()
+            elif chosen == view_location_action:
+                self._view_local_current_directory_location()
 
         def _handle_source_file_context_action(self, action_id: str) -> None:
             if action_id == "open":
@@ -3036,6 +3079,40 @@ class RecordsMixin:
                 self._move_selected_source_top()
             elif chosen == move_bottom_action:
                 self._move_selected_source_bottom()
+
+        def _show_local_roots_context_menu(self, pos: QPoint) -> None:
+            item = self.local_roots_list.itemAt(pos)
+            if item is not None and not item.isSelected():
+                self.local_roots_list.clearSelection()
+                item.setSelected(True)
+                self.local_roots_list.setCurrentItem(item)
+
+            menu = QMenu(self)
+            track_browse_action = menu.addAction("Track Dir (Browse)")
+            track_current_action = menu.addAction("Track Directory")
+            view_location_action = menu.addAction("View Location")
+            untrack_action = menu.addAction("Untrack Dir")
+            move_up_action = menu.addAction("Move Up")
+            move_down_action = menu.addAction("Move Down")
+            move_top_action = menu.addAction("Move to Top")
+            move_bottom_action = menu.addAction("Move to Bottom")
+            chosen = menu.exec(self.local_roots_list.mapToGlobal(pos))
+            if chosen == track_browse_action:
+                self._add_local_directory()
+            elif chosen == track_current_action:
+                self._track_current_local_directory()
+            elif chosen == view_location_action:
+                self._view_selected_local_directory_location()
+            elif chosen == untrack_action:
+                self._remove_local_directory()
+            elif chosen == move_up_action:
+                self._move_selected_local_root_up()
+            elif chosen == move_down_action:
+                self._move_selected_local_root_down()
+            elif chosen == move_top_action:
+                self._move_selected_local_root_top()
+            elif chosen == move_bottom_action:
+                self._move_selected_local_root_bottom()
 
         def _open_paths(self, paths: List[Path]) -> None:
             errors: List[str] = []

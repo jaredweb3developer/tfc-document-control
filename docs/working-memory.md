@@ -7,7 +7,7 @@ Update it at the end of any meaningful change so the next session does not need 
 
 ## Current Snapshot
 
-- Active maintainability milestone: `0.2.1`.
+- Active maintainability milestone: `0.2.2`.
 - `app.py` has been reduced to a compatibility entrypoint plus shared constants/dataclasses.
 - The application behavior still lives primarily inside `DocumentControlApp`, but the implementation is now split across mixins under `document_control/mixins/`.
 - Automated pytest remains constrained in this environment by Windows temp-directory cleanup permissions; current branch confidence is based on targeted manual testing on copied project/source data.
@@ -84,6 +84,14 @@ Append a short block for each meaningful session:
 - Behavior changed: Missing tracked source directories remain visible and can be manually relinked to a moved folder without replacing the project-level source identity; project notes can be copied or moved between projects using the same searchable project picker pattern used by favorites; the source Files area now uses a table with Explorer-style `Name`, `Date modified`, `Type`, and `Size` columns; file-table columns can be sorted by clicking the header, with date and size sorting using real sortable values rather than plain string order.
 - Tests run: Manual validation on copied project and source folders covered source-directory relink with restart persistence, project-note copy/move between projects with metadata inspection in `dctl.json`, source-file detail display, and file-table header sorting by all columns. Targeted pytest attempts for the new tests remained blocked by the same Windows temp cleanup `WinError 5`.
 - Risks or follow-up: Individual externally moved source files still do not have identity-preserving relink support; that item remains deferred for `0.2.2`. File-table sorting has only been manually validated so far in this environment.
+
+### 2026-04-02 (`0.2.2` branch)
+
+- Goal: Convert `Source Files` into a generic tabbed `Files` section with `Source` and `Local` browsing, and add local-to-source transfer with destination selection.
+- Files/areas changed: `app.py`, `document_control/window.py`, `document_control/mixins/ui.py`, `document_control/mixins/sources.py`, `document_control/mixins/records.py`, `document_control/mixins/config.py`, `document_control/mixins/projects.py`, `tests/test_context_menus.py`, `tests/test_local_files_tab.py`, `docs/features.md`, `docs/working-memory.md`.
+- Behavior changed: Main tab section label is now `Files`; the section contains `Source` and `Local` tabs. The Local tab supports tracked local directories, local directory browsing, local file listing with metadata columns, and local file context actions. Users can select local files and run `Add Local File(s) To Source`, which opens a destination chooser dialog defaulting to the most recently loaded source folder while allowing destination override.
+- Tests run: `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m py_compile app.py document_control/window.py document_control/mixins/config.py document_control/mixins/projects.py document_control/mixins/sources.py document_control/mixins/records.py document_control/mixins/ui.py`; `.venv/bin/python -m pytest -q tests/test_local_files_tab.py tests/test_context_menus.py tests/test_project_selected_source.py tests/test_ordering_controls.py` (`13 passed`).
+- Risks or follow-up: Local directory metadata is now persisted in project config (`local_directories`, `selected_local_directory`), so any external tools that strictly validate `dctl.json` keys should tolerate these additive fields; broad full-suite pytest has not been re-run in this slice.
 
 ## Maintenance Rule
 
