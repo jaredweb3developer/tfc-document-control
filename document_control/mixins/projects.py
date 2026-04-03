@@ -968,9 +968,11 @@ class ProjectsMixin:
                     self._error("Select at least one reference copy.")
                     return
                 with self._busy_action("Removing reference copy record(s)..."):
-                    self._remove_record_indexes(indexes)
+                    errors = self._remove_record_indexes(indexes)
                     self._save_records()
                     self._render_records_tables()
+                if errors:
+                    self._error("Some reference copies could not be removed:\n" + "\n".join(errors))
                 refresh_tables()
 
             def delete_untracked_selected() -> None:

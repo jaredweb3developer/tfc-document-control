@@ -986,14 +986,6 @@ class SourcesMixin:
                     paths.append(path)
             return paths
 
-        def _set_local_reference_read_only(self, path: Path) -> None:
-            # Best-effort: mark reference copies read-only on local filesystem.
-            try:
-                current_mode = path.stat().st_mode
-                path.chmod(current_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
-            except OSError:
-                return
-
         def _copy_selected_as_reference(self) -> None:
             selected_files = self._selected_source_file_paths()
             target = self._choose_project_target(
@@ -1057,7 +1049,6 @@ class SourcesMixin:
                         try:
                             local_file.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(source_file, local_file)
-                            self._set_local_reference_read_only(local_file)
                             self.records.append(
                                 CheckoutRecord(
                                     source_file=str(source_file),
@@ -1467,9 +1458,13 @@ class SourcesMixin:
                 )
                 return
             if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 3:
-                self._remove_record_indexes(self._selected_record_indexes_from_list_widget(self.project_reference_list))
+                errors = self._remove_record_indexes(
+                    self._selected_record_indexes_from_list_widget(self.project_reference_list)
+                )
                 self._save_records()
                 self._render_records_tables()
+                if errors:
+                    self._error("Some reference copies could not be removed:\n" + "\n".join(errors))
                 return
             self._remove_selected_favorites()
 
@@ -1730,9 +1725,13 @@ class SourcesMixin:
             elif chosen == load_location_action:
                 self._load_selected_file_location_from_list(self.project_reference_list)
             elif chosen == remove_ref_action:
-                self._remove_record_indexes(self._selected_record_indexes_from_list_widget(self.project_reference_list))
+                errors = self._remove_record_indexes(
+                    self._selected_record_indexes_from_list_widget(self.project_reference_list)
+                )
                 self._save_records()
                 self._render_records_tables()
+                if errors:
+                    self._error("Some reference copies could not be removed:\n" + "\n".join(errors))
             elif chosen == customize_action:
                 self._customize_records_from_indexes(
                     self._selected_record_indexes_from_list_widget(self.project_reference_list)

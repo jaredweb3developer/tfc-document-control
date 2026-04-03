@@ -1848,11 +1848,55 @@ class RecordsMixin:
             if switched:
                 self._info(f"Switched to revision {revision.get('id', '')}.")
 
-        def _remove_record_indexes(self, record_indexes: List[int]) -> None:
-            selected = set(record_indexes)
-            self.records = [
-                record for idx, record in enumerate(self.records) if idx not in selected
-            ]
+        def _clear_local_file_read_only(self, path: Path) -> None:
+            try:
+                current_mode = path.stat().st_mode
+                path.chmod(current_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+            except OSError:
+                return
+
+        def _prune_empty_reference_directories(self, record: CheckoutRecord) -> None:
+            project_dir = Path(record.project_dir)
+            reference_root = project_dir / "reference_copies"
+            current = Path(record.local_file).parent
+            try:
+                while current != reference_root and reference_root in current.parents:
+                    current.rmdir()
+                    current = current.parent
+            except OSError:
+                return
+            try:
+                if current == reference_root:
+                    current.rmdir()
+            except OSError:
+                return
+
+        def _remove_record_indexes(self, record_indexes: List[int]) -> List[str]:
+            selected = {idx for idx in record_indexes if 0 <= idx < len(self.records)}
+            if not selected:
+                return []
+
+            errors: List[str] = []
+            remaining: List[CheckoutRecord] = []
+            for idx, record in enumerate(self.records):
+                if idx not in selected:
+                    remaining.append(record)
+                    continue
+                if record.record_type != "reference_copy":
+                    continue
+
+                local_path = Path(record.local_file)
+                try:
+                    if local_path.exists():
+                        self._clear_local_file_read_only(local_path)
+                        local_path.unlink()
+                    self._prune_empty_reference_directories(record)
+                except OSError as exc:
+                    remaining.append(record)
+                    errors.append(f"{local_path.name}: {exc}")
+
+            self.records = remaining
+            return errors
 
         def _record_index_for_controlled_file(self, entry: Dict[str, str]) -> int:
             file_id = str(entry.get("file_id", "")).strip()
@@ -2849,9 +2893,11 @@ class RecordsMixin:
                 return
 
             with self._busy_action("Removing reference copy record(s)..."):
-                self._remove_record_indexes(removable_indexes)
+                errors = self._remove_record_indexes(removable_indexes)
                 self._save_records()
                 self._render_records_tables()
+            if errors:
+                self._error("Some reference copies could not be removed:\n" + "\n".join(errors))
 
         def _show_controlled_files_context_menu(self, pos: QPoint) -> None:
             row = self.controlled_files_table.rowAt(pos.y())

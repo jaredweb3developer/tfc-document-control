@@ -1,4 +1,5 @@
 from pathlib import Path
+import stat
 
 from app import CheckoutRecord
 
@@ -88,3 +89,35 @@ def test_checkin_selected_rejects_reference_copy_rows(app_env, monkeypatch):
     app._checkin_selected()
 
     assert "Reference copies cannot be checked in" in captured["msg"]
+
+
+def test_remove_reference_copy_deletes_local_file_and_clears_read_only(app_env):
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "RefDelete"
+    ref_local = project_dir / "reference_copies" / "src-1" / "nested" / "x.dwg"
+    ref_local.parent.mkdir(parents=True, exist_ok=True)
+    ref_local.write_text("ref", encoding="utf-8")
+    ref_local.chmod(ref_local.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+
+    app.records = [
+        CheckoutRecord(
+            source_file=str(tmp / "src" / "x.dwg"),
+            locked_source_file="",
+            local_file=str(ref_local),
+            initials="JH",
+            project_name="RefDelete",
+            project_dir=str(project_dir),
+            source_root=str(tmp / "src"),
+            checked_out_at="",
+            record_type="reference_copy",
+        )
+    ]
+
+    errors = app._remove_record_indexes([0])
+
+    assert errors == []
+    assert app.records == []
+    assert not ref_local.exists()
+    assert not (project_dir / "reference_copies" / "src-1" / "nested").exists()
