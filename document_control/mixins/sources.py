@@ -2096,6 +2096,40 @@ class SourcesMixin:
             self._save_project_logical_view("project_favorites", view)
             self._refresh_favorites_list(self._current_project_favorites())
 
+        def _move_selected_items_to_folder_from_active_tab(self) -> None:
+            if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 1:
+                self._move_selected_global_favorites_to_folder()
+                return
+            if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 2:
+                self._move_selected_record_items_to_folder(
+                    self.project_checked_out_list,
+                    "project_checked_out",
+                    "Move Checked Out Items To Folder",
+                    "Create a checked-out folder first.",
+                )
+                return
+            if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 3:
+                self._move_selected_record_items_to_folder(
+                    self.project_reference_list,
+                    "project_reference",
+                    "Move Reference Items To Folder",
+                    "Create a reference folder first.",
+                )
+                return
+            self._move_selected_favorites_to_folder()
+
+        def _move_selected_items_to_root_from_active_tab(self) -> None:
+            if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 1:
+                self._move_selected_global_favorites_to_root()
+                return
+            if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 2:
+                self._move_selected_record_items_to_root(self.project_checked_out_list, "project_checked_out")
+                return
+            if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 3:
+                self._move_selected_record_items_to_root(self.project_reference_list, "project_reference")
+                return
+            self._move_selected_favorites_to_root()
+
         def _open_favorite_item(self, item: QListWidgetItem) -> None:
             if str(item.data(Qt.UserRole + 1)) == "folder":
                 self._set_current_logical_folder_id("project_favorites", str(item.data(Qt.UserRole)).strip())

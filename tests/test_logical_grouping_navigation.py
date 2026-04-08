@@ -442,6 +442,72 @@ def test_project_reference_render_folder_and_navigate(app_env):
     assert app.project_reference_list.item(0).text() == "A.pdf"
 
 
+def test_move_selected_reference_items_to_folder_from_active_tab_moves_all_selected(app_env, monkeypatch):
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "ReferenceMove"
+    source_root = tmp / "src-reference-move"
+    source_root.mkdir(parents=True)
+    local_a = project_dir / "reference_copies" / "A.pdf"
+    local_b = project_dir / "reference_copies" / "B.pdf"
+    local_a.parent.mkdir(parents=True, exist_ok=True)
+    local_a.write_text("a", encoding="utf-8")
+    local_b.write_text("b", encoding="utf-8")
+
+    app._write_project_config(
+        project_dir=project_dir,
+        name="ReferenceMove",
+        sources=[str(source_root)],
+        logical_views={
+            "project_reference": {
+                "folders": [
+                    {"id": "ref-folder-1", "name": "Issued", "parent_id": "", "sort_order": 0},
+                ],
+                "placements": [],
+            }
+        },
+    )
+    app.records = [
+        CheckoutRecord(
+            source_file=str(source_root / "A.pdf"),
+            locked_source_file="",
+            local_file=str(local_a),
+            initials="JH",
+            project_name="ReferenceMove",
+            project_dir=str(project_dir),
+            source_root=str(source_root),
+            id="ref-move-1",
+            record_type="reference_copy",
+        ),
+        CheckoutRecord(
+            source_file=str(source_root / "B.pdf"),
+            locked_source_file="",
+            local_file=str(local_b),
+            initials="JH",
+            project_name="ReferenceMove",
+            project_dir=str(project_dir),
+            source_root=str(source_root),
+            id="ref-move-2",
+            record_type="reference_copy",
+        ),
+    ]
+    app._load_project_from_dir(project_dir)
+    app.favorites_tabs.setCurrentIndex(3)
+
+    app.project_reference_list.item(1).setSelected(True)
+    app.project_reference_list.item(2).setSelected(True)
+    monkeypatch.setattr(app, "_choose_record_target_folder", lambda *args, **kwargs: "ref-folder-1")
+
+    app._move_selected_items_to_folder_from_active_tab()
+
+    cfg = app._read_project_config(project_dir)
+    placements = cfg.get("logical_views", {}).get("project_reference", {}).get("placements", [])
+    parent_by_key = {row["item_key"]: row["parent_folder_id"] for row in placements}
+    assert parent_by_key["ref-move-1"] == "ref-folder-1"
+    assert parent_by_key["ref-move-2"] == "ref-folder-1"
+
+
 def test_record_logical_placements_are_pruned_when_record_missing(app_env):
     app = app_env["app"]
     tmp = app_env["tmp"]
