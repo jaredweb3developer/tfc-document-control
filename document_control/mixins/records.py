@@ -2520,18 +2520,42 @@ class RecordsMixin:
                 self.local_files_list.setCurrentCell(row, 0)
 
             menu = QMenu(self)
-            open_action = menu.addAction("Open Selected")
-            add_to_source_action = menu.addAction("Add Local File(s) To Source")
-            refresh_action = menu.addAction("Refresh")
-            view_location_action = menu.addAction("View Location")
+            actions = [
+                ("Open Selected", "open"),
+                ("Create Directory", "create_dir"),
+                ("Rename Selected", "rename"),
+                ("Move Selected", "move"),
+                ("Delete Selected", "delete"),
+                ("Add Selected To Favorites", "favorite"),
+                ("Copy As Reference", "reference"),
+                ("Add Local File(s) To Source", "add_to_source"),
+                ("Refresh", "refresh"),
+                ("View Location", "view_location"),
+            ]
+            action_map: Dict[QAction, str] = {}
+            for label, action_id in actions:
+                action_map[menu.addAction(label)] = action_id
             chosen = menu.exec(self.local_files_list.viewport().mapToGlobal(pos))
-            if chosen == open_action:
+            action_id = action_map.get(chosen)
+            if action_id == "open":
                 self._open_selected_local_files()
-            elif chosen == add_to_source_action:
+            elif action_id == "create_dir":
+                self._create_directory_in_current_local()
+            elif action_id == "rename":
+                self._rename_selected_local_item()
+            elif action_id == "move":
+                self._move_selected_local_items()
+            elif action_id == "delete":
+                self._delete_selected_local_items()
+            elif action_id == "favorite":
+                self._add_selected_local_files_to_favorites()
+            elif action_id == "reference":
+                self._copy_selected_local_files_as_reference()
+            elif action_id == "add_to_source":
                 self._add_selected_local_files_to_source()
-            elif chosen == refresh_action:
+            elif action_id == "refresh":
                 self._refresh_local_files()
-            elif chosen == view_location_action:
+            elif action_id == "view_location":
                 self._view_local_current_directory_location()
 
         def _handle_source_file_context_action(self, action_id: str) -> None:

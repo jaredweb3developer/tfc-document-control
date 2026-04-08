@@ -63,6 +63,16 @@ def test_create_project_switches_current_project(app_env):
     cfg = app._read_project_config(project_dir)
     assert cfg.get("client") == "ClientX"
     assert cfg.get("year_started") == "2025"
+    local_root = project_dir / "Local Files"
+    assert cfg.get("local_directories") == [str(local_root)]
+    assert cfg.get("selected_local_directory") == str(local_root)
+    assert local_root.is_dir()
+    assert (local_root / "Drawings").is_dir()
+    assert (local_root / "Publish").is_dir()
+    assert (local_root / "Transmittals").is_dir()
+    assert (local_root / "Redlines").is_dir()
+    assert (local_root / "Info").is_dir()
+    assert (local_root / "BOM").is_dir()
 
 
 def test_default_new_project_name_is_blank(app_env):
@@ -107,8 +117,8 @@ def test_source_file_search_filters_file_list(app_env):
     app.file_search_edit.setText("dwg")
     app._refresh_source_files()
 
-    assert app.files_list.count() == 1
-    assert app.files_list.item(0).text() == "plan-A.dwg"
+    assert app.files_list.rowCount() == 1
+    assert app.files_list.item(0, 0).text() == "plan-A.dwg"
 
 
 def test_loading_project_without_sources_clears_controlled_files(app_env):
@@ -182,3 +192,27 @@ def test_resolve_new_project_name_keeps_entered_on_no_prompt_accept(app_env, mon
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.No)
     resolved = app._resolve_new_project_name("Custom Name", source_dir)
     assert resolved == "Custom Name"
+
+
+def test_infer_project_metadata_from_source_dir_with_clients_path(app_env):
+    app = app_env["app"]
+
+    name, client, year_started = app._infer_project_metadata_from_source_dir(
+        r"V:/Clients/ND Paper-Rumford/26051 - R8 Chiller #3"
+    )
+
+    assert name == "26051 - R8 Chiller #3"
+    assert client == "ND Paper-Rumford"
+    assert year_started == "2026"
+
+
+def test_infer_project_metadata_from_source_dir_without_clients_segment(app_env):
+    app = app_env["app"]
+
+    name, client, year_started = app._infer_project_metadata_from_source_dir(
+        r"V:/Projects/Internal/26051 - R8 Chiller #3"
+    )
+
+    assert name == "26051 - R8 Chiller #3"
+    assert client == ""
+    assert year_started == "2026"

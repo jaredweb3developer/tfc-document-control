@@ -407,6 +407,9 @@ class UiMixin:
                 self._build_options_button(
                     [
                         ("Browse", self._browse_directory_tree_root),
+                        ("Refresh", self._refresh_directory_browser),
+                        ("Up Directory", self._go_to_parent_source_directory),
+                        ("Create Directory", self._create_directory_in_current_source),
                         ("View Location", self._view_current_directory_location),
                         ("Track Directory", self._track_current_directory),
                     ]
@@ -627,6 +630,9 @@ class UiMixin:
                 self._build_options_button(
                     [
                         ("Browse", self._browse_local_directory_tree_root),
+                        ("Refresh", self._refresh_local_directory_browser),
+                        ("Up Directory", self._go_to_parent_local_directory),
+                        ("Create Directory", self._create_directory_in_current_local),
                         ("View Location", self._view_local_current_directory_location),
                         ("Track Directory", self._track_current_local_directory),
                     ]
@@ -654,7 +660,13 @@ class UiMixin:
                     [
                         ("Refresh", self._refresh_local_files),
                         ("Open Selected", self._open_selected_local_files),
+                        ("Create Directory", self._create_directory_in_current_local),
+                        ("Rename Selected", self._rename_selected_local_item),
+                        ("Move Selected", self._move_selected_local_items),
+                        ("Delete Selected", self._delete_selected_local_items),
                         ("View Location", self._view_local_current_directory_location),
+                        ("Add Selected To Favorites", self._add_selected_local_files_to_favorites),
+                        ("Copy As Reference", self._copy_selected_local_files_as_reference),
                         ("Add Local File(s) To Source", self._add_selected_local_files_to_source),
                     ]
                 )

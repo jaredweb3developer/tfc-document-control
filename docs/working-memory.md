@@ -96,3 +96,8 @@ Append a short block for each meaningful session:
 ## Maintenance Rule
 
 If a future task changes architecture, persistence formats, feature scope, or test strategy, update this file in the same change.
+
+## Environment Note
+
+- On Windows 11, the user will manually run `pytest` and write the results to `pytest-manual-output.txt`. Future verification steps should reference that file when available instead of assuming local automated pytest execution succeeded in this environment.
+- When a change is ready for verification, include the appropriate manual test command in the response so the user can run it on Windows 11 and capture the output in `pytest-manual-output.txt`.

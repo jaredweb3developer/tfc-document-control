@@ -1,0 +1,1 @@
+.\.venv\Scripts\python.exe -m pytest tests\test_local_files_tab.py -q *> pytest-manual-output.txt

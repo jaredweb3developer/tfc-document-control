@@ -45,6 +45,7 @@ htmlcov/
 .mypy_cache/
 .pyre/
 .ruff_cache/
+pytest-manual-output.txt
 
 # Qt / GUI tooling
 *.qrc.depends

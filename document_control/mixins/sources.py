@@ -203,6 +203,97 @@ class SourcesMixin:
             root_item.setExpanded(True)
             self.local_directory_tree.setCurrentItem(root_item)
 
+        def _refresh_directory_browser(self) -> None:
+            root_path = self.directory_tree_root
+            current_directory = self.current_directory
+            self._set_directory_tree_root(root_path)
+            if current_directory and current_directory.is_dir():
+                self._set_current_directory(current_directory)
+
+        def _refresh_local_directory_browser(self) -> None:
+            root_path = self.local_directory_tree_root
+            current_directory = self.local_current_directory
+            self._set_local_directory_tree_root(root_path)
+            if current_directory and current_directory.is_dir():
+                self._set_local_current_directory(current_directory)
+
+        def _go_to_parent_source_directory(self) -> None:
+            current_directory = self._validate_current_directory()
+            if not current_directory:
+                return
+            parent = current_directory.parent
+            if parent == current_directory:
+                self._info("Already at the top-level directory.")
+                return
+            if self.directory_tree_root and current_directory == self.directory_tree_root:
+                self._set_directory_tree_root(parent)
+            self._set_current_directory_with_feedback(parent, "Loading parent directory...")
+
+        def _go_to_parent_local_directory(self) -> None:
+            current_directory = self.local_current_directory
+            if not current_directory or not current_directory.is_dir():
+                self._error("Select a local directory.")
+                return
+            parent = current_directory.parent
+            if parent == current_directory:
+                self._info("Already at the top-level directory.")
+                return
+            if self.local_directory_tree_root and current_directory == self.local_directory_tree_root:
+                self._set_local_directory_tree_root(parent)
+            self._set_local_current_directory_with_feedback(parent, "Loading parent local directory...")
+
+        def _safe_new_directory_name(self, name: str) -> Optional[str]:
+            new_name = name.strip()
+            if not new_name:
+                self._error("Directory name is required.")
+                return None
+            if Path(new_name).name != new_name or any(sep in new_name for sep in ("\\", "/")):
+                self._error("Enter a directory name only, not a path.")
+                return None
+            return new_name
+
+        def _create_directory_in(self, parent_directory: Optional[Path], *, label: str) -> Optional[Path]:
+            if not parent_directory or not parent_directory.is_dir():
+                self._error(f"Select a {label} directory.")
+                return None
+            name, accepted = QInputDialog.getText(
+                self,
+                "Create Directory",
+                "Directory name:",
+            )
+            if not accepted:
+                return None
+            new_name = self._safe_new_directory_name(name)
+            if not new_name:
+                return None
+            target = parent_directory / new_name
+            if target.exists():
+                self._error(f"A directory or file named '{new_name}' already exists.")
+                return None
+            try:
+                target.mkdir()
+            except OSError as exc:
+                self._error(f"Could not create directory:\n{exc}")
+                return None
+            return target
+
+        def _create_directory_in_current_source(self) -> None:
+            current_directory = self._validate_current_directory()
+            if not current_directory:
+                return
+            target = self._create_directory_in(current_directory, label="source")
+            if target is None:
+                return
+            self._refresh_directory_browser()
+            self._info(f"Created directory:\n{target}")
+
+        def _create_directory_in_current_local(self) -> None:
+            target = self._create_directory_in(self.local_current_directory, label="local")
+            if target is None:
+                return
+            self._refresh_local_directory_browser()
+            self._info(f"Created directory:\n{target}")
+
         def _browse_directory_tree_root(self) -> None:
             start_dir = str(
                 self.current_directory
@@ -531,6 +622,7 @@ class SourcesMixin:
                 self.local_files_list.insertRow(row_idx)
                 name_item = SortableTableWidgetItem(item.name, item.name.lower())
                 name_item.setData(Qt.UserRole, str(item))
+                name_item.setData(Qt.UserRole + 1, "file")
                 tooltip_lines = [str(item)]
                 if modified_text:
                     tooltip_lines.append(f"Modified: {modified_text}")
@@ -889,12 +981,19 @@ class SourcesMixin:
             self._refresh_local_files()
 
         def _open_local_item(self, item: QTableWidgetItem) -> None:
-            self._open_paths([Path(str(item.data(Qt.UserRole)))])
+            path = Path(str(item.data(Qt.UserRole)))
+            if path.is_dir():
+                self._set_local_current_directory_with_feedback(path, "Loading local directory...")
+                return
+            self._open_paths([path])
 
         def _open_selected_local_files(self) -> None:
             selected_files = self._selected_local_file_paths()
             if not selected_files:
-                self._error("Select at least one local file to open.")
+                self._error("Select at least one local item to open.")
+                return
+            if len(selected_files) == 1 and selected_files[0].is_dir():
+                self._set_local_current_directory_with_feedback(selected_files[0], "Loading local directory...")
                 return
             self._open_paths(selected_files)
 
@@ -955,7 +1054,7 @@ class SourcesMixin:
             return destination
 
         def _add_selected_local_files_to_source(self) -> None:
-            selected_files = self._selected_local_file_paths()
+            selected_files = [path for path in self._selected_local_file_paths() if path.is_file()]
             if not selected_files:
                 self._error("Select at least one local file to add to source.")
                 return
@@ -963,6 +1062,165 @@ class SourcesMixin:
             if not destination:
                 return
             self._add_local_files_to_source(selected_files, destination)
+
+        def _rename_selected_local_item(self) -> None:
+            selected_items = self._selected_local_file_paths()
+            if len(selected_items) != 1:
+                self._error("Select exactly one local item to rename.")
+                return
+            source_path = selected_items[0]
+            if not source_path.exists():
+                self._error("The selected local item no longer exists.")
+                self._refresh_local_directory_browser()
+                return
+
+            current_name = source_path.name
+            new_name, accepted = QInputDialog.getText(
+                self,
+                "Rename Local Item",
+                "New name:",
+                text=current_name,
+            )
+            if not accepted:
+                return
+            new_name = new_name.strip()
+            if not new_name:
+                self._error("Name is required.")
+                return
+            if new_name == current_name:
+                return
+            if Path(new_name).name != new_name or any(sep in new_name for sep in ("\\", "/")):
+                self._error("Enter a name only, not a path.")
+                return
+
+            target_path = source_path.with_name(new_name)
+            if target_path.exists():
+                self._error(f"An item named '{new_name}' already exists in this folder.")
+                return
+            try:
+                source_path.rename(target_path)
+            except OSError as exc:
+                self._error(f"Could not rename local item:\n{exc}")
+                return
+            self._refresh_local_directory_browser()
+            self._info(f"Renamed '{current_name}' to '{new_name}'.")
+
+        def _move_selected_local_items(self) -> None:
+            selected_items = self._selected_local_file_paths()
+            if not selected_items:
+                self._error("Select at least one local item to move.")
+                return
+            start_dir = str(self.local_current_directory or self._current_local_root() or Path.home())
+            destination_text = QFileDialog.getExistingDirectory(self, "Move Local Item(s) To", start_dir)
+            if not destination_text:
+                return
+            destination = Path(destination_text)
+            if not destination.is_dir():
+                self._error("Selected destination folder does not exist.")
+                return
+
+            errors: List[str] = []
+            moved_count = 0
+            with self._busy_action("Moving local item(s)..."):
+                for source_path in selected_items:
+                    target_path = destination / source_path.name
+                    try:
+                        if not source_path.exists():
+                            errors.append(f"{source_path.name}: missing")
+                            continue
+                        if target_path.exists():
+                            errors.append(f"{source_path.name}: destination already exists")
+                            continue
+                        if source_path.is_dir():
+                            try:
+                                destination.relative_to(source_path)
+                                errors.append(f"{source_path.name}: cannot move a folder into itself")
+                                continue
+                            except ValueError:
+                                pass
+                        shutil.move(str(source_path), str(target_path))
+                        moved_count += 1
+                    except OSError as exc:
+                        errors.append(f"{source_path.name}: {exc}")
+                self._refresh_local_directory_browser()
+
+            if errors:
+                self._error("Some local items could not be moved:\n" + "\n".join(errors))
+            if moved_count:
+                self._info(f"Moved {moved_count} local item(s).")
+
+        def _delete_selected_local_items(self) -> None:
+            selected_items = self._selected_local_file_paths()
+            if not selected_items:
+                self._error("Select at least one local item to delete.")
+                return
+            confirm = QMessageBox.question(
+                self,
+                "Delete Local Item(s)",
+                f"Delete {len(selected_items)} selected local item(s)? This cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+
+            errors: List[str] = []
+            deleted_count = 0
+            with self._busy_action("Deleting local item(s)..."):
+                for item_path in selected_items:
+                    try:
+                        if not item_path.exists():
+                            errors.append(f"{item_path.name}: missing")
+                            continue
+                        if item_path.is_dir():
+                            shutil.rmtree(item_path)
+                        else:
+                            item_path.unlink()
+                        deleted_count += 1
+                    except OSError as exc:
+                        errors.append(f"{item_path.name}: {exc}")
+                self._refresh_local_directory_browser()
+
+            if errors:
+                self._error("Some local items could not be deleted:\n" + "\n".join(errors))
+            if deleted_count:
+                self._info(f"Deleted {deleted_count} local item(s).")
+
+        def _selected_local_regular_file_paths(self) -> List[Path]:
+            return [path for path in self._selected_local_file_paths() if path.is_file()]
+
+        def _add_selected_local_files_to_favorites(self) -> None:
+            selected_files = self._selected_local_regular_file_paths()
+            if not selected_files:
+                self._error("Select at least one local file to favorite.")
+                return
+            target = self._choose_favorite_target(selected_files)
+            if not target:
+                return
+            mode, project_dir = target
+            if mode == "current":
+                self._add_favorite_paths(selected_files)
+            elif mode == "other" and project_dir is not None:
+                self._add_favorite_paths_to_project(project_dir, selected_files)
+            elif mode == "global":
+                self._add_favorite_paths_to_global(selected_files)
+
+        def _copy_selected_local_files_as_reference(self) -> None:
+            selected_files = self._selected_local_regular_file_paths()
+            if not selected_files:
+                self._error("Select at least one local file to copy as reference.")
+                return
+            target = self._choose_project_target(
+                title="Copy Local As Reference",
+                message=f"Copy {len(selected_files)} local file(s) as reference:",
+            )
+            if not target:
+                return
+            mode, project_dir = target
+            if mode == "current":
+                self._copy_local_files_as_reference_to_project(None, selected_files)
+            elif mode == "other" and project_dir is not None:
+                self._copy_local_files_as_reference_to_project(project_dir, selected_files)
 
         def _path_for_list_item(self, list_widget: QListWidget, item: QListWidgetItem) -> Optional[Path]:
             if list_widget in {
@@ -1020,17 +1278,57 @@ class SourcesMixin:
                 self._error("Select at least one source file to copy as reference.")
                 return
 
+            self._copy_reference_files_to_project(
+                project_dir=project_dir,
+                selected_files=selected_files,
+                source_root=source_root,
+                reference_group=self._source_key(project_dir, source_root),
+                operation_directory=current_directory,
+                source_lookup_directory=current_directory,
+            )
+
+        def _copy_local_files_as_reference_to_project(
+            self, target_project_dir: Optional[Path], selected_files: List[Path]
+        ) -> None:
+            if not self._validate_identity():
+                return
+
+            project_dir = target_project_dir or self._validate_current_project()
+            current_directory = self.local_current_directory
+            source_root = self._current_local_root() or current_directory
+            if not project_dir or not current_directory or not source_root:
+                return
+
+            self._copy_reference_files_to_project(
+                project_dir=project_dir,
+                selected_files=selected_files,
+                source_root=source_root,
+                reference_group=f"local_files_{hashlib.sha1(str(source_root).encode('utf-8')).hexdigest()[:10]}",
+                operation_directory=current_directory,
+                source_lookup_directory=None,
+            )
+
+        def _copy_reference_files_to_project(
+            self,
+            *,
+            project_dir: Path,
+            selected_files: List[Path],
+            source_root: Path,
+            reference_group: str,
+            operation_directory: Path,
+            source_lookup_directory: Optional[Path],
+        ) -> None:
             config = self._read_project_config(project_dir)
             project_name = str(config.get("name", project_dir.name))
 
-            reference_root = project_dir / "reference_copies" / self._source_key(project_dir, source_root)
+            reference_root = project_dir / "reference_copies" / reference_group
             copied_at = datetime.now().astimezone().isoformat(timespec="seconds")
             errors: List[str] = []
 
             with self._debug_timed(
                 "copy_reference_selected",
                 selected_count=len(selected_files),
-                directory=str(current_directory),
+                directory=str(operation_directory),
                 source_root=str(source_root),
             ):
                 with self._busy_action("Copying reference file(s)..."):
@@ -1038,7 +1336,11 @@ class SourcesMixin:
                         if not source_file.exists():
                             errors.append(f"Missing source file: {source_file.name}")
                             continue
-                        file_entry = self._source_index_entry_for_current_name(current_directory, source_file.name)
+                        file_entry = (
+                            self._source_index_entry_for_current_name(source_lookup_directory, source_file.name)
+                            if source_lookup_directory is not None
+                            else None
+                        )
                         file_id = str(file_entry.get("file_id", "")).strip() if file_entry else ""
                         try:
                             relative_path = source_file.relative_to(source_root)

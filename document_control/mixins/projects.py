@@ -5,6 +5,53 @@ from app import *
 
 
 class ProjectsMixin:
+        def _infer_project_metadata_from_source_dir(
+            self, source_dir: str
+        ) -> Tuple[str, str, str]:
+            source_dir_value = source_dir.strip()
+            if not source_dir_value:
+                return "", "", ""
+
+            source_path = Path(source_dir_value)
+            project_name = source_path.name.strip()
+            client = ""
+            year_started = ""
+
+            parts = list(source_path.parts)
+            for idx, part in enumerate(parts[:-1]):
+                if part.lower() != "clients":
+                    continue
+                candidate = parts[idx + 1].strip()
+                if candidate:
+                    client = candidate
+                break
+
+            if len(project_name) >= 2 and project_name[:2].isdigit():
+                year_started = f"20{project_name[:2]}"
+
+            return project_name, client, year_started
+
+        def _ensure_project_local_file_structure(self, project_dir: Path) -> Path:
+            local_root = project_dir / "Local Files"
+            local_root.mkdir(parents=True, exist_ok=True)
+            for folder_name in ["Drawings", "Publish", "Transmittals", "Redlines", "Info", "BOM"]:
+                (local_root / folder_name).mkdir(exist_ok=True)
+            return local_root
+
+        def _project_local_directories_with_default(
+            self,
+            project_dir: Path,
+            local_directories: Optional[List[str]] = None,
+            selected_local_directory: str = "",
+        ) -> Tuple[List[str], str]:
+            local_root = self._ensure_project_local_file_structure(project_dir)
+            resolved_local_directories = [str(item) for item in (local_directories or []) if str(item).strip()]
+            local_root_str = str(local_root)
+            if local_root_str not in resolved_local_directories:
+                resolved_local_directories.insert(0, local_root_str)
+            resolved_selected_local_directory = selected_local_directory.strip() or local_root_str
+            return resolved_local_directories, resolved_selected_local_directory
+
         def _create_or_update_project(
             self,
             name: str,
@@ -23,19 +70,24 @@ class ProjectsMixin:
             _ = base_dir
 
             source_list = sources or []
+            resolved_local_directories, selected_local_directory = self._project_local_directories_with_default(
+                project_dir,
+                local_directories,
+            )
             with self._debug_timed("create_or_update_project", project_name=name):
                 with self._busy_action("Creating project..."):
                     self._write_project_config(
                         project_dir=project_dir,
                         name=name,
                         sources=source_list,
-                        local_directories=local_directories or [],
+                        local_directories=resolved_local_directories,
                         extension_filters=extension_filters or [],
                         filter_mode=filter_mode,
                         favorites=favorites or [],
                         notes=notes or [],
                         milestones=milestones or [],
                         selected_source=source_list[0] if source_list else "",
+                        selected_local_directory=selected_local_directory,
                         source_ids=None,
                         client=client,
                         year_started=year_started,
@@ -102,17 +154,25 @@ class ProjectsMixin:
             source_dir_edit.setPlaceholderText("Optional source directory")
             browse_source_btn = QPushButton("Browse")
 
+            def apply_source_directory_defaults(source_dir: str) -> None:
+                inferred_name, inferred_client, inferred_year = self._infer_project_metadata_from_source_dir(source_dir)
+                if inferred_name:
+                    name_edit.setText(inferred_name)
+                if inferred_client:
+                    client_edit.setText(inferred_client)
+                if inferred_year:
+                    year_edit.setText(inferred_year)
+
             def choose_source_dir() -> None:
                 start_dir = source_dir_edit.text().strip() or str(self.current_directory or Path.home())
                 selected = QFileDialog.getExistingDirectory(dialog, "Select Source Directory", start_dir)
                 if selected:
                     source_dir_edit.setText(selected)
-                    if not name_edit.text().strip():
-                        source_name = Path(selected).name.strip()
-                        if source_name:
-                            name_edit.setText(source_name)
+                    apply_source_directory_defaults(selected)
 
             browse_source_btn.clicked.connect(choose_source_dir)
+            if source_dir_edit.text().strip():
+                apply_source_directory_defaults(source_dir_edit.text())
             form_layout.addWidget(QLabel("Project Name:"), 0, 0)
             form_layout.addWidget(name_edit, 0, 1)
             form_layout.addWidget(QLabel("Client:"), 1, 0)
@@ -219,6 +279,16 @@ class ProjectsMixin:
 
             project_dir = config_path.parent
             config = self._read_project_config(project_dir)
+            local_directories, selected_local_directory = self._project_local_directories_with_default(
+                project_dir,
+                [str(item) for item in config.get("local_directories", [])],  # type: ignore[arg-type]
+                str(config.get("selected_local_directory", "")),
+            )
+            self._save_project_config(
+                project_dir,
+                local_directories=local_directories,
+                selected_local_directory=selected_local_directory,
+            )
             self._register_tracked_project(
                 str(config.get("name", project_dir.name)),
                 project_dir,
