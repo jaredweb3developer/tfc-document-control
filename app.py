@@ -113,6 +113,13 @@ class CheckoutRecord:
     id: str = ""
     record_type: str = "checked_out"
     file_id: str = ""
+    source_hash_at_copy: str = ""
+    local_hash_at_copy: str = ""
+    source_mtime_at_copy: float = 0.0
+    local_mtime_at_copy: float = 0.0
+    source_size_at_copy: int = 0
+    local_size_at_copy: int = 0
+    last_refreshed_at: str = ""
 
 
 @dataclass

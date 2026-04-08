@@ -1353,20 +1353,25 @@ class SourcesMixin:
                         try:
                             local_file.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(source_file, local_file)
-                            self.records.append(
-                                CheckoutRecord(
-                                    source_file=str(source_file),
-                                    locked_source_file="",
-                                    local_file=str(local_file),
-                                    initials=self._normalize_initials(),
-                                    project_name=project_name,
-                                    project_dir=str(project_dir),
-                                    source_root=str(source_root),
-                                    checked_out_at=copied_at,
-                                    record_type="reference_copy",
-                                    file_id=file_id,
-                                )
+                            new_record = CheckoutRecord(
+                                source_file=str(source_file),
+                                locked_source_file="",
+                                local_file=str(local_file),
+                                initials=self._normalize_initials(),
+                                project_name=project_name,
+                                project_dir=str(project_dir),
+                                source_root=str(source_root),
+                                checked_out_at=copied_at,
+                                record_type="reference_copy",
+                                file_id=file_id,
                             )
+                            self._apply_reference_copy_baseline(
+                                new_record,
+                                source_path=source_file,
+                                local_path=local_file,
+                                copied_at=copied_at,
+                            )
+                            self.records.append(new_record)
                         except OSError as exc:
                             errors.append(f"{source_file.name}: {exc}")
 
@@ -2229,6 +2234,86 @@ class SourcesMixin:
                     self._error("Some reference copies could not be removed:\n" + "\n".join(errors))
                 return
             self._remove_selected_favorites()
+
+        def _ensure_reference_files_tab_active(self) -> bool:
+            if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 3:
+                return True
+            self._error("Switch to 'Reference Files' to use this action.")
+            return False
+
+        def _selected_project_reference_record_indexes(self) -> List[int]:
+            return self._selected_record_indexes_from_list_widget(self.project_reference_list)
+
+        def _refresh_selected_project_references(self, *, only_if_unchanged: bool = False) -> None:
+            indexes = self._selected_project_reference_record_indexes()
+            if not indexes:
+                self._error("Select at least one reference file.")
+                return
+
+            updated = 0
+            skipped: List[str] = []
+            failed: List[str] = []
+            with self._busy_action("Refreshing reference file(s)..."):
+                for idx in indexes:
+                    if idx < 0 or idx >= len(self.records):
+                        continue
+                    record = self.records[idx]
+                    success, message = self._refresh_reference_record(
+                        record,
+                        only_if_unchanged=only_if_unchanged,
+                    )
+                    if success:
+                        updated += 1
+                    else:
+                        label = Path(record.local_file).name or Path(record.source_file).name or record.id
+                        if message.startswith("Skipped") or message == "Already up to date.":
+                            skipped.append(f"{label}: {message}")
+                        else:
+                            failed.append(f"{label}: {message}")
+
+            self._save_records()
+            self._render_records_tables()
+
+            summary_lines = [f"Updated {updated} reference file(s)."]
+            if skipped:
+                summary_lines.append(f"Skipped {len(skipped)} reference file(s).")
+                summary_lines.extend(skipped[:10])
+            if failed:
+                summary_lines.append(f"Failed {len(failed)} reference file(s).")
+                summary_lines.extend(failed[:10])
+
+            if failed:
+                self._error("\n".join(summary_lines))
+            else:
+                self._info("\n".join(summary_lines))
+
+        def _refresh_selected_references_from_active_tab(self) -> None:
+            if not self._ensure_reference_files_tab_active():
+                return
+            self._refresh_selected_project_references(only_if_unchanged=False)
+
+        def _refresh_selected_references_if_unchanged_from_active_tab(self) -> None:
+            if not self._ensure_reference_files_tab_active():
+                return
+            self._refresh_selected_project_references(only_if_unchanged=True)
+
+        def _check_selected_references_status_from_active_tab(self) -> None:
+            if not self._ensure_reference_files_tab_active():
+                return
+            indexes = self._selected_project_reference_record_indexes()
+            if not indexes:
+                self._error("Select at least one reference file.")
+                return
+            rows = self._reference_status_rows_for_indexes(indexes)
+            if not rows:
+                self._error("Select at least one reference file.")
+                return
+            self._show_reference_status_dialog(rows, "Reference Status")
+
+        def _update_all_references_from_active_tab(self) -> None:
+            if not self._ensure_reference_files_tab_active():
+                return
+            self._update_all_references()
 
         def _add_selected_global_favorites_to_project(self) -> None:
             selected_items = self.global_favorites_list.selectedItems()
@@ -3160,6 +3245,10 @@ class SourcesMixin:
             load_location_action = menu.addAction("Load Location")
             move_to_folder_action = menu.addAction("Move Selected To Folder")
             move_to_root_action = menu.addAction("Move Selected To Root")
+            refresh_action = menu.addAction("Refresh Selected Ref")
+            refresh_safe_action = menu.addAction("Refresh Selected Ref (If Unchanged)")
+            status_action = menu.addAction("Check Reference Status")
+            update_all_action = menu.addAction("Update All References")
             remove_ref_action = menu.addAction("Remove Selected Ref")
             customize_action = menu.addAction("Customize/Organize")
             chosen = menu.exec(self.project_reference_list.mapToGlobal(pos))
@@ -3197,6 +3286,20 @@ class SourcesMixin:
                 )
             elif chosen == move_to_root_action:
                 self._move_selected_record_items_to_root(self.project_reference_list, "project_reference")
+            elif chosen == refresh_action:
+                self._refresh_selected_project_references(only_if_unchanged=False)
+            elif chosen == refresh_safe_action:
+                self._refresh_selected_project_references(only_if_unchanged=True)
+            elif chosen == status_action:
+                rows = self._reference_status_rows_for_indexes(
+                    self._selected_record_indexes_from_list_widget(self.project_reference_list)
+                )
+                if not rows:
+                    self._error("Select at least one reference file.")
+                    return
+                self._show_reference_status_dialog(rows, "Reference Status")
+            elif chosen == update_all_action:
+                self._update_all_references()
             elif chosen == remove_ref_action:
                 errors = self._remove_record_indexes(
                     self._selected_record_indexes_from_list_widget(self.project_reference_list)

@@ -109,3 +109,11 @@ If a future task changes architecture, persistence formats, feature scope, or te
 - Behavior changed: No application behavior change; the `0.2.3` docs now include a build-ready plan with phased execution, file touch points, test strategy, and an implementation checklist for `Refresh Selected Ref`, `Refresh Selected Ref (If Unchanged)`, `Check Reference Status`, and `Update All References`.
 - Tests run: Not run; planning-only change.
 - Risks or follow-up: Implementation should start with Phase 1 metadata groundwork so status and refresh behavior can be built on a stable persisted baseline.
+
+### 2026-04-08 (`0.2.3` reference refresh)
+
+- Goal: Implement the `Reference Files` refresh and bulk-update workflow through metadata, status, selected-action, bulk-update, and polish phases.
+- Files/areas changed: `app.py`, `document_control/mixins/records.py`, `document_control/mixins/sources.py`, `document_control/mixins/ui.py`, `document_control/mixins/projects.py`, `tests/test_reference_copies.py`, `tests/test_reference_refresh.py`, `docs/0.2.3/0.2.3-reference-files-refresh-and-update-plan.md`, `docs/working-memory.md`.
+- Behavior changed: `reference_copy` records now store baseline source/local fingerprint metadata; the app can classify reference status; `Reference Files` now supports `Refresh Selected Ref`, `Refresh Selected Ref (If Unchanged)`, `Check Reference Status`, and `Update All References` with per-row actions plus apply-to-remaining helpers. Dialog and status wording were tightened to be user-facing rather than enum-like. Existing logical-folder placement and search behavior remain intact after refresh operations.
+- Tests run: Manual Windows 11 pytest runs recorded in `pytest-manual-output.txt`; targeted runs progressed through `5 passed`, `13 passed`, `33 passed`, and `37 passed` for the final Phase 4+5 targeted set.
+- Risks or follow-up: `local_missing` currently remains a skip-only state rather than offering `Recreate`; if users want that later, implement it as an explicit follow-on rather than making overwrite behavior more implicit.

@@ -1527,6 +1527,549 @@ class RecordsMixin:
                     digest.update(chunk)
             return digest.hexdigest()
 
+        def _file_fingerprint(self, file_path: Path) -> Dict[str, object]:
+            stat_result = file_path.stat()
+            return {
+                "hash": self._compute_file_sha256(file_path),
+                "mtime": float(stat_result.st_mtime),
+                "size": int(stat_result.st_size),
+            }
+
+        def _apply_reference_copy_baseline(
+            self,
+            record: CheckoutRecord,
+            *,
+            source_path: Path,
+            local_path: Path,
+            copied_at: str,
+        ) -> None:
+            source_fingerprint = self._file_fingerprint(source_path)
+            local_fingerprint = self._file_fingerprint(local_path)
+            record.source_hash_at_copy = str(source_fingerprint.get("hash", ""))
+            record.local_hash_at_copy = str(local_fingerprint.get("hash", ""))
+            record.source_mtime_at_copy = float(source_fingerprint.get("mtime", 0.0) or 0.0)
+            record.local_mtime_at_copy = float(local_fingerprint.get("mtime", 0.0) or 0.0)
+            record.source_size_at_copy = int(source_fingerprint.get("size", 0) or 0)
+            record.local_size_at_copy = int(local_fingerprint.get("size", 0) or 0)
+            record.last_refreshed_at = copied_at
+
+        def _coerce_float(self, value: object, default: float = 0.0) -> float:
+            try:
+                return float(value or default)
+            except (TypeError, ValueError):
+                return default
+
+        def _coerce_int(self, value: object, default: int = 0) -> int:
+            try:
+                return int(value or default)
+            except (TypeError, ValueError):
+                return default
+
+        def _reference_default_action_for_status(self, status: str) -> str:
+            return {
+                "up_to_date": "none",
+                "source_changed_safe": "replace",
+                "local_changed_only": "keep",
+                "both_changed_conflict": "skip",
+                "source_missing": "skip",
+                "local_missing": "skip",
+                "untracked_state": "skip",
+            }.get(status, "skip")
+
+        def _reference_status_label(self, status: str) -> str:
+            return {
+                "up_to_date": "Up To Date",
+                "source_changed_safe": "Source Changed, Safe To Replace",
+                "local_changed_only": "Local Changed Only",
+                "both_changed_conflict": "Conflict: Source And Local Changed",
+                "source_missing": "Source Missing",
+                "local_missing": "Local Copy Missing",
+                "untracked_state": "Legacy Reference State",
+            }.get(status, status.replace("_", " ").title())
+
+        def _reference_action_label(self, action: str) -> str:
+            return {
+                "none": "No Action",
+                "replace": "Replace",
+                "keep": "Keep Local",
+                "skip": "Skip",
+            }.get(action, action.replace("_", " ").title())
+
+        def _reference_baseline_is_tracked(self, record: CheckoutRecord) -> bool:
+            return bool(
+                record.source_hash_at_copy
+                and record.local_hash_at_copy
+                and record.source_size_at_copy >= 0
+                and record.local_size_at_copy >= 0
+            )
+
+        def _current_reference_file_fingerprint(self, file_path: Path) -> Dict[str, object]:
+            if not file_path.exists() or not file_path.is_file():
+                return {
+                    "exists": False,
+                    "hash": "",
+                    "mtime": 0.0,
+                    "size": 0,
+                }
+            fingerprint = self._file_fingerprint(file_path)
+            return {
+                "exists": True,
+                "hash": str(fingerprint.get("hash", "")),
+                "mtime": float(fingerprint.get("mtime", 0.0) or 0.0),
+                "size": int(fingerprint.get("size", 0) or 0),
+            }
+
+        def _reference_fingerprint_changed(
+            self,
+            current: Dict[str, object],
+            *,
+            baseline_hash: str,
+            baseline_mtime: float,
+            baseline_size: int,
+        ) -> bool:
+            if not bool(current.get("exists")):
+                return True
+            current_hash = str(current.get("hash", "")).strip()
+            if baseline_hash and current_hash:
+                return current_hash != baseline_hash
+            return (
+                self._coerce_int(current.get("size", 0)) != baseline_size
+                or self._coerce_float(current.get("mtime", 0.0)) != baseline_mtime
+            )
+
+        def _reference_status_for_record(self, record: CheckoutRecord) -> Dict[str, object]:
+            source_fingerprint = self._current_reference_file_fingerprint(Path(record.source_file))
+            local_fingerprint = self._current_reference_file_fingerprint(Path(record.local_file))
+            source_exists = bool(source_fingerprint.get("exists"))
+            local_exists = bool(local_fingerprint.get("exists"))
+
+            if not self._reference_baseline_is_tracked(record):
+                status = "untracked_state"
+                details = "This reference predates baseline tracking and cannot be classified safely."
+                return {
+                    "status": status,
+                    "default_action": self._reference_default_action_for_status(status),
+                    "source_exists": source_exists,
+                    "local_exists": local_exists,
+                    "source_changed": False,
+                    "local_changed": False,
+                    "details": details,
+                }
+
+            if not source_exists:
+                status = "source_missing"
+                details = "The tracked source file could not be found."
+                return {
+                    "status": status,
+                    "default_action": self._reference_default_action_for_status(status),
+                    "source_exists": source_exists,
+                    "local_exists": local_exists,
+                    "source_changed": False,
+                    "local_changed": False,
+                    "details": details,
+                }
+
+            if not local_exists:
+                status = "local_missing"
+                details = "The local reference copy could not be found."
+                return {
+                    "status": status,
+                    "default_action": self._reference_default_action_for_status(status),
+                    "source_exists": source_exists,
+                    "local_exists": local_exists,
+                    "source_changed": False,
+                    "local_changed": False,
+                    "details": details,
+                }
+
+            source_changed = self._reference_fingerprint_changed(
+                source_fingerprint,
+                baseline_hash=record.source_hash_at_copy,
+                baseline_mtime=record.source_mtime_at_copy,
+                baseline_size=record.source_size_at_copy,
+            )
+            local_changed = self._reference_fingerprint_changed(
+                local_fingerprint,
+                baseline_hash=record.local_hash_at_copy,
+                baseline_mtime=record.local_mtime_at_copy,
+                baseline_size=record.local_size_at_copy,
+            )
+
+            if source_changed and local_changed:
+                status = "both_changed_conflict"
+                details = "Both the source and the local reference changed since the last baseline."
+            elif source_changed:
+                status = "source_changed_safe"
+                details = "The source changed since the last baseline and the local reference is unchanged."
+            elif local_changed:
+                status = "local_changed_only"
+                details = "The local reference changed since the last baseline while the source is unchanged."
+            else:
+                status = "up_to_date"
+                details = "The source and local reference still match the last baseline."
+
+            return {
+                "status": status,
+                "default_action": self._reference_default_action_for_status(status),
+                "source_exists": source_exists,
+                "local_exists": local_exists,
+                "source_changed": source_changed,
+                "local_changed": local_changed,
+                "details": details,
+            }
+
+        def _current_project_reference_status_rows(self) -> List[Dict[str, object]]:
+            current_project = str(self.current_project_dir or "").strip()
+            rows: List[Dict[str, object]] = []
+            for record in self.records:
+                if record.record_type != "reference_copy":
+                    continue
+                if current_project and str(record.project_dir) != current_project:
+                    continue
+                rows.append(
+                    {
+                        "record": record,
+                        "record_id": record.id,
+                        "status": self._reference_status_for_record(record),
+                    }
+                )
+            return rows
+
+        def _current_project_reference_update_plan_rows(self) -> List[Dict[str, object]]:
+            rows: List[Dict[str, object]] = []
+            for row in self._current_project_reference_status_rows():
+                status = row.get("status", {})
+                if not isinstance(status, dict):
+                    continue
+                plan_row = dict(row)
+                plan_row["action"] = str(status.get("default_action", "skip"))
+                rows.append(plan_row)
+            return rows
+
+        def _apply_reference_action_to_remaining(
+            self,
+            plan_rows: List[Dict[str, object]],
+            start_index: int,
+            action: str,
+            *,
+            same_status_only: bool = False,
+        ) -> None:
+            if start_index < 0 or start_index >= len(plan_rows):
+                return
+            target_status = ""
+            current_status = plan_rows[start_index].get("status", {})
+            if isinstance(current_status, dict):
+                target_status = str(current_status.get("status", "")).strip()
+            for row_idx in range(start_index, len(plan_rows)):
+                if same_status_only:
+                    row_status = plan_rows[row_idx].get("status", {})
+                    row_status_name = (
+                        str(row_status.get("status", "")).strip()
+                        if isinstance(row_status, dict)
+                        else ""
+                    )
+                    if row_status_name != target_status:
+                        continue
+                plan_rows[row_idx]["action"] = action
+
+        def _execute_reference_update_plan(self, plan_rows: List[Dict[str, object]]) -> Dict[str, object]:
+            updated = 0
+            kept = 0
+            skipped = 0
+            failed: List[str] = []
+
+            for row in plan_rows:
+                action = str(row.get("action", "skip")).strip().lower()
+                record = row.get("record")
+                if not isinstance(record, CheckoutRecord):
+                    continue
+
+                if action == "replace":
+                    success, message = self._refresh_reference_record(record, only_if_unchanged=False)
+                    if success:
+                        updated += 1
+                    else:
+                        label = Path(record.local_file).name or Path(record.source_file).name or record.id
+                        if message == "Already up to date." or message.startswith("Skipped"):
+                            skipped += 1
+                        else:
+                            failed.append(f"{label}: {message}")
+                elif action == "keep":
+                    kept += 1
+                else:
+                    skipped += 1
+
+            self._save_records()
+            self._render_records_tables()
+            return {
+                "updated": updated,
+                "kept": kept,
+                "skipped": skipped,
+                "failed": failed,
+            }
+
+        def _show_update_all_references_dialog(self, plan_rows: List[Dict[str, object]]) -> bool:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Update All References")
+            dialog.resize(1080, 460)
+            layout = QVBoxLayout(dialog)
+
+            table = QTableWidget(len(plan_rows), 5)
+            table.setHorizontalHeaderLabels(["Reference File", "Source File", "Status", "Action", "Details"])
+            table.setSelectionBehavior(QTableWidget.SelectRows)
+            table.setSelectionMode(QTableWidget.SingleSelection)
+
+            action_widgets: List[QComboBox] = []
+            action_options = [
+                ("No Action", "none"),
+                ("Replace", "replace"),
+                ("Keep Local", "keep"),
+                ("Skip", "skip"),
+            ]
+            for row_idx, row in enumerate(plan_rows):
+                record = row.get("record")
+                status = row.get("status", {})
+                if not isinstance(record, CheckoutRecord) or not isinstance(status, dict):
+                    continue
+                values = [
+                    Path(record.local_file).name,
+                    Path(record.source_file).name,
+                    self._reference_status_label(str(status.get("status", ""))),
+                    "",
+                    str(status.get("details", "")),
+                ]
+                tooltips = [
+                    record.local_file,
+                    record.source_file,
+                    self._reference_status_label(str(status.get("status", ""))),
+                    "",
+                    str(status.get("details", "")),
+                ]
+                for col_idx, value in enumerate(values):
+                    if col_idx == 3:
+                        continue
+                    item = QTableWidgetItem(value)
+                    item.setToolTip(tooltips[col_idx])
+                    table.setItem(row_idx, col_idx, item)
+                combo = QComboBox()
+                for label, stored_value in action_options:
+                    combo.addItem(label, stored_value)
+                selected_action = str(row.get("action", "skip")).strip().lower()
+                selected_idx = next(
+                    (idx for idx, (_label, stored_value) in enumerate(action_options) if stored_value == selected_action),
+                    3,
+                )
+                combo.setCurrentIndex(selected_idx)
+                combo.currentIndexChanged.connect(
+                    lambda _idx, target_row=row_idx, widget=combo: plan_rows.__setitem__(
+                        target_row,
+                        dict(plan_rows[target_row], action=str(widget.currentData() or "skip")),
+                    )
+                )
+                table.setCellWidget(row_idx, 3, combo)
+                action_widgets.append(combo)
+
+            table.resizeColumnsToContents()
+            table.setColumnWidth(0, max(table.columnWidth(0), 180))
+            table.setColumnWidth(1, max(table.columnWidth(1), 220))
+            table.setColumnWidth(2, max(table.columnWidth(2), 150))
+            table.setColumnWidth(3, max(table.columnWidth(3), 120))
+            table.setColumnWidth(4, max(table.columnWidth(4), 320))
+            layout.addWidget(table)
+
+            buttons = QDialogButtonBox()
+            replace_safe_btn = buttons.addButton("Replace All Safe", QDialogButtonBox.ActionRole)
+            skip_conflicts_btn = buttons.addButton("Skip All Conflicts", QDialogButtonBox.ActionRole)
+            apply_remaining_btn = buttons.addButton("Apply Choice To Remaining", QDialogButtonBox.ActionRole)
+            apply_same_status_btn = buttons.addButton("Apply Choice To Same Status", QDialogButtonBox.ActionRole)
+            run_btn = buttons.addButton("Run Update", QDialogButtonBox.AcceptRole)
+            cancel_btn = buttons.addButton(QDialogButtonBox.Cancel)
+
+            def sync_combo_widgets() -> None:
+                for row_idx, combo in enumerate(action_widgets):
+                    action = str(plan_rows[row_idx].get("action", "skip")).strip().lower()
+                    for option_idx in range(combo.count()):
+                        if str(combo.itemData(option_idx)) == action:
+                            combo.blockSignals(True)
+                            combo.setCurrentIndex(option_idx)
+                            combo.blockSignals(False)
+                            break
+
+            def selected_row_index() -> int:
+                current_row = table.currentRow()
+                if current_row >= 0:
+                    return current_row
+                selected_rows = table.selectionModel().selectedRows()
+                if selected_rows:
+                    return selected_rows[0].row()
+                return -1
+
+            def set_safe_defaults() -> None:
+                for row in plan_rows:
+                    status = row.get("status", {})
+                    status_name = str(status.get("status", "")).strip() if isinstance(status, dict) else ""
+                    if status_name == "source_changed_safe":
+                        row["action"] = "replace"
+                sync_combo_widgets()
+
+            def skip_conflicts() -> None:
+                for row in plan_rows:
+                    status = row.get("status", {})
+                    status_name = str(status.get("status", "")).strip() if isinstance(status, dict) else ""
+                    if status_name in {"both_changed_conflict", "source_missing", "local_missing", "untracked_state"}:
+                        row["action"] = "skip"
+                sync_combo_widgets()
+
+            def apply_remaining(same_status_only: bool) -> None:
+                row_idx = selected_row_index()
+                if row_idx < 0:
+                    self._error("Select a row first.")
+                    return
+                action = str(plan_rows[row_idx].get("action", "skip")).strip().lower()
+                self._apply_reference_action_to_remaining(
+                    plan_rows,
+                    row_idx,
+                    action,
+                    same_status_only=same_status_only,
+                )
+                sync_combo_widgets()
+
+            replace_safe_btn.clicked.connect(set_safe_defaults)
+            skip_conflicts_btn.clicked.connect(skip_conflicts)
+            apply_remaining_btn.clicked.connect(lambda: apply_remaining(False))
+            apply_same_status_btn.clicked.connect(lambda: apply_remaining(True))
+            run_btn.clicked.connect(dialog.accept)
+            cancel_btn.clicked.connect(dialog.reject)
+            layout.addWidget(buttons)
+
+            return dialog.exec() == QDialog.Accepted
+
+        def _update_all_references(self) -> None:
+            plan_rows = self._current_project_reference_update_plan_rows()
+            if not plan_rows:
+                self._error("No reference files are available for the current project.")
+                return
+            if not self._show_update_all_references_dialog(plan_rows):
+                return
+            with self._busy_action("Updating reference file(s)..."):
+                summary = self._execute_reference_update_plan(plan_rows)
+            failed = summary.get("failed", [])
+            failed_rows = failed if isinstance(failed, list) else []
+            summary_lines = [
+                f"Updated {int(summary.get('updated', 0) or 0)} reference file(s).",
+                f"Kept {int(summary.get('kept', 0) or 0)} reference file(s).",
+                f"Skipped {int(summary.get('skipped', 0) or 0)} reference file(s).",
+            ]
+            if failed_rows:
+                summary_lines.append(f"Failed {len(failed_rows)} reference file(s).")
+                summary_lines.extend(str(row) for row in failed_rows[:10])
+                self._error("\n".join(summary_lines))
+                return
+            self._info("\n".join(summary_lines))
+
+        def _reference_status_rows_for_indexes(self, indexes: List[int]) -> List[Dict[str, object]]:
+            rows: List[Dict[str, object]] = []
+            for idx in indexes:
+                if idx < 0 or idx >= len(self.records):
+                    continue
+                record = self.records[idx]
+                if record.record_type != "reference_copy":
+                    continue
+                rows.append(
+                    {
+                        "record": record,
+                        "record_id": record.id,
+                        "record_index": idx,
+                        "status": self._reference_status_for_record(record),
+                    }
+                )
+            return rows
+
+        def _show_reference_status_dialog(self, status_rows: List[Dict[str, object]], title: str) -> None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle(title)
+            dialog.resize(980, 420)
+            layout = QVBoxLayout(dialog)
+
+            table = QTableWidget(len(status_rows), 5)
+            table.setHorizontalHeaderLabels(["Reference File", "Source File", "Status", "Action", "Details"])
+            table.setEditTriggers(QTableWidget.NoEditTriggers)
+            table.setSelectionBehavior(QTableWidget.SelectRows)
+            table.setSelectionMode(QTableWidget.SingleSelection)
+
+            for row_idx, row in enumerate(status_rows):
+                record = row.get("record")
+                status = row.get("status", {})
+                if not isinstance(record, CheckoutRecord) or not isinstance(status, dict):
+                    continue
+                values = [
+                    Path(record.local_file).name,
+                    Path(record.source_file).name,
+                    self._reference_status_label(str(status.get("status", ""))),
+                    self._reference_action_label(str(status.get("default_action", ""))),
+                    str(status.get("details", "")),
+                ]
+                tooltips = [
+                    record.local_file,
+                    record.source_file,
+                    self._reference_status_label(str(status.get("status", ""))),
+                    self._reference_action_label(str(status.get("default_action", ""))),
+                    str(status.get("details", "")),
+                ]
+                for col_idx, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    item.setToolTip(tooltips[col_idx])
+                    table.setItem(row_idx, col_idx, item)
+
+            table.resizeColumnsToContents()
+            table.setColumnWidth(0, max(table.columnWidth(0), 180))
+            table.setColumnWidth(1, max(table.columnWidth(1), 220))
+            table.setColumnWidth(2, max(table.columnWidth(2), 140))
+            table.setColumnWidth(3, max(table.columnWidth(3), 120))
+            table.setColumnWidth(4, max(table.columnWidth(4), 280))
+            layout.addWidget(table)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+            buttons.accepted.connect(dialog.accept)
+            layout.addWidget(buttons)
+            dialog.exec()
+
+        def _refresh_reference_record(self, record: CheckoutRecord, *, only_if_unchanged: bool = False) -> Tuple[bool, str]:
+            if record.record_type != "reference_copy":
+                return False, "Not a reference copy."
+
+            source_path = Path(record.source_file)
+            local_path = Path(record.local_file)
+            status = self._reference_status_for_record(record)
+            status_name = str(status.get("status", "")).strip()
+
+            if not source_path.exists():
+                return False, "Source file is missing."
+            if not local_path.exists():
+                return False, "Local reference copy is missing."
+
+            if only_if_unchanged:
+                if status_name == "up_to_date":
+                    return False, "Already up to date."
+                if status_name != "source_changed_safe":
+                    return False, f"Skipped because status is '{status_name or 'unknown'}'."
+            elif status_name == "up_to_date":
+                return False, "Already up to date."
+
+            copied_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            try:
+                self._clear_local_file_read_only(local_path)
+                shutil.copy2(source_path, local_path)
+                self._apply_reference_copy_baseline(
+                    record,
+                    source_path=source_path,
+                    local_path=local_path,
+                    copied_at=copied_at,
+                )
+                return True, "Updated from source."
+            except OSError as exc:
+                return False, str(exc)
+
         def _next_revision_id(self, existing_entries: List[Dict[str, object]]) -> str:
             existing_ids = {str(entry.get("id", "")) for entry in existing_entries}
             while True:
@@ -3523,6 +4066,13 @@ class RecordsMixin:
                             id=str(entry.get("id", "")).strip(),
                             record_type=str(entry.get("record_type", "checked_out") or "checked_out"),
                             file_id=str(entry.get("file_id", "")).strip(),
+                            source_hash_at_copy=str(entry.get("source_hash_at_copy", "")).strip(),
+                            local_hash_at_copy=str(entry.get("local_hash_at_copy", "")).strip(),
+                            source_mtime_at_copy=self._coerce_float(entry.get("source_mtime_at_copy", 0.0)),
+                            local_mtime_at_copy=self._coerce_float(entry.get("local_mtime_at_copy", 0.0)),
+                            source_size_at_copy=self._coerce_int(entry.get("source_size_at_copy", 0)),
+                            local_size_at_copy=self._coerce_int(entry.get("local_size_at_copy", 0)),
+                            last_refreshed_at=str(entry.get("last_refreshed_at", "")).strip(),
                         )
                         if not record.id or record.id in existing_ids:
                             record.id = self._new_record_id(existing_ids)

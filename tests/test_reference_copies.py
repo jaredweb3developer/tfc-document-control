@@ -1,5 +1,6 @@
 from pathlib import Path
 import stat
+import hashlib
 
 from app import CheckoutRecord
 
@@ -27,10 +28,10 @@ def test_copy_selected_as_reference_creates_local_copy_without_locking_source(ap
     app._refresh_source_files()
 
     # Select the source file in the Files list.
-    for row in range(app.files_list.count()):
-        item = app.files_list.item(row)
-        if item.text() == "drawing-a.dwg":
-            item.setSelected(True)
+    for row in range(app.files_list.rowCount()):
+        item = app.files_list.item(row, 0)
+        if item is not None and item.text() == "drawing-a.dwg":
+            app.files_list.selectRow(row)
             break
 
     monkeypatch.setattr(
@@ -49,6 +50,14 @@ def test_copy_selected_as_reference_creates_local_copy_without_locking_source(ap
     assert ref_record.source_file == str(source_file)
     assert ref_record.locked_source_file == ""
     assert Path(ref_record.local_file).exists()
+    expected_hash = hashlib.sha256(source_file.read_bytes()).hexdigest()
+    assert ref_record.source_hash_at_copy == expected_hash
+    assert ref_record.local_hash_at_copy == expected_hash
+    assert ref_record.source_mtime_at_copy > 0
+    assert ref_record.local_mtime_at_copy > 0
+    assert ref_record.source_size_at_copy == source_file.stat().st_size
+    assert ref_record.local_size_at_copy == Path(ref_record.local_file).stat().st_size
+    assert ref_record.last_refreshed_at == ref_record.checked_out_at
     assert app.reference_records_table.rowCount() == 1
 
 

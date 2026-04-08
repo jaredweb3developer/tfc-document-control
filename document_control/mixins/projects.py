@@ -888,20 +888,30 @@ class ProjectsMixin:
                     continue
                 record = self.records[record_idx]
                 if mode == "copy":
-                    self.records.append(
-                        CheckoutRecord(
-                            source_file=record.source_file,
-                            locked_source_file=record.locked_source_file,
-                            local_file=str(destination),
-                            initials=self._normalize_initials(),
-                            project_name=target_project_name,
-                            project_dir=str(target_project_dir),
-                            source_root=record.source_root,
-                            checked_out_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-                            record_type="reference_copy" if record_type == "checked_out" else record.record_type,
-                            file_id=record.file_id,
-                        )
+                    copied_at = datetime.now().astimezone().isoformat(timespec="seconds")
+                    new_record = CheckoutRecord(
+                        source_file=record.source_file,
+                        locked_source_file=record.locked_source_file,
+                        local_file=str(destination),
+                        initials=self._normalize_initials(),
+                        project_name=target_project_name,
+                        project_dir=str(target_project_dir),
+                        source_root=record.source_root,
+                        checked_out_at=copied_at,
+                        record_type="reference_copy" if record_type == "checked_out" else record.record_type,
+                        file_id=record.file_id,
                     )
+                    if new_record.record_type == "reference_copy":
+                        try:
+                            self._apply_reference_copy_baseline(
+                                new_record,
+                                source_path=Path(new_record.source_file),
+                                local_path=destination,
+                                copied_at=copied_at,
+                            )
+                        except OSError:
+                            pass
+                    self.records.append(new_record)
                 else:
                     record.local_file = str(destination)
                     record.project_dir = str(target_project_dir)
