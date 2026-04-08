@@ -444,6 +444,25 @@ def test_apply_reference_action_to_remaining_updates_expected_rows(app_env):
     assert [row["action"] for row in plan_rows] == ["replace", "keep", "keep", "replace"]
 
 
+def test_reference_action_options_are_status_aware(app_env):
+    app = app_env["app"]
+
+    assert app._reference_action_options_for_status("up_to_date") == [
+        ("No Action", "none"),
+        ("Replace", "replace"),
+    ]
+    assert app._reference_action_options_for_status("source_changed_safe") == [
+        ("Replace", "replace"),
+        ("Keep Local", "keep"),
+        ("Skip", "skip"),
+    ]
+    assert app._reference_action_options_for_status("both_changed_conflict") == [
+        ("Skip", "skip"),
+        ("Replace", "replace"),
+        ("Keep Local", "keep"),
+    ]
+
+
 def test_execute_reference_update_plan_respects_actions_and_updates_records(app_env):
     app = app_env["app"]
     record_a, source_a, local_a = _build_reference_record(app_env["tmp"] / "update-a")

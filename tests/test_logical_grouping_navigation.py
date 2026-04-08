@@ -508,6 +508,67 @@ def test_move_selected_reference_items_to_folder_from_active_tab_moves_all_selec
     assert parent_by_key["ref-move-2"] == "ref-folder-1"
 
 
+def test_project_reference_items_are_sorted_alphabetically_by_default(app_env):
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "ReferenceSort"
+    source_root = tmp / "src-reference-sort"
+    source_root.mkdir(parents=True)
+    local_z = project_dir / "reference_copies" / "zeta.pdf"
+    local_a = project_dir / "reference_copies" / "alpha.pdf"
+    local_m = project_dir / "reference_copies" / "Middle.pdf"
+    local_z.parent.mkdir(parents=True, exist_ok=True)
+    local_z.write_text("z", encoding="utf-8")
+    local_a.write_text("a", encoding="utf-8")
+    local_m.write_text("m", encoding="utf-8")
+
+    app._write_project_config(project_dir=project_dir, name="ReferenceSort", sources=[str(source_root)])
+    app.records = [
+        CheckoutRecord(
+            source_file=str(source_root / "zeta.pdf"),
+            locked_source_file="",
+            local_file=str(local_z),
+            initials="JH",
+            project_name="ReferenceSort",
+            project_dir=str(project_dir),
+            source_root=str(source_root),
+            id="ref-sort-z",
+            record_type="reference_copy",
+        ),
+        CheckoutRecord(
+            source_file=str(source_root / "alpha.pdf"),
+            locked_source_file="",
+            local_file=str(local_a),
+            initials="JH",
+            project_name="ReferenceSort",
+            project_dir=str(project_dir),
+            source_root=str(source_root),
+            id="ref-sort-a",
+            record_type="reference_copy",
+        ),
+        CheckoutRecord(
+            source_file=str(source_root / "Middle.pdf"),
+            locked_source_file="",
+            local_file=str(local_m),
+            initials="JH",
+            project_name="ReferenceSort",
+            project_dir=str(project_dir),
+            source_root=str(source_root),
+            id="ref-sort-m",
+            record_type="reference_copy",
+        ),
+    ]
+
+    app._load_project_from_dir(project_dir)
+
+    assert [app.project_reference_list.item(i).text() for i in range(app.project_reference_list.count())] == [
+        "alpha.pdf",
+        "Middle.pdf",
+        "zeta.pdf",
+    ]
+
+
 def test_record_logical_placements_are_pruned_when_record_missing(app_env):
     app = app_env["app"]
     tmp = app_env["tmp"]

@@ -11,6 +11,18 @@ class RecordsMixin:
                 if candidate not in existing_ids:
                     return candidate
 
+        def _ensure_record_has_id(self, record: CheckoutRecord) -> str:
+            current_id = str(record.id).strip()
+            if current_id:
+                return current_id
+            existing_ids = {
+                str(existing_record.id).strip()
+                for existing_record in self.records
+                if existing_record is not record and str(existing_record.id).strip()
+            }
+            record.id = self._new_record_id(existing_ids)
+            return record.id
+
         def _new_compact_id(self, existing_ids: set[str], size: int = 10) -> str:
             while True:
                 candidate = uuid4().hex[:size]
@@ -1410,6 +1422,7 @@ class RecordsMixin:
                                 checked_out_at=checked_out_at,
                                 file_id=file_id,
                             )
+                            self._ensure_record_has_id(new_record)
                             self.records.append(new_record)
                             self._create_revision_snapshot_for_record(
                                 new_record,
@@ -1594,6 +1607,37 @@ class RecordsMixin:
                 "keep": "Keep Local",
                 "skip": "Skip",
             }.get(action, action.replace("_", " ").title())
+
+        def _reference_action_options_for_status(self, status: str) -> List[Tuple[str, str]]:
+            if status == "up_to_date":
+                return [
+                    ("No Action", "none"),
+                    ("Replace", "replace"),
+                ]
+            if status == "source_changed_safe":
+                return [
+                    ("Replace", "replace"),
+                    ("Keep Local", "keep"),
+                    ("Skip", "skip"),
+                ]
+            if status == "local_changed_only":
+                return [
+                    ("Keep Local", "keep"),
+                    ("Replace", "replace"),
+                    ("Skip", "skip"),
+                ]
+            if status in {"both_changed_conflict", "source_missing", "local_missing", "untracked_state"}:
+                return [
+                    ("Skip", "skip"),
+                    ("Replace", "replace"),
+                    ("Keep Local", "keep"),
+                ]
+            return [
+                ("No Action", "none"),
+                ("Replace", "replace"),
+                ("Keep Local", "keep"),
+                ("Skip", "skip"),
+            ]
 
         def _reference_baseline_is_tracked(self, record: CheckoutRecord) -> bool:
             return bool(
@@ -1820,28 +1864,23 @@ class RecordsMixin:
             table.setSelectionMode(QTableWidget.SingleSelection)
 
             action_widgets: List[QComboBox] = []
-            action_options = [
-                ("No Action", "none"),
-                ("Replace", "replace"),
-                ("Keep Local", "keep"),
-                ("Skip", "skip"),
-            ]
             for row_idx, row in enumerate(plan_rows):
                 record = row.get("record")
                 status = row.get("status", {})
                 if not isinstance(record, CheckoutRecord) or not isinstance(status, dict):
                     continue
+                status_name = str(status.get("status", "")).strip()
                 values = [
                     Path(record.local_file).name,
                     Path(record.source_file).name,
-                    self._reference_status_label(str(status.get("status", ""))),
+                    self._reference_status_label(status_name),
                     "",
                     str(status.get("details", "")),
                 ]
                 tooltips = [
                     record.local_file,
                     record.source_file,
-                    self._reference_status_label(str(status.get("status", ""))),
+                    self._reference_status_label(status_name),
                     "",
                     str(status.get("details", "")),
                 ]
@@ -1851,13 +1890,17 @@ class RecordsMixin:
                     item = QTableWidgetItem(value)
                     item.setToolTip(tooltips[col_idx])
                     table.setItem(row_idx, col_idx, item)
-                combo = QComboBox()
+                action_options = self._reference_action_options_for_status(status_name)
+                combo = WheelGuardComboBox()
                 for label, stored_value in action_options:
                     combo.addItem(label, stored_value)
                 selected_action = str(row.get("action", "skip")).strip().lower()
+                if all(stored_value != selected_action for _label, stored_value in action_options):
+                    selected_action = str(status.get("default_action", "skip")).strip().lower()
+                    row["action"] = selected_action
                 selected_idx = next(
                     (idx for idx, (_label, stored_value) in enumerate(action_options) if stored_value == selected_action),
-                    3,
+                    0,
                 )
                 combo.setCurrentIndex(selected_idx)
                 combo.currentIndexChanged.connect(

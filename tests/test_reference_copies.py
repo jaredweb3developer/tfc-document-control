@@ -49,6 +49,7 @@ def test_copy_selected_as_reference_creates_local_copy_without_locking_source(ap
     ref_record = reference_records[0]
     assert ref_record.source_file == str(source_file)
     assert ref_record.locked_source_file == ""
+    assert ref_record.id.startswith("r_")
     assert Path(ref_record.local_file).exists()
     expected_hash = hashlib.sha256(source_file.read_bytes()).hexdigest()
     assert ref_record.source_hash_at_copy == expected_hash
@@ -98,6 +99,47 @@ def test_checkin_selected_rejects_reference_copy_rows(app_env, monkeypatch):
     app._checkin_selected()
 
     assert "Reference copies cannot be checked in" in captured["msg"]
+
+
+def test_copy_selected_as_reference_skips_duplicate_local_target(app_env, monkeypatch):
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    source_root = tmp / "source-root-dup"
+    source_root.mkdir(parents=True)
+    source_file = source_root / "drawing-a.dwg"
+    source_file.write_text("dwg-data", encoding="utf-8")
+
+    project_dir = tmp / "Projects" / "RefProjectDup"
+    app._write_project_config(
+        project_dir,
+        "RefProjectDup",
+        [str(source_root)],
+        selected_source=str(source_root),
+    )
+
+    app.initials_edit.setText("JH")
+    app._load_project_from_dir(project_dir)
+    app._refresh_source_files()
+
+    for row in range(app.files_list.rowCount()):
+        item = app.files_list.item(row, 0)
+        if item is not None and item.text() == "drawing-a.dwg":
+            app.files_list.selectRow(row)
+            break
+
+    monkeypatch.setattr(app, "_choose_project_target", lambda **_kwargs: ("current", None))
+    messages = []
+    monkeypatch.setattr(app, "_info", lambda msg: messages.append(("info", msg)))
+    monkeypatch.setattr(app, "_error", lambda msg: messages.append(("error", msg)))
+
+    app._copy_selected_as_reference()
+    app._copy_selected_as_reference()
+
+    reference_records = [record for record in app.records if record.record_type == "reference_copy"]
+    assert len(reference_records) == 1
+    assert messages[-1][0] == "error"
+    assert "reference copy already exists in this project" in messages[-1][1]
 
 
 def test_remove_reference_copy_deletes_local_file_and_clears_read_only(app_env):

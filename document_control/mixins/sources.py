@@ -1326,6 +1326,11 @@ class SourcesMixin:
             reference_root = project_dir / "reference_copies" / reference_group
             copied_at = datetime.now().astimezone().isoformat(timespec="seconds")
             errors: List[str] = []
+            existing_reference_targets = {
+                (str(record.project_dir).strip(), str(Path(record.local_file)).strip().lower())
+                for record in self.records
+                if record.record_type == "reference_copy"
+            }
 
             with self._debug_timed(
                 "copy_reference_selected",
@@ -1352,6 +1357,10 @@ class SourcesMixin:
 
                         try:
                             local_file.parent.mkdir(parents=True, exist_ok=True)
+                            duplicate_key = (str(project_dir).strip(), str(local_file).strip().lower())
+                            if duplicate_key in existing_reference_targets:
+                                errors.append(f"{source_file.name}: reference copy already exists in this project")
+                                continue
                             shutil.copy2(source_file, local_file)
                             new_record = CheckoutRecord(
                                 source_file=str(source_file),
@@ -1365,6 +1374,7 @@ class SourcesMixin:
                                 record_type="reference_copy",
                                 file_id=file_id,
                             )
+                            self._ensure_record_has_id(new_record)
                             self._apply_reference_copy_baseline(
                                 new_record,
                                 source_path=source_file,
@@ -1372,6 +1382,7 @@ class SourcesMixin:
                                 copied_at=copied_at,
                             )
                             self.records.append(new_record)
+                            existing_reference_targets.add(duplicate_key)
                         except OSError as exc:
                             errors.append(f"{source_file.name}: {exc}")
 
@@ -2626,6 +2637,9 @@ class SourcesMixin:
             else:
                 reference_descendant_ids = self._logical_descendant_folder_ids(reference_view, current_reference_folder_id)
                 reference_candidate_folders = self._logical_child_folders(reference_view, current_reference_folder_id)
+                reference_candidate_folders.sort(
+                    key=lambda folder: str(folder.get("name", "")).strip().lower()
+                )
             for folder in checked_candidate_folders:
                 folder_name = str(folder.get("name", "")).strip()
                 folder_path = self._logical_view_folder_path(checked_view, str(folder.get("id", "")).strip())
@@ -2648,6 +2662,7 @@ class SourcesMixin:
                 item.setData(Qt.UserRole + 1, "folder")
                 item.setToolTip("Folder\n" + (" / ".join(["Root", *folder_path]) if folder_path else "Root"))
                 self.project_reference_list.addItem(item)
+            reference_items: List[tuple[int, CheckoutRecord, str]] = []
             for idx, record in enumerate(self.records):
                 if record.project_dir != current_project:
                     continue
@@ -2686,16 +2701,22 @@ class SourcesMixin:
                     if reference_search and reference_search not in search_blob and reference_search not in folder_search:
                         continue
                     label = self._local_display_name(record.local_file)
-                    item = QListWidgetItem(label)
-                    item.setData(Qt.UserRole, idx)
-                    item.setData(Qt.UserRole + 1, "item")
-                    tooltip = record.local_file
-                    folder_path = self._logical_view_folder_path(reference_view, parent_folder_id)
-                    if folder_path:
-                        tooltip += "\nFolder: " + " / ".join(["Root", *folder_path])
-                    self._set_projects_item_base_tooltip(item, tooltip)
-                    self._apply_projects_list_item_style(item, scope, item_key)
-                    self.project_reference_list.addItem(item)
+                    reference_items.append((idx, record, label))
+            reference_items.sort(key=lambda entry: (entry[2].lower(), str(entry[1].local_file).lower()))
+            for idx, record, label in reference_items:
+                item_key = self._record_customization_key(record)
+                scope = self._record_customization_scope(record)
+                parent_folder_id = self._logical_item_parent_folder_id(reference_view, record.id)
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, idx)
+                item.setData(Qt.UserRole + 1, "item")
+                tooltip = record.local_file
+                folder_path = self._logical_view_folder_path(reference_view, parent_folder_id)
+                if folder_path:
+                    tooltip += "\nFolder: " + " / ".join(["Root", *folder_path])
+                self._set_projects_item_base_tooltip(item, tooltip)
+                self._apply_projects_list_item_style(item, scope, item_key)
+                self.project_reference_list.addItem(item)
 
         def _browse_and_add_global_favorites(self) -> None:
             start_dir = str(self._current_project_path() or Path.home())
@@ -3103,37 +3124,105 @@ class SourcesMixin:
             self, list_widget: QListWidget, scope: str, title: str, missing_message: str
         ) -> None:
             selected_items = list_widget.selectedItems()
+            self._debug_event(
+                "record_items_move_to_folder_requested",
+                scope=scope,
+                selected_count=len(selected_items),
+                selected_labels=[item.text() for item in selected_items],
+            )
             if not selected_items:
                 self._error("Select at least one item.")
+                self._debug_event("record_items_move_to_folder_aborted", scope=scope, reason="no_selection")
                 return
             if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
                 self._error("Select file rows only.")
+                self._debug_event("record_items_move_to_folder_aborted", scope=scope, reason="folder_selected")
                 return
             target_folder_id = self._choose_record_target_folder(scope, title, missing_message)
             if target_folder_id is None:
+                self._debug_event("record_items_move_to_folder_aborted", scope=scope, reason="no_target_folder")
                 return
             view = self._record_logical_view(scope)
+            moved_record_ids: List[str] = []
             for item in selected_items:
                 record = self._record_for_list_item(item)
                 if record and record.id:
                     view = self._set_logical_item_parent_folder_id(view, record.id, target_folder_id)
+                    moved_record_ids.append(record.id)
+                else:
+                    self._debug_event(
+                        "record_items_move_to_folder_skipped_item",
+                        scope=scope,
+                        item_label=item.text(),
+                        record_index=item.data(Qt.UserRole),
+                        record_id=str(record.id).strip() if record else "",
+                        reason="missing_record_id" if record else "missing_record",
+                    )
             self._save_record_logical_view(scope, view)
+            self._debug_event(
+                "record_items_move_to_folder_saved",
+                scope=scope,
+                target_folder_id=target_folder_id,
+                moved_record_ids=moved_record_ids,
+                placement_count=len(view.get("placements", [])),
+                placements=[
+                    {
+                        "item_key": str(entry.get("item_key", "")).strip(),
+                        "parent_folder_id": str(entry.get("parent_folder_id", "")).strip(),
+                    }
+                    for entry in view.get("placements", [])
+                    if isinstance(entry, dict)
+                ],
+            )
             self._refresh_project_local_files_lists()
 
         def _move_selected_record_items_to_root(self, list_widget: QListWidget, scope: str) -> None:
             selected_items = list_widget.selectedItems()
+            self._debug_event(
+                "record_items_move_to_root_requested",
+                scope=scope,
+                selected_count=len(selected_items),
+                selected_labels=[item.text() for item in selected_items],
+            )
             if not selected_items:
                 self._error("Select at least one item.")
+                self._debug_event("record_items_move_to_root_aborted", scope=scope, reason="no_selection")
                 return
             if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
                 self._error("Select file rows only.")
+                self._debug_event("record_items_move_to_root_aborted", scope=scope, reason="folder_selected")
                 return
             view = self._record_logical_view(scope)
+            moved_record_ids: List[str] = []
             for item in selected_items:
                 record = self._record_for_list_item(item)
                 if record and record.id:
                     view = self._set_logical_item_parent_folder_id(view, record.id, "")
+                    moved_record_ids.append(record.id)
+                else:
+                    self._debug_event(
+                        "record_items_move_to_root_skipped_item",
+                        scope=scope,
+                        item_label=item.text(),
+                        record_index=item.data(Qt.UserRole),
+                        record_id=str(record.id).strip() if record else "",
+                        reason="missing_record_id" if record else "missing_record",
+                    )
             self._save_record_logical_view(scope, view)
+            self._debug_event(
+                "record_items_move_to_root_saved",
+                scope=scope,
+                moved_record_ids=moved_record_ids,
+                placement_count=len(view.get("placements", [])),
+                placements=[
+                    {
+                        "item_key": str(entry.get("item_key", "")).strip(),
+                        "parent_folder_id": str(entry.get("parent_folder_id", "")).strip(),
+                    }
+                    for entry in view.get("placements", [])
+                    if isinstance(entry, dict)
+                ],
+            )
             self._refresh_project_local_files_lists()
 
         def _go_up_project_checked_out_folder(self) -> None:

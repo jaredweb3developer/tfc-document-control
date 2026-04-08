@@ -1,4 +1,7 @@
 import json
+from pathlib import Path
+
+from app import CheckoutRecord
 
 
 def test_debug_event_writes_line_when_enabled(app_env):
@@ -31,3 +34,62 @@ def test_debug_timed_records_duration(app_env):
     last = timed_entries[-1]
     assert "duration_ms" in last["data"]
     assert last["data"]["marker"] == "abc"
+
+
+def test_record_move_to_folder_emits_debug_events(app_env, monkeypatch):
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+    debug_log = app_env["paths"]["debug_log"]
+
+    project_dir = tmp / "Projects" / "DebugMove"
+    source_root = tmp / "src-debug-move"
+    source_root.mkdir(parents=True)
+    local_file = project_dir / "reference_copies" / "A.pdf"
+    local_file.parent.mkdir(parents=True, exist_ok=True)
+    local_file.write_text("a", encoding="utf-8")
+
+    app._write_project_config(
+        project_dir=project_dir,
+        name="DebugMove",
+        sources=[str(source_root)],
+        logical_views={
+            "project_reference": {
+                "folders": [
+                    {"id": "ref-folder-1", "name": "Issued", "parent_id": "", "sort_order": 0},
+                ],
+                "placements": [],
+            }
+        },
+    )
+    app.records = [
+        CheckoutRecord(
+            source_file=str(source_root / "A.pdf"),
+            locked_source_file="",
+            local_file=str(local_file),
+            initials="JH",
+            project_name="DebugMove",
+            project_dir=str(project_dir),
+            source_root=str(source_root),
+            id="ref-debug-1",
+            record_type="reference_copy",
+        )
+    ]
+    app.debug_enabled_checkbox.setChecked(True)
+    app._load_project_from_dir(project_dir)
+    app.project_reference_list.item(1).setSelected(True)
+    monkeypatch.setattr(app, "_choose_record_target_folder", lambda *args, **kwargs: "ref-folder-1")
+
+    app._move_selected_record_items_to_folder(
+        app.project_reference_list,
+        "project_reference",
+        "Move Reference Items To Folder",
+        "Create a reference folder first.",
+    )
+
+    payloads = [json.loads(line) for line in debug_log.read_text(encoding="utf-8").splitlines()]
+    requested = [entry for entry in payloads if entry.get("event") == "record_items_move_to_folder_requested"]
+    saved = [entry for entry in payloads if entry.get("event") == "record_items_move_to_folder_saved"]
+    assert requested
+    assert saved
+    assert requested[-1]["data"]["scope"] == "project_reference"
+    assert saved[-1]["data"]["moved_record_ids"] == ["ref-debug-1"]

@@ -14,6 +14,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from PySide6.QtCore import QDir, QPoint, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
@@ -142,6 +143,14 @@ class SortableTableWidgetItem(QTableWidgetItem):
         if isinstance(other, SortableTableWidgetItem):
             return self._sort_value < other._sort_value
         return super().__lt__(other)
+
+
+class WheelGuardComboBox(QComboBox):
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if self.view().isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
 
 
 sys.modules.setdefault("app", sys.modules[__name__])

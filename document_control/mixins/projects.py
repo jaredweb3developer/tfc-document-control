@@ -901,6 +901,7 @@ class ProjectsMixin:
                         record_type="reference_copy" if record_type == "checked_out" else record.record_type,
                         file_id=record.file_id,
                     )
+                    self._ensure_record_has_id(new_record)
                     if new_record.record_type == "reference_copy":
                         try:
                             self._apply_reference_copy_baseline(
