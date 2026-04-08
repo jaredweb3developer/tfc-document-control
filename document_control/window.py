@@ -57,7 +57,9 @@ class DocumentControlApp(
             self._startup_splash_dialog: Optional[QDialog] = None
             self._startup_splash_label: Optional[QLabel] = None
             self.global_favorites: List[str] = []
+            self.global_favorites_logical_views: Dict[str, Dict[str, List[Dict[str, object]]]] = {}
             self.global_notes: List[Dict[str, str]] = []
+            self.logical_view_current_folder_ids: Dict[str, str] = {}
             self.note_presets_notes: List[Dict[str, object]] = []
             self.note_preset_groups: List[Dict[str, object]] = []
             self.item_customization_groups: List[str] = []

@@ -5,6 +5,94 @@ from app import *
 
 
 class ConfigMixin:
+        def _normalize_logical_folder_entry(self, value: object) -> Optional[Dict[str, object]]:
+            if not isinstance(value, dict):
+                return None
+            folder_id = str(value.get("id", "")).strip() or str(uuid4())
+            name = str(value.get("name", "")).strip()
+            if not name:
+                return None
+            parent_id = str(value.get("parent_id", "")).strip()
+            try:
+                sort_order = int(value.get("sort_order", 0))
+            except (TypeError, ValueError):
+                sort_order = 0
+            return {
+                "id": folder_id,
+                "name": name,
+                "parent_id": parent_id,
+                "sort_order": sort_order,
+            }
+
+        def _normalize_logical_placement_entry(self, value: object) -> Optional[Dict[str, object]]:
+            if not isinstance(value, dict):
+                return None
+            item_key = str(value.get("item_key", "")).strip()
+            if not item_key:
+                return None
+            parent_folder_id = str(value.get("parent_folder_id", "")).strip()
+            try:
+                sort_order = int(value.get("sort_order", 0))
+            except (TypeError, ValueError):
+                sort_order = 0
+            return {
+                "item_key": item_key,
+                "parent_folder_id": parent_folder_id,
+                "sort_order": sort_order,
+            }
+
+        def _normalize_logical_view_entry(self, value: object) -> Dict[str, List[Dict[str, object]]]:
+            folders: List[Dict[str, object]] = []
+            placements: List[Dict[str, object]] = []
+            raw_folders = value.get("folders", []) if isinstance(value, dict) else []
+            raw_placements = value.get("placements", []) if isinstance(value, dict) else []
+            if isinstance(raw_folders, list):
+                seen_folder_ids: set[str] = set()
+                for entry in raw_folders:
+                    normalized = self._normalize_logical_folder_entry(entry)
+                    if not normalized:
+                        continue
+                    folder_id = str(normalized["id"])
+                    if folder_id in seen_folder_ids:
+                        continue
+                    seen_folder_ids.add(folder_id)
+                    folders.append(normalized)
+            if isinstance(raw_placements, list):
+                seen_item_keys: set[str] = set()
+                for entry in raw_placements:
+                    normalized = self._normalize_logical_placement_entry(entry)
+                    if not normalized:
+                        continue
+                    item_key = str(normalized["item_key"])
+                    if item_key in seen_item_keys:
+                        continue
+                    seen_item_keys.add(item_key)
+                    placements.append(normalized)
+            valid_folder_ids = {str(folder["id"]) for folder in folders}
+            for folder in folders:
+                parent_id = str(folder.get("parent_id", "")).strip()
+                if parent_id and parent_id not in valid_folder_ids:
+                    folder["parent_id"] = ""
+            for placement in placements:
+                parent_folder_id = str(placement.get("parent_folder_id", "")).strip()
+                if parent_folder_id and parent_folder_id not in valid_folder_ids:
+                    placement["parent_folder_id"] = ""
+            return {
+                "folders": folders,
+                "placements": placements,
+            }
+
+        def _normalize_logical_views(
+            self, value: object, scopes: List[str]
+        ) -> Dict[str, Dict[str, List[Dict[str, object]]]]:
+            raw_scopes = value if isinstance(value, dict) else {}
+            normalized: Dict[str, Dict[str, List[Dict[str, object]]]] = {}
+            for scope in scopes:
+                normalized[scope] = self._normalize_logical_view_entry(
+                    raw_scopes.get(scope, {}) if isinstance(raw_scopes, dict) else {}
+                )
+            return normalized
+
         def _default_projects_dir(self) -> Path:
             return Path.home() / "Documents" / app_module.APP_NAME / "Projects"
 
@@ -461,6 +549,7 @@ class ConfigMixin:
             source_ids: Optional[Dict[str, str]] = None,
             client: str = "",
             year_started: str = "",
+            logical_views: Optional[Dict[str, Dict[str, List[Dict[str, object]]]]] = None,
         ) -> Dict[str, object]:
             normalized_source_ids = self._normalize_source_ids(sources, source_ids)
             return {
@@ -479,6 +568,7 @@ class ConfigMixin:
                 "favorites": favorites or [],
                 "notes": notes or [],
                 "milestones": milestones or [],
+                "logical_views": self._normalize_logical_views(logical_views, app_module.PROJECT_LOGICAL_VIEW_SCOPES),
             }
 
         def _read_project_config(self, project_dir: Path) -> Dict[str, object]:
@@ -504,6 +594,10 @@ class ConfigMixin:
             client = str(data.get("client", "")).strip()
             year_started = str(data.get("year_started", "")).strip()
             raw_source_ids = data.get("source_ids", {})
+            logical_views = self._normalize_logical_views(
+                data.get("logical_views", {}),
+                app_module.PROJECT_LOGICAL_VIEW_SCOPES,
+            )
             sources = [str(item) for item in raw_sources if str(item).strip()] if isinstance(raw_sources, list) else []
             local_directories = (
                 [str(item) for item in raw_local_directories if str(item).strip()]
@@ -561,6 +655,7 @@ class ConfigMixin:
                 source_ids,
                 client,
                 year_started,
+                logical_views,
             )
 
         def _write_project_config(
@@ -579,6 +674,7 @@ class ConfigMixin:
             source_ids: Optional[Dict[str, str]] = None,
             client: str = "",
             year_started: str = "",
+            logical_views: Optional[Dict[str, Dict[str, List[Dict[str, object]]]]] = None,
         ) -> None:
             project_dir.mkdir(parents=True, exist_ok=True)
             config_path = self._project_config_path(project_dir)
@@ -596,6 +692,7 @@ class ConfigMixin:
                 source_ids,
                 client,
                 year_started,
+                logical_views,
             )
             config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -616,6 +713,7 @@ class ConfigMixin:
             source_ids: Optional[Dict[str, str]] = None,
             client: Optional[str] = None,
             year_started: Optional[str] = None,
+            logical_views: Optional[Dict[str, Dict[str, List[Dict[str, object]]]]] = None,
         ) -> None:
             current = self._read_project_config(project_dir)
             merged_sources = (
@@ -650,6 +748,12 @@ class ConfigMixin:
                 year_started
                 if year_started is not None
                 else str(current.get("year_started", "")),
+                logical_views
+                if logical_views is not None
+                else self._normalize_logical_views(
+                    current.get("logical_views", {}),
+                    app_module.PROJECT_LOGICAL_VIEW_SCOPES,
+                ),
             )
 
         def _ensure_default_project(self) -> None:

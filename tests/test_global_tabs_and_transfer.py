@@ -11,6 +11,16 @@ def test_global_favorites_and_notes_persist(app_env, monkeypatch):
     fake_file = app_env["tmp"] / "x.txt"
     fake_file.write_text("x", encoding="utf-8")
     app.global_favorites = [str(fake_file)]
+    app.global_favorites_logical_views = {
+        "global_favorites": {
+            "folders": [
+                {"id": "folder-g", "name": "Global Folder", "parent_id": "", "sort_order": 0},
+            ],
+            "placements": [
+                {"item_key": str(fake_file), "parent_folder_id": "folder-g", "sort_order": 0},
+            ],
+        }
+    }
     app.global_notes = [
         {
             "id": "n1",
@@ -26,6 +36,11 @@ def test_global_favorites_and_notes_persist(app_env, monkeypatch):
     reloaded = app_env["create_app"]()
     try:
         assert str(fake_file) in reloaded.global_favorites
+        assert reloaded.global_favorites_logical_views["global_favorites"]["folders"][0]["name"] == "Global Folder"
+        assert (
+            reloaded.global_favorites_logical_views["global_favorites"]["placements"][0]["item_key"]
+            == str(fake_file)
+        )
         assert any(note.get("subject") == "Global note" for note in reloaded.global_notes)
         assert paths["global_favorites"].exists()
         assert paths["global_notes"].exists()

@@ -232,9 +232,14 @@ class UiMixin:
                         ("Add Project Favorite", self._browse_and_add_favorites),
                         ("Add Global Favorite", self._browse_and_add_global_favorites),
                         ("Add Selected Global -> Project", self._add_selected_global_favorites_to_project),
+                        ("New Folder", self._create_project_favorites_folder),
+                        ("Up Folder", self._go_up_project_favorites_folder),
+                        ("Go Root", self._go_root_project_favorites_folder),
                         ("Open Selected", self._open_selected_favorites_from_active_tab),
                         ("Remove Selected", self._remove_selected_favorites_from_active_tab),
                         ("---", self._open_selected_favorites_from_active_tab),
+                        ("Move Selected To Folder", self._move_selected_favorites_to_folder),
+                        ("Move Selected To Root", self._move_selected_favorites_to_root),
                         ("Move Up", self._move_selected_favorite_up),
                         ("Move Down", self._move_selected_favorite_down),
                         ("Move to Top", self._move_selected_favorite_top),
@@ -253,6 +258,20 @@ class UiMixin:
                 lambda _text: self._refresh_favorites_list(self._current_project_favorites())
             )
             project_favorites_layout.addWidget(self.project_favorites_search_edit)
+            project_favorites_nav = QHBoxLayout()
+            self.project_favorites_folder_label = QLabel("Favorites Folder: Root")
+            self.project_favorites_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.project_favorites_up_btn = QPushButton("Up")
+            self.project_favorites_root_btn = QPushButton("Root")
+            self.project_favorites_new_folder_btn = QPushButton("New Folder")
+            self.project_favorites_up_btn.clicked.connect(self._go_up_project_favorites_folder)
+            self.project_favorites_root_btn.clicked.connect(self._go_root_project_favorites_folder)
+            self.project_favorites_new_folder_btn.clicked.connect(self._create_project_favorites_folder)
+            project_favorites_nav.addWidget(self.project_favorites_folder_label, stretch=1)
+            project_favorites_nav.addWidget(self.project_favorites_up_btn)
+            project_favorites_nav.addWidget(self.project_favorites_root_btn)
+            project_favorites_nav.addWidget(self.project_favorites_new_folder_btn)
+            project_favorites_layout.addLayout(project_favorites_nav)
             self.favorites_list = QListWidget()
             self.favorites_list.itemDoubleClicked.connect(self._open_favorite_item)
             self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -266,6 +285,20 @@ class UiMixin:
             self.global_favorites_search_edit.setPlaceholderText("Search global favorites")
             self.global_favorites_search_edit.textChanged.connect(self._refresh_global_favorites_list)
             global_favorites_layout.addWidget(self.global_favorites_search_edit)
+            global_favorites_nav = QHBoxLayout()
+            self.global_favorites_folder_label = QLabel("Global Favorites Folder: Root")
+            self.global_favorites_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.global_favorites_up_btn = QPushButton("Up")
+            self.global_favorites_root_btn = QPushButton("Root")
+            self.global_favorites_new_folder_btn = QPushButton("New Folder")
+            self.global_favorites_up_btn.clicked.connect(self._go_up_global_favorites_folder)
+            self.global_favorites_root_btn.clicked.connect(self._go_root_global_favorites_folder)
+            self.global_favorites_new_folder_btn.clicked.connect(self._create_global_favorites_folder)
+            global_favorites_nav.addWidget(self.global_favorites_folder_label, stretch=1)
+            global_favorites_nav.addWidget(self.global_favorites_up_btn)
+            global_favorites_nav.addWidget(self.global_favorites_root_btn)
+            global_favorites_nav.addWidget(self.global_favorites_new_folder_btn)
+            global_favorites_layout.addLayout(global_favorites_nav)
             self.global_favorites_list = QListWidget()
             self.global_favorites_list.setSelectionMode(QListWidget.ExtendedSelection)
             self.global_favorites_list.itemDoubleClicked.connect(self._open_global_favorite_item)
@@ -282,6 +315,20 @@ class UiMixin:
             self.project_checked_out_search_edit.setPlaceholderText("Search checked out files")
             self.project_checked_out_search_edit.textChanged.connect(self._refresh_project_local_files_lists)
             checked_out_favorites_layout.addWidget(self.project_checked_out_search_edit)
+            checked_out_nav = QHBoxLayout()
+            self.project_checked_out_folder_label = QLabel("Checked Out Folder: Root")
+            self.project_checked_out_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.project_checked_out_up_btn = QPushButton("Up")
+            self.project_checked_out_root_btn = QPushButton("Root")
+            self.project_checked_out_new_folder_btn = QPushButton("New Folder")
+            self.project_checked_out_up_btn.clicked.connect(self._go_up_project_checked_out_folder)
+            self.project_checked_out_root_btn.clicked.connect(self._go_root_project_checked_out_folder)
+            self.project_checked_out_new_folder_btn.clicked.connect(self._create_project_checked_out_folder)
+            checked_out_nav.addWidget(self.project_checked_out_folder_label, stretch=1)
+            checked_out_nav.addWidget(self.project_checked_out_up_btn)
+            checked_out_nav.addWidget(self.project_checked_out_root_btn)
+            checked_out_nav.addWidget(self.project_checked_out_new_folder_btn)
+            checked_out_favorites_layout.addLayout(checked_out_nav)
             self.project_checked_out_list = QListWidget()
             self.project_checked_out_list.setSelectionMode(QListWidget.ExtendedSelection)
             self.project_checked_out_list.itemDoubleClicked.connect(self._open_project_local_checked_out_item)
@@ -298,6 +345,20 @@ class UiMixin:
             self.project_reference_search_edit.setPlaceholderText("Search reference files")
             self.project_reference_search_edit.textChanged.connect(self._refresh_project_local_files_lists)
             reference_favorites_layout.addWidget(self.project_reference_search_edit)
+            reference_nav = QHBoxLayout()
+            self.project_reference_folder_label = QLabel("Reference Folder: Root")
+            self.project_reference_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.project_reference_up_btn = QPushButton("Up")
+            self.project_reference_root_btn = QPushButton("Root")
+            self.project_reference_new_folder_btn = QPushButton("New Folder")
+            self.project_reference_up_btn.clicked.connect(self._go_up_project_reference_folder)
+            self.project_reference_root_btn.clicked.connect(self._go_root_project_reference_folder)
+            self.project_reference_new_folder_btn.clicked.connect(self._create_project_reference_folder)
+            reference_nav.addWidget(self.project_reference_folder_label, stretch=1)
+            reference_nav.addWidget(self.project_reference_up_btn)
+            reference_nav.addWidget(self.project_reference_root_btn)
+            reference_nav.addWidget(self.project_reference_new_folder_btn)
+            reference_favorites_layout.addLayout(reference_nav)
             self.project_reference_list = QListWidget()
             self.project_reference_list.setSelectionMode(QListWidget.ExtendedSelection)
             self.project_reference_list.itemDoubleClicked.connect(self._open_project_local_reference_item)
@@ -318,12 +379,17 @@ class UiMixin:
                 self._build_options_button(
                     [
                         ("New Note", self._create_note),
+                        ("New Folder", self._create_project_notes_folder),
+                        ("Up Folder", self._go_up_project_notes_folder),
+                        ("Go Root", self._go_root_project_notes_folder),
                         ("Presets", self._show_note_presets_dialog),
                         ("Edit Selected", self._edit_selected_note),
                         ("Copy Selected To Project", self._copy_selected_note_to_project),
                         ("Move Selected To Project", self._move_selected_note_to_project),
                         ("Remove Selected", self._remove_selected_note),
                         ("---", self._create_note),
+                        ("Move Selected To Folder", self._move_selected_notes_to_folder),
+                        ("Move Selected To Root", self._move_selected_notes_to_root),
                         ("Move Up", self._move_selected_note_up),
                         ("Move Down", self._move_selected_note_down),
                         ("Move to Top", self._move_selected_note_top),
@@ -338,6 +404,20 @@ class UiMixin:
                 lambda _text: self._refresh_notes_list(self._current_project_notes())
             )
             notes_layout.addWidget(self.project_notes_search_edit)
+            project_notes_nav = QHBoxLayout()
+            self.project_notes_folder_label = QLabel("Notes Folder: Root")
+            self.project_notes_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.project_notes_up_btn = QPushButton("Up")
+            self.project_notes_root_btn = QPushButton("Root")
+            self.project_notes_new_folder_btn = QPushButton("New Folder")
+            self.project_notes_up_btn.clicked.connect(self._go_up_project_notes_folder)
+            self.project_notes_root_btn.clicked.connect(self._go_root_project_notes_folder)
+            self.project_notes_new_folder_btn.clicked.connect(self._create_project_notes_folder)
+            project_notes_nav.addWidget(self.project_notes_folder_label, stretch=1)
+            project_notes_nav.addWidget(self.project_notes_up_btn)
+            project_notes_nav.addWidget(self.project_notes_root_btn)
+            project_notes_nav.addWidget(self.project_notes_new_folder_btn)
+            notes_layout.addLayout(project_notes_nav)
             self.notes_list = QListWidget()
             self.notes_list.itemDoubleClicked.connect(self._edit_note_item)
             self.notes_list.setContextMenuPolicy(Qt.CustomContextMenu)

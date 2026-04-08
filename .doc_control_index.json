@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "app_version": "0.2.2",
+  "files": {
+    "f_72a616c3cf76": {
+      "file_id": "f_72a616c3cf76",
+      "current_name": ".gitignore",
+      "canonical_name": ".gitignore",
+      "status": "active",
+      "known_names": [
+        ".gitignore",
+        ".gitignore"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_2b8dce5320cf": {
+      "file_id": "f_2b8dce5320cf",
+      "current_name": "app.ico",
+      "canonical_name": "app.ico",
+      "status": "active",
+      "known_names": [
+        "app.ico",
+        "app.ico"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_b4c19d6c865b": {
+      "file_id": "f_b4c19d6c865b",
+      "current_name": "app.py",
+      "canonical_name": "app.py",
+      "status": "active",
+      "known_names": [
+        "app.py",
+        "app.py"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_3bd7664961d0": {
+      "file_id": "f_3bd7664961d0",
+      "current_name": "build.ps1",
+      "canonical_name": "build.ps1",
+      "status": "active",
+      "known_names": [
+        "build.ps1",
+        "build.ps1"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_d3fce11f13c3": {
+      "file_id": "f_d3fce11f13c3",
+      "current_name": "commands.txt",
+      "canonical_name": "commands.txt",
+      "status": "active",
+      "known_names": [
+        "commands.txt",
+        "commands.txt"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_cf68430212f1": {
+      "file_id": "f_cf68430212f1",
+      "current_name": "pytest-manual-output.txt",
+      "canonical_name": "pytest-manual-output.txt",
+      "status": "active",
+      "known_names": [
+        "pytest-manual-output.txt",
+        "pytest-manual-output.txt"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_2110d0fd7615": {
+      "file_id": "f_2110d0fd7615",
+      "current_name": "pytest.ini",
+      "canonical_name": "pytest.ini",
+      "status": "active",
+      "known_names": [
+        "pytest.ini",
+        "pytest.ini"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_3a189996b0c7": {
+      "file_id": "f_3a189996b0c7",
+      "current_name": "README.md",
+      "canonical_name": "README.md",
+      "status": "active",
+      "known_names": [
+        "README.md",
+        "README.md"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_18fe5dd0b420": {
+      "file_id": "f_18fe5dd0b420",
+      "current_name": "requirements-build.txt",
+      "canonical_name": "requirements-build.txt",
+      "status": "active",
+      "known_names": [
+        "requirements-build.txt",
+        "requirements-build.txt"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_70a1d2c3526f": {
+      "file_id": "f_70a1d2c3526f",
+      "current_name": "requirements-dev.txt",
+      "canonical_name": "requirements-dev.txt",
+      "status": "active",
+      "known_names": [
+        "requirements-dev.txt",
+        "requirements-dev.txt"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    },
+    "f_0849f72549b7": {
+      "file_id": "f_0849f72549b7",
+      "current_name": "requirements.txt",
+      "canonical_name": "requirements.txt",
+      "status": "active",
+      "known_names": [
+        "requirements.txt",
+        "requirements.txt"
+      ],
+      "legacy_bound_names": [],
+      "checked_out_by": "",
+      "checked_out_at": "",
+      "created_at": "2026-04-08T10:39:24-04:00"
+    }
+  }
+}

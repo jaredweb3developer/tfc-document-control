@@ -5,6 +5,12 @@ from app import *
 
 
 class RecordsMixin:
+        def _new_record_id(self, existing_ids: set[str]) -> str:
+            while True:
+                candidate = f"r_{uuid4().hex[:12]}"
+                if candidate not in existing_ids:
+                    return candidate
+
         def _new_compact_id(self, existing_ids: set[str], size: int = 10) -> str:
             while True:
                 candidate = uuid4().hex[:size]
@@ -3003,12 +3009,21 @@ class RecordsMixin:
                 item.setSelected(True)
                 self.favorites_list.setCurrentItem(item)
 
+            current_item = self.favorites_list.currentItem()
+            is_folder = current_item is not None and str(current_item.data(Qt.UserRole + 1)) == "folder"
             menu = QMenu(self)
-            open_action = menu.addAction("Open Selected")
+            open_action = menu.addAction("Open Folder" if is_folder else "Open Selected")
+            add_action = menu.addAction("Add Favorite")
+            new_folder_action = menu.addAction("New Folder")
+            up_folder_action = menu.addAction("Up Folder")
+            root_action = menu.addAction("Go Root")
+            rename_folder_action = menu.addAction("Rename Folder")
+            delete_folder_action = menu.addAction("Delete Folder")
             view_location_action = menu.addAction("View Location")
             load_location_action = menu.addAction("Load Location")
-            add_action = menu.addAction("Add Favorite")
             add_global_action = menu.addAction("Add Selected To Global Favorites")
+            move_to_folder_action = menu.addAction("Move Selected To Folder")
+            move_to_root_action = menu.addAction("Move Selected To Root")
             remove_action = menu.addAction("Remove Favorite")
             move_up_action = menu.addAction("Move Up")
             move_down_action = menu.addAction("Move Down")
@@ -3018,6 +3033,16 @@ class RecordsMixin:
             chosen = menu.exec(self.favorites_list.mapToGlobal(pos))
             if chosen == open_action:
                 self._open_selected_favorites()
+            elif chosen == new_folder_action:
+                self._create_project_favorites_folder()
+            elif chosen == up_folder_action:
+                self._go_up_project_favorites_folder()
+            elif chosen == root_action:
+                self._go_root_project_favorites_folder()
+            elif chosen == rename_folder_action and current_item is not None:
+                self._rename_project_favorites_folder(str(current_item.data(Qt.UserRole)).strip())
+            elif chosen == delete_folder_action and current_item is not None:
+                self._delete_project_favorites_folder(str(current_item.data(Qt.UserRole)).strip())
             elif chosen == view_location_action:
                 self._view_selected_file_locations_from_list(self.favorites_list)
             elif chosen == load_location_action:
@@ -3026,6 +3051,10 @@ class RecordsMixin:
                 self._browse_and_add_favorites()
             elif chosen == add_global_action:
                 self._add_selected_project_favorites_to_global()
+            elif chosen == move_to_folder_action:
+                self._move_selected_favorites_to_folder()
+            elif chosen == move_to_root_action:
+                self._move_selected_favorites_to_root()
             elif chosen == remove_action:
                 self._remove_selected_favorites()
             elif chosen == move_up_action:
@@ -3052,13 +3081,22 @@ class RecordsMixin:
                 item.setSelected(True)
                 self.notes_list.setCurrentItem(item)
 
+            current_item = self.notes_list.currentItem()
+            is_folder = current_item is not None and str(current_item.data(Qt.UserRole + 1)) == "folder"
             menu = QMenu(self)
-            edit_action = menu.addAction("Edit Selected")
             new_action = menu.addAction("New Note")
+            new_folder_action = menu.addAction("New Folder")
+            up_folder_action = menu.addAction("Up Folder")
+            root_action = menu.addAction("Go Root")
+            edit_action = menu.addAction("Open Folder" if is_folder else "Edit Selected")
+            rename_folder_action = menu.addAction("Rename Folder")
+            delete_folder_action = menu.addAction("Delete Folder")
             presets_action = menu.addAction("Presets")
             copy_action = menu.addAction("Copy Selected To Project")
             move_project_action = menu.addAction("Move Selected To Project")
             remove_action = menu.addAction("Remove Selected")
+            move_to_folder_action = menu.addAction("Move Selected To Folder")
+            move_to_root_action = menu.addAction("Move Selected To Root")
             move_up_action = menu.addAction("Move Up")
             move_down_action = menu.addAction("Move Down")
             move_top_action = menu.addAction("Move to Top")
@@ -3067,16 +3105,33 @@ class RecordsMixin:
             chosen = menu.exec(self.notes_list.mapToGlobal(pos))
             if chosen == new_action:
                 self._create_note()
+            elif chosen == new_folder_action:
+                self._create_project_notes_folder()
+            elif chosen == up_folder_action:
+                self._go_up_project_notes_folder()
+            elif chosen == root_action:
+                self._go_root_project_notes_folder()
             elif chosen == presets_action:
                 self._show_note_presets_dialog()
             elif chosen == edit_action:
-                self._edit_selected_note()
+                if is_folder and current_item is not None:
+                    self._edit_note_item(current_item)
+                else:
+                    self._edit_selected_note()
+            elif chosen == rename_folder_action and current_item is not None:
+                self._rename_project_notes_folder(str(current_item.data(Qt.UserRole)).strip())
+            elif chosen == delete_folder_action and current_item is not None:
+                self._delete_project_notes_folder(str(current_item.data(Qt.UserRole)).strip())
             elif chosen == copy_action:
                 self._copy_selected_note_to_project()
             elif chosen == move_project_action:
                 self._move_selected_note_to_project()
             elif chosen == remove_action:
                 self._remove_selected_note()
+            elif chosen == move_to_folder_action:
+                self._move_selected_notes_to_folder()
+            elif chosen == move_to_root_action:
+                self._move_selected_notes_to_root()
             elif chosen == move_up_action:
                 self._move_selected_note_up()
             elif chosen == move_down_action:
@@ -3452,6 +3507,7 @@ class RecordsMixin:
 
                 try:
                     self.records = []
+                    existing_ids: set[str] = set()
                     for entry in raw_records:
                         if not isinstance(entry, dict):
                             continue
@@ -3464,9 +3520,13 @@ class RecordsMixin:
                             project_dir=str(entry.get("project_dir", "")),
                             source_root=str(entry.get("source_root", "")),
                             checked_out_at=str(entry.get("checked_out_at", "")),
+                            id=str(entry.get("id", "")).strip(),
                             record_type=str(entry.get("record_type", "checked_out") or "checked_out"),
                             file_id=str(entry.get("file_id", "")).strip(),
                         )
+                        if not record.id or record.id in existing_ids:
+                            record.id = self._new_record_id(existing_ids)
+                        existing_ids.add(record.id)
                         if not record.file_id and record.source_file:
                             source_path = Path(record.source_file)
                             source_dir = source_path.parent

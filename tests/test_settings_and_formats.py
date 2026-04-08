@@ -37,6 +37,7 @@ def test_load_records_supports_legacy_list_format(app_env):
     app._load_records()
     assert len(app.records) == 1
     assert app.records[0].source_file == "A"
+    assert app.records[0].id.startswith("r_")
 
 
 def test_load_records_supports_schema_dict_format(app_env):
@@ -66,3 +67,41 @@ def test_load_records_supports_schema_dict_format(app_env):
     app._load_records()
     assert len(app.records) == 1
     assert app.records[0].source_file == "B"
+    assert app.records[0].id.startswith("r_")
+
+
+def test_project_config_round_trips_logical_views(app_env):
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    project_dir = tmp / "Projects" / "LogicalViews"
+    logical_views = {
+        "project_favorites": {
+            "folders": [
+                {"id": "folder-a", "name": "Folder A", "parent_id": "", "sort_order": 0},
+            ],
+            "placements": [
+                {"item_key": "C:/tmp/a.pdf", "parent_folder_id": "folder-a", "sort_order": 1},
+            ],
+        }
+    }
+
+    app._write_project_config(
+        project_dir=project_dir,
+        name="LogicalViews",
+        sources=[],
+        logical_views=logical_views,
+    )
+
+    cfg = app._read_project_config(project_dir)
+    loaded_views = cfg.get("logical_views", {})
+
+    assert isinstance(loaded_views, dict)
+    assert loaded_views["project_favorites"]["folders"][0]["name"] == "Folder A"
+    assert loaded_views["project_favorites"]["placements"][0]["item_key"] == "C:/tmp/a.pdf"
+    assert set(loaded_views.keys()) == {
+        "project_favorites",
+        "project_notes",
+        "project_checked_out",
+        "project_reference",
+    }

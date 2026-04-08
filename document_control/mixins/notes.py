@@ -1111,25 +1111,112 @@ class NotesMixin:
                 body = body[:237].rstrip() + "..."
             return body or "(No body)"
 
+        def _project_notes_logical_view(self) -> Dict[str, List[Dict[str, object]]]:
+            return self._project_logical_view("project_notes")
+
+        def _save_project_notes_logical_view(self, view: Dict[str, List[Dict[str, object]]]) -> None:
+            self._save_project_logical_view("project_notes", view)
+
+        def _refresh_project_notes_navigation(
+            self, view: Optional[Dict[str, List[Dict[str, object]]]] = None
+        ) -> None:
+            if not hasattr(self, "project_notes_folder_label"):
+                return
+            current_view = view or self._project_notes_logical_view()
+            current_folder_id = self._current_logical_folder_id("project_notes")
+            folder_map = self._logical_view_folder_map(current_view)
+            if current_folder_id and current_folder_id not in folder_map:
+                current_folder_id = ""
+                self._set_current_logical_folder_id("project_notes", "")
+            path_parts = self._logical_view_folder_path(current_view, current_folder_id)
+            path_text = "Root" if not path_parts else "Root / " + " / ".join(path_parts)
+            self.project_notes_folder_label.setText(f"Notes Folder: {path_text}")
+            self.project_notes_up_btn.setEnabled(bool(current_folder_id))
+            self.project_notes_root_btn.setEnabled(bool(current_folder_id))
+
+        def _prompt_for_project_notes_folder_name(
+            self, title: str, current_name: str = ""
+        ) -> Optional[str]:
+            name, accepted = QInputDialog.getText(
+                self,
+                title,
+                "Folder name:",
+                text=current_name,
+            )
+            if not accepted:
+                return None
+            normalized = " ".join(name.strip().split())
+            if not normalized:
+                self._error("Folder name is required.")
+                return None
+            return normalized
+
         def _refresh_notes_list(self, notes: List[Dict[str, str]]) -> None:
             self.notes_list.clear()
             search = self.project_notes_search_edit.text().strip().lower()
+            search_active = bool(search)
+            view = self._project_notes_logical_view()
+            folder_map = self._logical_view_folder_map(view)
+            current_folder_id = self._current_logical_folder_id("project_notes")
+            if current_folder_id and current_folder_id not in folder_map:
+                current_folder_id = ""
+                self._set_current_logical_folder_id("project_notes", "")
+            self._refresh_project_notes_navigation(view)
+            if search_active:
+                descendant_ids = self._logical_descendant_folder_ids(view, "")
+                candidate_folders = [
+                    dict(folder_map[folder_id])
+                    for folder_id in descendant_ids
+                    if folder_id in folder_map
+                ]
+                candidate_folders.sort(
+                    key=lambda folder: " / ".join(
+                        self._logical_view_folder_path(view, str(folder.get("id", "")).strip())
+                    ).lower()
+                )
+            else:
+                descendant_ids = self._logical_descendant_folder_ids(view, current_folder_id)
+                candidate_folders = self._logical_child_folders(view, current_folder_id)
+            for folder in candidate_folders:
+                folder_name = str(folder.get("name", "")).strip()
+                folder_path = self._logical_view_folder_path(view, str(folder.get("id", "")).strip())
+                search_blob = " / ".join(folder_path).lower()
+                if search and search not in folder_name.lower() and search not in search_blob:
+                    continue
+                item = QListWidgetItem(f"[Folder] {folder_name}")
+                item.setData(Qt.UserRole, str(folder.get("id", "")).strip())
+                item.setData(Qt.UserRole + 1, "folder")
+                item.setToolTip("Folder\n" + (" / ".join(["Root", *folder_path]) if folder_path else "Root"))
+                self.notes_list.addItem(item)
             for note in notes:
                 note_id = str(note.get("id", ""))
+                parent_folder_id = self._logical_item_parent_folder_id(view, note_id)
+                if not search_active and parent_folder_id != current_folder_id:
+                    continue
+                if search_active:
+                    if parent_folder_id and parent_folder_id not in descendant_ids:
+                        continue
                 subject = note.get("subject", "(Untitled)")
                 body = str(note.get("body", ""))
                 custom_groups = self._item_customization_groups("project_notes", note_id)
                 group_search = " ".join(custom_groups).lower()
+                folder_path = self._logical_view_folder_path(view, parent_folder_id)
+                folder_search = " / ".join(folder_path).lower()
                 if (
                     search
                     and search not in subject.lower()
                     and search not in body.lower()
                     and search not in group_search
+                    and search not in folder_search
                 ):
                     continue
                 item = QListWidgetItem(subject)
                 item.setData(Qt.UserRole, note_id)
-                self._set_projects_item_base_tooltip(item, self._note_tooltip(note))
+                item.setData(Qt.UserRole + 1, "item")
+                tooltip = self._note_tooltip(note)
+                if folder_path:
+                    tooltip += "\nFolder: " + " / ".join(["Root", *folder_path])
+                self._set_projects_item_base_tooltip(item, tooltip)
                 self._apply_projects_list_item_style(item, "project_notes", note_id)
                 self.notes_list.addItem(item)
 
@@ -1142,7 +1229,9 @@ class NotesMixin:
 
         def _selected_note_id(self) -> str:
             item = self.notes_list.currentItem()
-            return str(item.data(Qt.UserRole)).strip() if item else ""
+            if not item or str(item.data(Qt.UserRole + 1)) == "folder":
+                return ""
+            return str(item.data(Qt.UserRole)).strip()
 
         def _selected_project_note(self) -> Optional[Dict[str, str]]:
             note_id = self._selected_note_id()
@@ -1697,10 +1786,18 @@ class NotesMixin:
                 return
             notes = self._current_project_notes()
             notes.append(note)
+            logical_view = self._project_notes_logical_view()
+            current_folder_id = self._current_logical_folder_id("project_notes")
+            logical_view = self._set_logical_item_parent_folder_id(logical_view, str(note.get("id", "")).strip(), current_folder_id)
+            self._save_project_notes_logical_view(logical_view)
             self._set_project_notes(notes)
 
         def _edit_note_item(self, item: QListWidgetItem) -> None:
             self.notes_list.setCurrentItem(item)
+            if str(item.data(Qt.UserRole + 1)) == "folder":
+                self._set_current_logical_folder_id("project_notes", str(item.data(Qt.UserRole)).strip())
+                self._refresh_notes_list(self._current_project_notes())
+                return
             self._edit_selected_note()
 
         def _edit_selected_note(self, _item: Optional[QListWidgetItem] = None) -> None:
@@ -1729,6 +1826,9 @@ class NotesMixin:
                 self._error("Select a note to remove.")
                 return
             notes = [note for note in self._current_project_notes() if note.get("id", "") != note_id]
+            logical_view = self._project_notes_logical_view()
+            logical_view = self._set_logical_item_parent_folder_id(logical_view, note_id, "")
+            self._save_project_notes_logical_view(logical_view)
             self._set_project_notes(notes)
 
         def _notes_from_ui_order(self) -> List[Dict[str, str]]:
@@ -1736,6 +1836,8 @@ class NotesMixin:
             ordered_notes: List[Dict[str, str]] = []
             for row in range(self.notes_list.count()):
                 item = self.notes_list.item(row)
+                if str(item.data(Qt.UserRole + 1)) == "folder":
+                    continue
                 note_id = str(item.data(Qt.UserRole))
                 note = by_id.get(note_id)
                 if note:
@@ -1743,14 +1845,176 @@ class NotesMixin:
             return ordered_notes
 
         def _move_selected_note(self, delta: int) -> None:
+            logical_view = self._project_notes_logical_view()
+            if logical_view.get("folders") or logical_view.get("placements"):
+                self._error("Reordering project notes is not available while logical folders are in use.")
+                return
             if not self._move_list_widget_item(self.notes_list, delta):
                 return
             self._set_project_notes(self._notes_from_ui_order())
 
         def _move_selected_note_to(self, target_index: int) -> None:
+            logical_view = self._project_notes_logical_view()
+            if logical_view.get("folders") or logical_view.get("placements"):
+                self._error("Reordering project notes is not available while logical folders are in use.")
+                return
             if not self._move_list_widget_item_to(self.notes_list, target_index):
                 return
             self._set_project_notes(self._notes_from_ui_order())
+
+        def _go_up_project_notes_folder(self) -> None:
+            view = self._project_notes_logical_view()
+            current_folder_id = self._current_logical_folder_id("project_notes")
+            if not current_folder_id:
+                return
+            folder = self._logical_view_folder_map(view).get(current_folder_id, {})
+            self._set_current_logical_folder_id("project_notes", str(folder.get("parent_id", "")).strip())
+            self._refresh_notes_list(self._current_project_notes())
+
+        def _go_root_project_notes_folder(self) -> None:
+            self._set_current_logical_folder_id("project_notes", "")
+            self._refresh_notes_list(self._current_project_notes())
+
+        def _create_project_notes_folder(self) -> None:
+            name = self._prompt_for_project_notes_folder_name("New Notes Folder")
+            if not name:
+                return
+            view = self._project_notes_logical_view()
+            current_folder_id = self._current_logical_folder_id("project_notes")
+            siblings = self._logical_child_folders(view, current_folder_id)
+            for sibling in siblings:
+                if str(sibling.get("name", "")).strip().lower() == name.lower():
+                    self._error("A folder with that name already exists here.")
+                    return
+            folders = [dict(folder) for folder in view.get("folders", [])]
+            folders.append(
+                {
+                    "id": f"fld_{uuid4().hex[:12]}",
+                    "name": name,
+                    "parent_id": current_folder_id,
+                    "sort_order": len(siblings),
+                }
+            )
+            view["folders"] = folders
+            self._save_project_notes_logical_view(view)
+            self._refresh_notes_list(self._current_project_notes())
+
+        def _rename_project_notes_folder(self, folder_id: str) -> None:
+            view = self._project_notes_logical_view()
+            folder_map = self._logical_view_folder_map(view)
+            folder = folder_map.get(folder_id.strip())
+            if not folder:
+                self._error("Selected folder could not be found.")
+                return
+            name = self._prompt_for_project_notes_folder_name(
+                "Rename Notes Folder",
+                str(folder.get("name", "")),
+            )
+            if not name:
+                return
+            siblings = self._logical_child_folders(view, str(folder.get("parent_id", "")).strip())
+            for sibling in siblings:
+                if str(sibling.get("id", "")).strip() == folder_id.strip():
+                    continue
+                if str(sibling.get("name", "")).strip().lower() == name.lower():
+                    self._error("A folder with that name already exists here.")
+                    return
+            folders = [dict(entry) for entry in view.get("folders", [])]
+            for entry in folders:
+                if str(entry.get("id", "")).strip() == folder_id.strip():
+                    entry["name"] = name
+                    break
+            view["folders"] = folders
+            self._save_project_notes_logical_view(view)
+            self._refresh_notes_list(self._current_project_notes())
+
+        def _delete_project_notes_folder(self, folder_id: str) -> None:
+            confirm = QMessageBox.question(
+                self,
+                "Delete Notes Folder",
+                "Delete this folder and its subfolders? Notes inside will return to the root list.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+            view = self._delete_logical_folder_tree(self._project_notes_logical_view(), folder_id)
+            if self._current_logical_folder_id("project_notes") == folder_id.strip():
+                self._set_current_logical_folder_id("project_notes", "")
+            self._save_project_notes_logical_view(view)
+            self._refresh_notes_list(self._current_project_notes())
+
+        def _choose_project_notes_target_folder(self) -> Optional[str]:
+            view = self._project_notes_logical_view()
+            folders = [dict(folder) for folder in view.get("folders", [])]
+            if not folders:
+                self._error("Create a notes folder first.")
+                return None
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Move Notes To Folder")
+            dialog.resize(420, 360)
+            layout = QVBoxLayout(dialog)
+            folder_list = QListWidget()
+            root_item = QListWidgetItem("Root")
+            root_item.setData(Qt.UserRole, "")
+            folder_list.addItem(root_item)
+            ordered_folders = sorted(
+                folders,
+                key=lambda entry: " / ".join(
+                    self._logical_view_folder_path(view, str(entry.get("id", "")).strip())
+                ).lower(),
+            )
+            for folder in ordered_folders:
+                folder_id = str(folder.get("id", "")).strip()
+                path_text = " / ".join(self._logical_view_folder_path(view, folder_id))
+                item = QListWidgetItem(path_text or str(folder.get("name", "")))
+                item.setData(Qt.UserRole, folder_id)
+                folder_list.addItem(item)
+            folder_list.setCurrentRow(0)
+            layout.addWidget(folder_list, stretch=1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.Accepted:
+                return None
+            current_item = folder_list.currentItem()
+            return str(current_item.data(Qt.UserRole)).strip() if current_item is not None else ""
+
+        def _move_selected_notes_to_folder(self) -> None:
+            selected_items = self.notes_list.selectedItems()
+            if not selected_items:
+                self._error("Select at least one note.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
+                self._error("Select notes only.")
+                return
+            target_folder_id = self._choose_project_notes_target_folder()
+            if target_folder_id is None:
+                return
+            view = self._project_notes_logical_view()
+            for item in selected_items:
+                note_id = str(item.data(Qt.UserRole)).strip()
+                if note_id:
+                    view = self._set_logical_item_parent_folder_id(view, note_id, target_folder_id)
+            self._save_project_notes_logical_view(view)
+            self._refresh_notes_list(self._current_project_notes())
+
+        def _move_selected_notes_to_root(self) -> None:
+            selected_items = self.notes_list.selectedItems()
+            if not selected_items:
+                self._error("Select at least one note.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
+                self._error("Select notes only.")
+                return
+            view = self._project_notes_logical_view()
+            for item in selected_items:
+                note_id = str(item.data(Qt.UserRole)).strip()
+                if note_id:
+                    view = self._set_logical_item_parent_folder_id(view, note_id, "")
+            self._save_project_notes_logical_view(view)
+            self._refresh_notes_list(self._current_project_notes())
 
         def _move_selected_note_up(self) -> None:
             self._move_selected_note(-1)

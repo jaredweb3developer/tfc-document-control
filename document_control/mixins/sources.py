@@ -1231,6 +1231,8 @@ class SourcesMixin:
                 if not record:
                     return None
                 return Path(record.local_file)
+            if str(item.data(Qt.UserRole + 1)) == "folder":
+                return None
             value = item.data(Qt.UserRole)
             if value in (None, ""):
                 return None
@@ -1397,23 +1399,260 @@ class SourcesMixin:
         def _favorite_display_name(self, favorite_path: str) -> str:
             return Path(favorite_path).name or favorite_path
 
+        def _empty_logical_view(self) -> Dict[str, List[Dict[str, object]]]:
+            return {"folders": [], "placements": []}
+
+        def _project_logical_views(self) -> Dict[str, Dict[str, List[Dict[str, object]]]]:
+            config = self._current_project_config()
+            if not config:
+                return self._normalize_logical_views({}, app_module.PROJECT_LOGICAL_VIEW_SCOPES)
+            return self._normalize_logical_views(
+                config.get("logical_views", {}),
+                app_module.PROJECT_LOGICAL_VIEW_SCOPES,
+            )
+
+        def _project_logical_view(self, scope: str) -> Dict[str, List[Dict[str, object]]]:
+            return dict(self._project_logical_views().get(scope, self._empty_logical_view()))
+
+        def _save_project_logical_view(self, scope: str, view: Dict[str, List[Dict[str, object]]]) -> None:
+            project_dir = self._validate_current_project()
+            if not project_dir:
+                return
+            logical_views = self._project_logical_views()
+            logical_views[scope] = self._normalize_logical_view_entry(view)
+            self._save_project_config(project_dir, logical_views=logical_views)
+
+        def _logical_view_folder_map(self, view: Dict[str, List[Dict[str, object]]]) -> Dict[str, Dict[str, object]]:
+            folders = view.get("folders", [])
+            if not isinstance(folders, list):
+                return {}
+            return {
+                str(folder.get("id", "")).strip(): dict(folder)
+                for folder in folders
+                if isinstance(folder, dict) and str(folder.get("id", "")).strip()
+            }
+
+        def _logical_view_folder_path(self, view: Dict[str, List[Dict[str, object]]], folder_id: str) -> List[str]:
+            path_parts: List[str] = []
+            folder_map = self._logical_view_folder_map(view)
+            current_id = folder_id.strip()
+            seen: set[str] = set()
+            while current_id and current_id not in seen:
+                seen.add(current_id)
+                folder = folder_map.get(current_id)
+                if not folder:
+                    break
+                path_parts.append(str(folder.get("name", "")).strip())
+                current_id = str(folder.get("parent_id", "")).strip()
+            path_parts.reverse()
+            return path_parts
+
+        def _logical_descendant_folder_ids(
+            self, view: Dict[str, List[Dict[str, object]]], parent_folder_id: str
+        ) -> set[str]:
+            folder_map = self._logical_view_folder_map(view)
+            if not parent_folder_id.strip():
+                return set(folder_map.keys())
+            descendants: set[str] = set()
+            pending = [parent_folder_id.strip()]
+            while pending:
+                current_id = pending.pop()
+                for folder_id, folder in folder_map.items():
+                    if folder_id in descendants:
+                        continue
+                    if str(folder.get("parent_id", "")).strip() != current_id:
+                        continue
+                    descendants.add(folder_id)
+                    pending.append(folder_id)
+            return descendants
+
+        def _current_logical_folder_id(self, scope: str) -> str:
+            return str(self.logical_view_current_folder_ids.get(scope, "")).strip()
+
+        def _set_current_logical_folder_id(self, scope: str, folder_id: str) -> None:
+            normalized = folder_id.strip()
+            if normalized:
+                self.logical_view_current_folder_ids[scope] = normalized
+            else:
+                self.logical_view_current_folder_ids.pop(scope, None)
+
+        def _logical_child_folders(
+            self, view: Dict[str, List[Dict[str, object]]], parent_id: str
+        ) -> List[Dict[str, object]]:
+            folders = view.get("folders", [])
+            if not isinstance(folders, list):
+                return []
+            child_folders = [
+                dict(folder)
+                for folder in folders
+                if isinstance(folder, dict) and str(folder.get("parent_id", "")).strip() == parent_id.strip()
+            ]
+            child_folders.sort(
+                key=lambda folder: (int(folder.get("sort_order", 0)), str(folder.get("name", "")).lower())
+            )
+            return child_folders
+
+        def _logical_item_parent_folder_id(
+            self, view: Dict[str, List[Dict[str, object]]], item_key: str
+        ) -> str:
+            placements = view.get("placements", [])
+            if not isinstance(placements, list):
+                return ""
+            for placement in placements:
+                if not isinstance(placement, dict):
+                    continue
+                if str(placement.get("item_key", "")).strip() != item_key:
+                    continue
+                return str(placement.get("parent_folder_id", "")).strip()
+            return ""
+
+        def _set_logical_item_parent_folder_id(
+            self,
+            view: Dict[str, List[Dict[str, object]]],
+            item_key: str,
+            parent_folder_id: str,
+        ) -> Dict[str, List[Dict[str, object]]]:
+            normalized = self._normalize_logical_view_entry(view)
+            placements = [
+                dict(entry)
+                for entry in normalized.get("placements", [])
+                if str(entry.get("item_key", "")).strip() != item_key
+            ]
+            if parent_folder_id.strip():
+                placements.append(
+                    {
+                        "item_key": item_key,
+                        "parent_folder_id": parent_folder_id.strip(),
+                        "sort_order": len(placements),
+                    }
+                )
+            normalized["placements"] = placements
+            return self._normalize_logical_view_entry(normalized)
+
+        def _delete_logical_folder_tree(
+            self, view: Dict[str, List[Dict[str, object]]], folder_id: str
+        ) -> Dict[str, List[Dict[str, object]]]:
+            normalized = self._normalize_logical_view_entry(view)
+            folders = [dict(folder) for folder in normalized.get("folders", [])]
+            placements = [dict(entry) for entry in normalized.get("placements", [])]
+            descendants: set[str] = set()
+            pending = [folder_id.strip()]
+            while pending:
+                current = pending.pop()
+                if not current or current in descendants:
+                    continue
+                descendants.add(current)
+                for folder in folders:
+                    if str(folder.get("parent_id", "")).strip() == current:
+                        pending.append(str(folder.get("id", "")).strip())
+            normalized["folders"] = [
+                folder for folder in folders if str(folder.get("id", "")).strip() not in descendants
+            ]
+            normalized["placements"] = [
+                entry
+                for entry in placements
+                if str(entry.get("parent_folder_id", "")).strip() not in descendants
+            ]
+            return self._normalize_logical_view_entry(normalized)
+
+        def _prompt_for_project_favorites_folder_name(
+            self, title: str, current_name: str = ""
+        ) -> Optional[str]:
+            name, accepted = QInputDialog.getText(
+                self,
+                title,
+                "Folder name:",
+                text=current_name,
+            )
+            if not accepted:
+                return None
+            normalized = " ".join(name.strip().split())
+            if not normalized:
+                self._error("Folder name is required.")
+                return None
+            return normalized
+
+        def _refresh_project_favorites_navigation(
+            self, view: Optional[Dict[str, List[Dict[str, object]]]] = None
+        ) -> None:
+            if not hasattr(self, "project_favorites_folder_label"):
+                return
+            current_view = view or self._project_logical_view("project_favorites")
+            current_folder_id = self._current_logical_folder_id("project_favorites")
+            folder_map = self._logical_view_folder_map(current_view)
+            if current_folder_id and current_folder_id not in folder_map:
+                current_folder_id = ""
+                self._set_current_logical_folder_id("project_favorites", "")
+            path_parts = self._logical_view_folder_path(current_view, current_folder_id)
+            path_text = "Root" if not path_parts else "Root / " + " / ".join(path_parts)
+            self.project_favorites_folder_label.setText(f"Favorites Folder: {path_text}")
+            self.project_favorites_up_btn.setEnabled(bool(current_folder_id))
+            self.project_favorites_root_btn.setEnabled(bool(current_folder_id))
+
         def _refresh_favorites_list(self, favorites: List[str]) -> None:
             self.favorites_list.clear()
             search = self.project_favorites_search_edit.text().strip().lower()
+            search_active = bool(search)
+            view = self._project_logical_view("project_favorites")
+            folder_map = self._logical_view_folder_map(view)
+            current_folder_id = self._current_logical_folder_id("project_favorites")
+            if current_folder_id and current_folder_id not in folder_map:
+                current_folder_id = ""
+                self._set_current_logical_folder_id("project_favorites", "")
+            self._refresh_project_favorites_navigation(view)
+            if search_active:
+                descendant_ids = self._logical_descendant_folder_ids(view, "")
+                candidate_folders = [
+                    dict(folder_map[folder_id])
+                    for folder_id in descendant_ids
+                    if folder_id in folder_map
+                ]
+                candidate_folders.sort(
+                    key=lambda folder: " / ".join(
+                        self._logical_view_folder_path(view, str(folder.get("id", "")).strip())
+                    ).lower()
+                )
+            else:
+                descendant_ids = self._logical_descendant_folder_ids(view, current_folder_id)
+                candidate_folders = self._logical_child_folders(view, current_folder_id)
+            for folder in candidate_folders:
+                folder_name = str(folder.get("name", "")).strip()
+                folder_path = self._logical_view_folder_path(view, str(folder.get("id", "")).strip())
+                search_blob = " / ".join(folder_path).lower()
+                if search and search not in folder_name.lower() and search not in search_blob:
+                    continue
+                item = QListWidgetItem(f"[Folder] {folder_name}")
+                item.setData(Qt.UserRole, str(folder.get("id", "")).strip())
+                item.setData(Qt.UserRole + 1, "folder")
+                item.setToolTip("Folder\n" + (" / ".join(["Root", *folder_path]) if folder_path else "Root"))
+                self.favorites_list.addItem(item)
             for favorite in favorites:
+                parent_folder_id = self._logical_item_parent_folder_id(view, favorite)
+                if not search_active and parent_folder_id != current_folder_id:
+                    continue
+                if search_active:
+                    if parent_folder_id and parent_folder_id not in descendant_ids:
+                        continue
                 display_name = self._favorite_display_name(favorite)
                 custom_groups = self._item_customization_groups("project_favorites", favorite)
                 group_search = " ".join(custom_groups).lower()
+                folder_path = self._logical_view_folder_path(view, parent_folder_id)
+                folder_search = " / ".join(folder_path).lower()
                 if (
                     search
                     and search not in display_name.lower()
                     and search not in favorite.lower()
                     and search not in group_search
+                    and search not in folder_search
                 ):
                     continue
                 item = QListWidgetItem(display_name)
                 item.setData(Qt.UserRole, favorite)
-                self._set_projects_item_base_tooltip(item, favorite)
+                item.setData(Qt.UserRole + 1, "item")
+                tooltip = favorite
+                if folder_path:
+                    tooltip += "\nFolder: " + " / ".join(["Root", *folder_path])
+                self._set_projects_item_base_tooltip(item, tooltip)
                 self._apply_projects_list_item_style(item, "project_favorites", str(favorite))
                 self.favorites_list.addItem(item)
 
@@ -1433,11 +1672,19 @@ class SourcesMixin:
             if not paths:
                 return
             favorites = self._current_project_favorites()
+            current_folder_id = self._current_logical_folder_id("project_favorites")
+            logical_view = self._project_logical_view("project_favorites")
+            changed = False
             for path in paths:
                 favorite = str(path)
                 if favorite not in favorites:
                     favorites.append(favorite)
+                    logical_view = self._set_logical_item_parent_folder_id(logical_view, favorite, current_folder_id)
+                    changed = True
             self._set_project_favorites(favorites)
+            if changed:
+                self._save_project_logical_view("project_favorites", logical_view)
+                self._refresh_favorites_list(favorites)
 
         def _add_favorite_paths_to_project(self, project_dir: Path, paths: List[Path]) -> None:
             config = self._read_project_config(project_dir)
@@ -1449,7 +1696,15 @@ class SourcesMixin:
                     favorites.append(favorite)
                     changed = True
             if changed:
-                self._save_project_config(project_dir, favorites=favorites)
+                logical_views = self._normalize_logical_views(
+                    config.get("logical_views", {}),
+                    app_module.PROJECT_LOGICAL_VIEW_SCOPES,
+                )
+                logical_view = logical_views.get("project_favorites", self._empty_logical_view())
+                for path in paths:
+                    logical_view = self._set_logical_item_parent_folder_id(logical_view, str(path), "")
+                logical_views["project_favorites"] = logical_view
+                self._save_project_config(project_dir, favorites=favorites, logical_views=logical_views)
                 if self.current_project_dir == str(project_dir):
                     self._refresh_favorites_list(favorites)
 
@@ -1614,14 +1869,27 @@ class SourcesMixin:
             if not selected_items:
                 self._error("Select at least one favorite to remove.")
                 return
-            selected_paths = {str(item.data(Qt.UserRole)) for item in selected_items}
+            selected_paths = {
+                str(item.data(Qt.UserRole))
+                for item in selected_items
+                if str(item.data(Qt.UserRole + 1)) != "folder"
+            }
+            if not selected_paths:
+                self._error("Select at least one favorite file to remove.")
+                return
             favorites = [favorite for favorite in self._current_project_favorites() if favorite not in selected_paths]
+            logical_view = self._project_logical_view("project_favorites")
+            for favorite in selected_paths:
+                logical_view = self._set_logical_item_parent_folder_id(logical_view, favorite, "")
+            self._save_project_logical_view("project_favorites", logical_view)
             self._set_project_favorites(favorites)
 
         def _favorites_from_ui_order(self) -> List[str]:
             ordered: List[str] = []
             for row in range(self.favorites_list.count()):
                 item = self.favorites_list.item(row)
+                if str(item.data(Qt.UserRole + 1)) == "folder":
+                    continue
                 value = str(item.data(Qt.UserRole))
                 if value and value not in ordered:
                     ordered.append(value)
@@ -1631,6 +1899,13 @@ class SourcesMixin:
             if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() != 0:
                 self._error("Switch to 'Project Favorites' to reorder favorites.")
                 return
+            logical_view = self._project_logical_view("project_favorites")
+            if logical_view.get("folders") or logical_view.get("placements"):
+                self._error("Reordering project favorites is not available while logical folders are in use.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in self.favorites_list.selectedItems()):
+                self._error("Folder rows cannot be reordered yet.")
+                return
             if not self._move_list_widget_item(self.favorites_list, delta):
                 return
             self._set_project_favorites(self._favorites_from_ui_order())
@@ -1638,6 +1913,13 @@ class SourcesMixin:
         def _move_selected_favorite_to(self, target_index: int) -> None:
             if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() != 0:
                 self._error("Switch to 'Project Favorites' to reorder favorites.")
+                return
+            logical_view = self._project_logical_view("project_favorites")
+            if logical_view.get("folders") or logical_view.get("placements"):
+                self._error("Reordering project favorites is not available while logical folders are in use.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in self.favorites_list.selectedItems()):
+                self._error("Folder rows cannot be reordered yet.")
                 return
             if not self._move_list_widget_item_to(self.favorites_list, target_index):
                 return
@@ -1655,7 +1937,165 @@ class SourcesMixin:
         def _move_selected_favorite_bottom(self) -> None:
             self._move_selected_favorite_to(self.favorites_list.count() - 1)
 
+        def _go_up_project_favorites_folder(self) -> None:
+            view = self._project_logical_view("project_favorites")
+            current_folder_id = self._current_logical_folder_id("project_favorites")
+            if not current_folder_id:
+                return
+            folder = self._logical_view_folder_map(view).get(current_folder_id, {})
+            self._set_current_logical_folder_id("project_favorites", str(folder.get("parent_id", "")).strip())
+            self._refresh_favorites_list(self._current_project_favorites())
+
+        def _go_root_project_favorites_folder(self) -> None:
+            self._set_current_logical_folder_id("project_favorites", "")
+            self._refresh_favorites_list(self._current_project_favorites())
+
+        def _create_project_favorites_folder(self) -> None:
+            name = self._prompt_for_project_favorites_folder_name("New Favorites Folder")
+            if not name:
+                return
+            view = self._project_logical_view("project_favorites")
+            current_folder_id = self._current_logical_folder_id("project_favorites")
+            siblings = self._logical_child_folders(view, current_folder_id)
+            for sibling in siblings:
+                if str(sibling.get("name", "")).strip().lower() == name.lower():
+                    self._error("A folder with that name already exists here.")
+                    return
+            folders = [dict(folder) for folder in view.get("folders", [])]
+            folders.append(
+                {
+                    "id": f"fld_{uuid4().hex[:12]}",
+                    "name": name,
+                    "parent_id": current_folder_id,
+                    "sort_order": len(siblings),
+                }
+            )
+            view["folders"] = folders
+            self._save_project_logical_view("project_favorites", view)
+            self._refresh_favorites_list(self._current_project_favorites())
+
+        def _rename_project_favorites_folder(self, folder_id: str) -> None:
+            view = self._project_logical_view("project_favorites")
+            folder_map = self._logical_view_folder_map(view)
+            folder = folder_map.get(folder_id.strip())
+            if not folder:
+                self._error("Selected folder could not be found.")
+                return
+            name = self._prompt_for_project_favorites_folder_name(
+                "Rename Favorites Folder",
+                str(folder.get("name", "")),
+            )
+            if not name:
+                return
+            siblings = self._logical_child_folders(view, str(folder.get("parent_id", "")).strip())
+            for sibling in siblings:
+                if str(sibling.get("id", "")).strip() == folder_id.strip():
+                    continue
+                if str(sibling.get("name", "")).strip().lower() == name.lower():
+                    self._error("A folder with that name already exists here.")
+                    return
+            folders = [dict(entry) for entry in view.get("folders", [])]
+            for entry in folders:
+                if str(entry.get("id", "")).strip() == folder_id.strip():
+                    entry["name"] = name
+                    break
+            view["folders"] = folders
+            self._save_project_logical_view("project_favorites", view)
+            self._refresh_favorites_list(self._current_project_favorites())
+
+        def _delete_project_favorites_folder(self, folder_id: str) -> None:
+            confirm = QMessageBox.question(
+                self,
+                "Delete Favorites Folder",
+                "Delete this folder and its subfolders? Items inside will return to the root list.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+            view = self._delete_logical_folder_tree(self._project_logical_view("project_favorites"), folder_id)
+            if self._current_logical_folder_id("project_favorites") == folder_id.strip():
+                self._set_current_logical_folder_id("project_favorites", "")
+            self._save_project_logical_view("project_favorites", view)
+            self._refresh_favorites_list(self._current_project_favorites())
+
+        def _choose_project_favorites_target_folder(self) -> Optional[str]:
+            view = self._project_logical_view("project_favorites")
+            folders = [dict(folder) for folder in view.get("folders", [])]
+            if not folders:
+                self._error("Create a favorites folder first.")
+                return None
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Move Favorites To Folder")
+            dialog.resize(420, 360)
+            layout = QVBoxLayout(dialog)
+            folder_list = QListWidget()
+            root_item = QListWidgetItem("Root")
+            root_item.setData(Qt.UserRole, "")
+            folder_list.addItem(root_item)
+            ordered_folders = sorted(
+                folders,
+                key=lambda entry: " / ".join(
+                    self._logical_view_folder_path(view, str(entry.get("id", "")).strip())
+                ).lower(),
+            )
+            for folder in ordered_folders:
+                folder_id = str(folder.get("id", "")).strip()
+                path_text = " / ".join(self._logical_view_folder_path(view, folder_id))
+                item = QListWidgetItem(path_text or str(folder.get("name", "")))
+                item.setData(Qt.UserRole, folder_id)
+                folder_list.addItem(item)
+            folder_list.setCurrentRow(0)
+            layout.addWidget(folder_list, stretch=1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.Accepted:
+                return None
+            current_item = folder_list.currentItem()
+            return str(current_item.data(Qt.UserRole)).strip() if current_item is not None else ""
+
+        def _move_selected_favorites_to_folder(self) -> None:
+            selected_items = self.favorites_list.selectedItems()
+            if not selected_items:
+                self._error("Select at least one favorite.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
+                self._error("Select favorite files only.")
+                return
+            target_folder_id = self._choose_project_favorites_target_folder()
+            if target_folder_id is None:
+                return
+            view = self._project_logical_view("project_favorites")
+            for item in selected_items:
+                favorite = str(item.data(Qt.UserRole)).strip()
+                if favorite:
+                    view = self._set_logical_item_parent_folder_id(view, favorite, target_folder_id)
+            self._save_project_logical_view("project_favorites", view)
+            self._refresh_favorites_list(self._current_project_favorites())
+
+        def _move_selected_favorites_to_root(self) -> None:
+            selected_items = self.favorites_list.selectedItems()
+            if not selected_items:
+                self._error("Select at least one favorite.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
+                self._error("Select favorite files only.")
+                return
+            view = self._project_logical_view("project_favorites")
+            for item in selected_items:
+                favorite = str(item.data(Qt.UserRole)).strip()
+                if favorite:
+                    view = self._set_logical_item_parent_folder_id(view, favorite, "")
+            self._save_project_logical_view("project_favorites", view)
+            self._refresh_favorites_list(self._current_project_favorites())
+
         def _open_favorite_item(self, item: QListWidgetItem) -> None:
+            if str(item.data(Qt.UserRole + 1)) == "folder":
+                self._set_current_logical_folder_id("project_favorites", str(item.data(Qt.UserRole)).strip())
+                self._refresh_favorites_list(self._current_project_favorites())
+                return
             self._open_paths([Path(str(item.data(Qt.UserRole)))])
 
         def _view_selected_file_locations_from_list(self, list_widget: QListWidget) -> None:
@@ -1718,11 +2158,19 @@ class SourcesMixin:
             return self.records[record_idx]
 
         def _open_project_local_checked_out_item(self, item: QListWidgetItem) -> None:
+            if str(item.data(Qt.UserRole + 1)) == "folder":
+                self._set_current_logical_folder_id("project_checked_out", str(item.data(Qt.UserRole)).strip())
+                self._refresh_project_local_files_lists()
+                return
             record = self._record_for_list_item(item)
             if record:
                 self._open_paths([Path(record.local_file)])
 
         def _open_project_local_reference_item(self, item: QListWidgetItem) -> None:
+            if str(item.data(Qt.UserRole + 1)) == "folder":
+                self._set_current_logical_folder_id("project_reference", str(item.data(Qt.UserRole)).strip())
+                self._refresh_project_local_files_lists()
+                return
             record = self._record_for_list_item(item)
             if record:
                 self._open_paths([Path(record.local_file)])
@@ -1732,7 +2180,19 @@ class SourcesMixin:
             if not selected_items:
                 self._error("Select at least one favorite to open.")
                 return
-            self._open_paths([Path(str(item.data(Qt.UserRole))) for item in selected_items])
+            if len(selected_items) == 1 and str(selected_items[0].data(Qt.UserRole + 1)) == "folder":
+                self._set_current_logical_folder_id("project_favorites", str(selected_items[0].data(Qt.UserRole)).strip())
+                self._refresh_favorites_list(self._current_project_favorites())
+                return
+            selected_paths = [
+                Path(str(item.data(Qt.UserRole)))
+                for item in selected_items
+                if str(item.data(Qt.UserRole + 1)) != "folder"
+            ]
+            if not selected_paths:
+                self._error("Select at least one favorite file to open.")
+                return
+            self._open_paths(selected_paths)
 
         def _open_selected_favorites_from_active_tab(self) -> None:
             if hasattr(self, "favorites_tabs") and self.favorites_tabs.currentIndex() == 1:
@@ -1775,7 +2235,15 @@ class SourcesMixin:
             if not selected_items:
                 self._error("Select at least one global favorite.")
                 return
-            self._add_favorite_paths([Path(str(item.data(Qt.UserRole))) for item in selected_items])
+            selected_paths = [
+                Path(str(item.data(Qt.UserRole)))
+                for item in selected_items
+                if str(item.data(Qt.UserRole + 1)) != "folder"
+            ]
+            if not selected_paths:
+                self._error("Select at least one global favorite file.")
+                return
+            self._add_favorite_paths(selected_paths)
 
         def _add_selected_project_favorites_to_global(self) -> None:
             selected_items = self.favorites_list.selectedItems()
@@ -1784,6 +2252,8 @@ class SourcesMixin:
                 return
             changed = False
             for item in selected_items:
+                if str(item.data(Qt.UserRole + 1)) == "folder":
+                    continue
                 value = str(item.data(Qt.UserRole)).strip()
                 if value and value not in self.global_favorites:
                     self.global_favorites.append(value)
@@ -1792,9 +2262,64 @@ class SourcesMixin:
                 self._save_global_favorites()
                 self._refresh_global_favorites_list()
 
+        def _global_favorites_logical_view(self) -> Dict[str, List[Dict[str, object]]]:
+            return dict(
+                self._normalize_logical_views(
+                    self.global_favorites_logical_views,
+                    app_module.GLOBAL_LOGICAL_VIEW_SCOPES,
+                ).get("global_favorites", self._empty_logical_view())
+            )
+
+        def _save_global_favorites_logical_view(self, view: Dict[str, List[Dict[str, object]]]) -> None:
+            normalized = self._normalize_logical_views(
+                self.global_favorites_logical_views,
+                app_module.GLOBAL_LOGICAL_VIEW_SCOPES,
+            )
+            normalized["global_favorites"] = self._normalize_logical_view_entry(view)
+            self.global_favorites_logical_views = normalized
+            self._save_global_favorites()
+
+        def _prompt_for_global_favorites_folder_name(
+            self, title: str, current_name: str = ""
+        ) -> Optional[str]:
+            name, accepted = QInputDialog.getText(
+                self,
+                title,
+                "Folder name:",
+                text=current_name,
+            )
+            if not accepted:
+                return None
+            normalized = " ".join(name.strip().split())
+            if not normalized:
+                self._error("Folder name is required.")
+                return None
+            return normalized
+
+        def _refresh_global_favorites_navigation(
+            self, view: Optional[Dict[str, List[Dict[str, object]]]] = None
+        ) -> None:
+            if not hasattr(self, "global_favorites_folder_label"):
+                return
+            current_view = view or self._global_favorites_logical_view()
+            current_folder_id = self._current_logical_folder_id("global_favorites")
+            folder_map = self._logical_view_folder_map(current_view)
+            if current_folder_id and current_folder_id not in folder_map:
+                current_folder_id = ""
+                self._set_current_logical_folder_id("global_favorites", "")
+            path_parts = self._logical_view_folder_path(current_view, current_folder_id)
+            path_text = "Root" if not path_parts else "Root / " + " / ".join(path_parts)
+            self.global_favorites_folder_label.setText(f"Global Favorites Folder: {path_text}")
+            self.global_favorites_up_btn.setEnabled(bool(current_folder_id))
+            self.global_favorites_root_btn.setEnabled(bool(current_folder_id))
+
         def _load_global_favorites(self) -> None:
             data = self._read_json_candidates([self._default_global_favorites_file()])
             raw = data.get("favorites", []) if isinstance(data, dict) else data
+            self.global_favorites_logical_views = self._normalize_logical_views(
+                data.get("logical_views", {}) if isinstance(data, dict) else {},
+                app_module.GLOBAL_LOGICAL_VIEW_SCOPES,
+            )
             self.global_favorites = []
             if isinstance(raw, list):
                 for item in raw:
@@ -1810,6 +2335,10 @@ class SourcesMixin:
                 "schema_version": 1,
                 "app_version": app_module.APP_VERSION,
                 "favorites": self.global_favorites,
+                "logical_views": self._normalize_logical_views(
+                    self.global_favorites_logical_views,
+                    app_module.GLOBAL_LOGICAL_VIEW_SCOPES,
+                ),
             }
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -1818,19 +2347,66 @@ class SourcesMixin:
                 return
             self.global_favorites_list.clear()
             search = self.global_favorites_search_edit.text().strip().lower()
+            search_active = bool(search)
+            view = self._global_favorites_logical_view()
+            folder_map = self._logical_view_folder_map(view)
+            current_folder_id = self._current_logical_folder_id("global_favorites")
+            if current_folder_id and current_folder_id not in folder_map:
+                current_folder_id = ""
+                self._set_current_logical_folder_id("global_favorites", "")
+            self._refresh_global_favorites_navigation(view)
+            if search_active:
+                descendant_ids = self._logical_descendant_folder_ids(view, "")
+                candidate_folders = [
+                    dict(folder_map[folder_id])
+                    for folder_id in descendant_ids
+                    if folder_id in folder_map
+                ]
+                candidate_folders.sort(
+                    key=lambda folder: " / ".join(
+                        self._logical_view_folder_path(view, str(folder.get("id", "")).strip())
+                    ).lower()
+                )
+            else:
+                descendant_ids = self._logical_descendant_folder_ids(view, current_folder_id)
+                candidate_folders = self._logical_child_folders(view, current_folder_id)
+            for folder in candidate_folders:
+                folder_name = str(folder.get("name", "")).strip()
+                folder_path = self._logical_view_folder_path(view, str(folder.get("id", "")).strip())
+                search_blob = " / ".join(folder_path).lower()
+                if search and search not in folder_name.lower() and search not in search_blob:
+                    continue
+                item = QListWidgetItem(f"[Folder] {folder_name}")
+                item.setData(Qt.UserRole, str(folder.get("id", "")).strip())
+                item.setData(Qt.UserRole + 1, "folder")
+                item.setToolTip("Folder\n" + (" / ".join(["Root", *folder_path]) if folder_path else "Root"))
+                self.global_favorites_list.addItem(item)
             for favorite in self.global_favorites:
+                parent_folder_id = self._logical_item_parent_folder_id(view, favorite)
+                if not search_active and parent_folder_id != current_folder_id:
+                    continue
+                if search_active:
+                    if parent_folder_id and parent_folder_id not in descendant_ids:
+                        continue
                 custom_groups = self._item_customization_groups("global_favorites", favorite)
                 group_search = " ".join(custom_groups).lower()
+                folder_path = self._logical_view_folder_path(view, parent_folder_id)
+                folder_search = " / ".join(folder_path).lower()
                 if (
                     search
                     and search not in favorite.lower()
                     and search not in Path(favorite).name.lower()
                     and search not in group_search
+                    and search not in folder_search
                 ):
                     continue
                 item = QListWidgetItem(Path(favorite).name or favorite)
                 item.setData(Qt.UserRole, favorite)
-                self._set_projects_item_base_tooltip(item, favorite)
+                item.setData(Qt.UserRole + 1, "item")
+                tooltip = favorite
+                if folder_path:
+                    tooltip += "\nFolder: " + " / ".join(["Root", *folder_path])
+                self._set_projects_item_base_tooltip(item, tooltip)
                 self._apply_projects_list_item_style(item, "global_favorites", str(favorite))
                 self.global_favorites_list.addItem(item)
 
@@ -1842,6 +2418,117 @@ class SourcesMixin:
             current_project = self.current_project_dir
             checked_search = self.project_checked_out_search_edit.text().strip().lower()
             reference_search = self.project_reference_search_edit.text().strip().lower()
+            checked_search_active = bool(checked_search)
+            reference_search_active = bool(reference_search)
+            logical_views = self._project_logical_views()
+            checked_view = self._normalize_logical_view_entry(
+                logical_views.get("project_checked_out", self._empty_logical_view())
+            )
+            reference_view = self._normalize_logical_view_entry(
+                logical_views.get("project_reference", self._empty_logical_view())
+            )
+            valid_checked_ids = {
+                record.id
+                for record in self.records
+                if record.project_dir == current_project and record.record_type == "checked_out" and record.id
+            }
+            valid_reference_ids = {
+                record.id
+                for record in self.records
+                if record.project_dir == current_project and record.record_type == "reference_copy" and record.id
+            }
+            checked_view["placements"] = [
+                dict(entry)
+                for entry in checked_view.get("placements", [])
+                if str(entry.get("item_key", "")).strip() in valid_checked_ids
+            ]
+            reference_view["placements"] = [
+                dict(entry)
+                for entry in reference_view.get("placements", [])
+                if str(entry.get("item_key", "")).strip() in valid_reference_ids
+            ]
+            logical_views_changed = (
+                checked_view != logical_views.get("project_checked_out", self._empty_logical_view())
+                or reference_view != logical_views.get("project_reference", self._empty_logical_view())
+            )
+            if logical_views_changed and self._current_project_path() is not None:
+                logical_views["project_checked_out"] = checked_view
+                logical_views["project_reference"] = reference_view
+                self._save_project_config(self._current_project_path(), logical_views=logical_views)
+            checked_folder_map = self._logical_view_folder_map(checked_view)
+            reference_folder_map = self._logical_view_folder_map(reference_view)
+            current_checked_folder_id = self._current_logical_folder_id("project_checked_out")
+            current_reference_folder_id = self._current_logical_folder_id("project_reference")
+            if current_checked_folder_id and current_checked_folder_id not in checked_folder_map:
+                current_checked_folder_id = ""
+                self._set_current_logical_folder_id("project_checked_out", "")
+            if current_reference_folder_id and current_reference_folder_id not in reference_folder_map:
+                current_reference_folder_id = ""
+                self._set_current_logical_folder_id("project_reference", "")
+            if hasattr(self, "project_checked_out_folder_label"):
+                checked_path = self._logical_view_folder_path(checked_view, current_checked_folder_id)
+                checked_text = "Root" if not checked_path else "Root / " + " / ".join(checked_path)
+                self.project_checked_out_folder_label.setText(f"Checked Out Folder: {checked_text}")
+                self.project_checked_out_up_btn.setEnabled(bool(current_checked_folder_id))
+                self.project_checked_out_root_btn.setEnabled(bool(current_checked_folder_id))
+            if hasattr(self, "project_reference_folder_label"):
+                reference_path = self._logical_view_folder_path(reference_view, current_reference_folder_id)
+                reference_text = "Root" if not reference_path else "Root / " + " / ".join(reference_path)
+                self.project_reference_folder_label.setText(f"Reference Folder: {reference_text}")
+                self.project_reference_up_btn.setEnabled(bool(current_reference_folder_id))
+                self.project_reference_root_btn.setEnabled(bool(current_reference_folder_id))
+            if checked_search_active:
+                checked_descendant_ids = self._logical_descendant_folder_ids(checked_view, "")
+                checked_candidate_folders = [
+                    dict(checked_folder_map[folder_id])
+                    for folder_id in checked_descendant_ids
+                    if folder_id in checked_folder_map
+                ]
+                checked_candidate_folders.sort(
+                    key=lambda folder: " / ".join(
+                        self._logical_view_folder_path(checked_view, str(folder.get("id", "")).strip())
+                    ).lower()
+                )
+            else:
+                checked_descendant_ids = self._logical_descendant_folder_ids(checked_view, current_checked_folder_id)
+                checked_candidate_folders = self._logical_child_folders(checked_view, current_checked_folder_id)
+            if reference_search_active:
+                reference_descendant_ids = self._logical_descendant_folder_ids(reference_view, "")
+                reference_candidate_folders = [
+                    dict(reference_folder_map[folder_id])
+                    for folder_id in reference_descendant_ids
+                    if folder_id in reference_folder_map
+                ]
+                reference_candidate_folders.sort(
+                    key=lambda folder: " / ".join(
+                        self._logical_view_folder_path(reference_view, str(folder.get("id", "")).strip())
+                    ).lower()
+                )
+            else:
+                reference_descendant_ids = self._logical_descendant_folder_ids(reference_view, current_reference_folder_id)
+                reference_candidate_folders = self._logical_child_folders(reference_view, current_reference_folder_id)
+            for folder in checked_candidate_folders:
+                folder_name = str(folder.get("name", "")).strip()
+                folder_path = self._logical_view_folder_path(checked_view, str(folder.get("id", "")).strip())
+                search_blob = " / ".join(folder_path).lower()
+                if checked_search and checked_search not in folder_name.lower() and checked_search not in search_blob:
+                    continue
+                item = QListWidgetItem(f"[Folder] {folder_name}")
+                item.setData(Qt.UserRole, str(folder.get("id", "")).strip())
+                item.setData(Qt.UserRole + 1, "folder")
+                item.setToolTip("Folder\n" + (" / ".join(["Root", *folder_path]) if folder_path else "Root"))
+                self.project_checked_out_list.addItem(item)
+            for folder in reference_candidate_folders:
+                folder_name = str(folder.get("name", "")).strip()
+                folder_path = self._logical_view_folder_path(reference_view, str(folder.get("id", "")).strip())
+                search_blob = " / ".join(folder_path).lower()
+                if reference_search and reference_search not in folder_name.lower() and reference_search not in search_blob:
+                    continue
+                item = QListWidgetItem(f"[Folder] {folder_name}")
+                item.setData(Qt.UserRole, str(folder.get("id", "")).strip())
+                item.setData(Qt.UserRole + 1, "folder")
+                item.setToolTip("Folder\n" + (" / ".join(["Root", *folder_path]) if folder_path else "Root"))
+                self.project_reference_list.addItem(item)
             for idx, record in enumerate(self.records):
                 if record.project_dir != current_project:
                     continue
@@ -1849,21 +2536,45 @@ class SourcesMixin:
                 scope = self._record_customization_scope(record)
                 search_blob = self._record_search_blob(record)
                 if record.record_type == "checked_out":
-                    if checked_search and checked_search not in search_blob:
+                    parent_folder_id = self._logical_item_parent_folder_id(checked_view, record.id)
+                    if not checked_search_active and parent_folder_id != current_checked_folder_id:
+                        continue
+                    if checked_search_active:
+                        if parent_folder_id and parent_folder_id not in checked_descendant_ids:
+                            continue
+                    folder_search = " / ".join(self._logical_view_folder_path(checked_view, parent_folder_id)).lower()
+                    if checked_search and checked_search not in search_blob and checked_search not in folder_search:
                         continue
                     label = self._local_display_name(record.local_file)
                     item = QListWidgetItem(label)
                     item.setData(Qt.UserRole, idx)
-                    self._set_projects_item_base_tooltip(item, record.local_file)
+                    item.setData(Qt.UserRole + 1, "item")
+                    tooltip = record.local_file
+                    folder_path = self._logical_view_folder_path(checked_view, parent_folder_id)
+                    if folder_path:
+                        tooltip += "\nFolder: " + " / ".join(["Root", *folder_path])
+                    self._set_projects_item_base_tooltip(item, tooltip)
                     self._apply_projects_list_item_style(item, scope, item_key)
                     self.project_checked_out_list.addItem(item)
                 elif record.record_type == "reference_copy":
-                    if reference_search and reference_search not in search_blob:
+                    parent_folder_id = self._logical_item_parent_folder_id(reference_view, record.id)
+                    if not reference_search_active and parent_folder_id != current_reference_folder_id:
+                        continue
+                    if reference_search_active:
+                        if parent_folder_id and parent_folder_id not in reference_descendant_ids:
+                            continue
+                    folder_search = " / ".join(self._logical_view_folder_path(reference_view, parent_folder_id)).lower()
+                    if reference_search and reference_search not in search_blob and reference_search not in folder_search:
                         continue
                     label = self._local_display_name(record.local_file)
                     item = QListWidgetItem(label)
                     item.setData(Qt.UserRole, idx)
-                    self._set_projects_item_base_tooltip(item, record.local_file)
+                    item.setData(Qt.UserRole + 1, "item")
+                    tooltip = record.local_file
+                    folder_path = self._logical_view_folder_path(reference_view, parent_folder_id)
+                    if folder_path:
+                        tooltip += "\nFolder: " + " / ".join(["Root", *folder_path])
+                    self._set_projects_item_base_tooltip(item, tooltip)
                     self._apply_projects_list_item_style(item, scope, item_key)
                     self.project_reference_list.addItem(item)
 
@@ -1875,12 +2586,16 @@ class SourcesMixin:
             if not file_paths:
                 return
             changed = False
+            current_folder_id = self._current_logical_folder_id("global_favorites")
+            logical_view = self._global_favorites_logical_view()
             for file_path in file_paths:
                 value = str(Path(file_path))
                 if value not in self.global_favorites:
                     self.global_favorites.append(value)
                     changed = True
+                    logical_view = self._set_logical_item_parent_folder_id(logical_view, value, current_folder_id)
             if changed:
+                self.global_favorites_logical_views["global_favorites"] = logical_view
                 self._save_global_favorites()
                 self._refresh_global_favorites_list()
 
@@ -1889,17 +2604,40 @@ class SourcesMixin:
             if not selected_items:
                 self._error("Select at least one global favorite to open.")
                 return
-            self._open_paths([Path(str(item.data(Qt.UserRole))) for item in selected_items])
+            if len(selected_items) == 1 and str(selected_items[0].data(Qt.UserRole + 1)) == "folder":
+                self._set_current_logical_folder_id("global_favorites", str(selected_items[0].data(Qt.UserRole)).strip())
+                self._refresh_global_favorites_list()
+                return
+            selected_paths = [
+                Path(str(item.data(Qt.UserRole)))
+                for item in selected_items
+                if str(item.data(Qt.UserRole + 1)) != "folder"
+            ]
+            if not selected_paths:
+                self._error("Select at least one global favorite file to open.")
+                return
+            self._open_paths(selected_paths)
 
         def _remove_selected_global_favorites(self) -> None:
             selected_items = self.global_favorites_list.selectedItems()
             if not selected_items:
                 self._error("Select at least one global favorite to remove.")
                 return
-            selected_paths = {str(item.data(Qt.UserRole)) for item in selected_items}
+            selected_paths = {
+                str(item.data(Qt.UserRole))
+                for item in selected_items
+                if str(item.data(Qt.UserRole + 1)) != "folder"
+            }
+            if not selected_paths:
+                self._error("Select at least one global favorite file to remove.")
+                return
             self.global_favorites = [
                 favorite for favorite in self.global_favorites if favorite not in selected_paths
             ]
+            logical_view = self._global_favorites_logical_view()
+            for favorite in selected_paths:
+                logical_view = self._set_logical_item_parent_folder_id(logical_view, favorite, "")
+            self.global_favorites_logical_views["global_favorites"] = logical_view
             self._save_global_favorites()
             self._refresh_global_favorites_list()
 
@@ -1910,7 +2648,165 @@ class SourcesMixin:
             self._show_global_favorites_context_menu(rect.center())
 
         def _open_global_favorite_item(self, item: QListWidgetItem) -> None:
+            if str(item.data(Qt.UserRole + 1)) == "folder":
+                self._set_current_logical_folder_id("global_favorites", str(item.data(Qt.UserRole)).strip())
+                self._refresh_global_favorites_list()
+                return
             self._open_paths([Path(str(item.data(Qt.UserRole)))])
+
+        def _go_up_global_favorites_folder(self) -> None:
+            view = self._global_favorites_logical_view()
+            current_folder_id = self._current_logical_folder_id("global_favorites")
+            if not current_folder_id:
+                return
+            folder = self._logical_view_folder_map(view).get(current_folder_id, {})
+            self._set_current_logical_folder_id("global_favorites", str(folder.get("parent_id", "")).strip())
+            self._refresh_global_favorites_list()
+
+        def _go_root_global_favorites_folder(self) -> None:
+            self._set_current_logical_folder_id("global_favorites", "")
+            self._refresh_global_favorites_list()
+
+        def _create_global_favorites_folder(self) -> None:
+            name = self._prompt_for_global_favorites_folder_name("New Global Favorites Folder")
+            if not name:
+                return
+            view = self._global_favorites_logical_view()
+            current_folder_id = self._current_logical_folder_id("global_favorites")
+            siblings = self._logical_child_folders(view, current_folder_id)
+            for sibling in siblings:
+                if str(sibling.get("name", "")).strip().lower() == name.lower():
+                    self._error("A folder with that name already exists here.")
+                    return
+            folders = [dict(folder) for folder in view.get("folders", [])]
+            folders.append(
+                {
+                    "id": f"fld_{uuid4().hex[:12]}",
+                    "name": name,
+                    "parent_id": current_folder_id,
+                    "sort_order": len(siblings),
+                }
+            )
+            view["folders"] = folders
+            self._save_global_favorites_logical_view(view)
+            self._refresh_global_favorites_list()
+
+        def _rename_global_favorites_folder(self, folder_id: str) -> None:
+            view = self._global_favorites_logical_view()
+            folder_map = self._logical_view_folder_map(view)
+            folder = folder_map.get(folder_id.strip())
+            if not folder:
+                self._error("Selected folder could not be found.")
+                return
+            name = self._prompt_for_global_favorites_folder_name(
+                "Rename Global Favorites Folder",
+                str(folder.get("name", "")),
+            )
+            if not name:
+                return
+            siblings = self._logical_child_folders(view, str(folder.get("parent_id", "")).strip())
+            for sibling in siblings:
+                if str(sibling.get("id", "")).strip() == folder_id.strip():
+                    continue
+                if str(sibling.get("name", "")).strip().lower() == name.lower():
+                    self._error("A folder with that name already exists here.")
+                    return
+            folders = [dict(entry) for entry in view.get("folders", [])]
+            for entry in folders:
+                if str(entry.get("id", "")).strip() == folder_id.strip():
+                    entry["name"] = name
+                    break
+            view["folders"] = folders
+            self._save_global_favorites_logical_view(view)
+            self._refresh_global_favorites_list()
+
+        def _delete_global_favorites_folder(self, folder_id: str) -> None:
+            confirm = QMessageBox.question(
+                self,
+                "Delete Global Favorites Folder",
+                "Delete this folder and its subfolders? Items inside will return to the root list.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+            view = self._delete_logical_folder_tree(self._global_favorites_logical_view(), folder_id)
+            if self._current_logical_folder_id("global_favorites") == folder_id.strip():
+                self._set_current_logical_folder_id("global_favorites", "")
+            self._save_global_favorites_logical_view(view)
+            self._refresh_global_favorites_list()
+
+        def _choose_global_favorites_target_folder(self) -> Optional[str]:
+            view = self._global_favorites_logical_view()
+            folders = [dict(folder) for folder in view.get("folders", [])]
+            if not folders:
+                self._error("Create a global favorites folder first.")
+                return None
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Move Global Favorites To Folder")
+            dialog.resize(420, 360)
+            layout = QVBoxLayout(dialog)
+            folder_list = QListWidget()
+            root_item = QListWidgetItem("Root")
+            root_item.setData(Qt.UserRole, "")
+            folder_list.addItem(root_item)
+            ordered_folders = sorted(
+                folders,
+                key=lambda entry: " / ".join(
+                    self._logical_view_folder_path(view, str(entry.get("id", "")).strip())
+                ).lower(),
+            )
+            for folder in ordered_folders:
+                folder_id = str(folder.get("id", "")).strip()
+                path_text = " / ".join(self._logical_view_folder_path(view, folder_id))
+                item = QListWidgetItem(path_text or str(folder.get("name", "")))
+                item.setData(Qt.UserRole, folder_id)
+                folder_list.addItem(item)
+            folder_list.setCurrentRow(0)
+            layout.addWidget(folder_list, stretch=1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.Accepted:
+                return None
+            current_item = folder_list.currentItem()
+            return str(current_item.data(Qt.UserRole)).strip() if current_item is not None else ""
+
+        def _move_selected_global_favorites_to_folder(self) -> None:
+            selected_items = self.global_favorites_list.selectedItems()
+            if not selected_items:
+                self._error("Select at least one global favorite.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
+                self._error("Select global favorite files only.")
+                return
+            target_folder_id = self._choose_global_favorites_target_folder()
+            if target_folder_id is None:
+                return
+            view = self._global_favorites_logical_view()
+            for item in selected_items:
+                favorite = str(item.data(Qt.UserRole)).strip()
+                if favorite:
+                    view = self._set_logical_item_parent_folder_id(view, favorite, target_folder_id)
+            self._save_global_favorites_logical_view(view)
+            self._refresh_global_favorites_list()
+
+        def _move_selected_global_favorites_to_root(self) -> None:
+            selected_items = self.global_favorites_list.selectedItems()
+            if not selected_items:
+                self._error("Select at least one global favorite.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
+                self._error("Select global favorite files only.")
+                return
+            view = self._global_favorites_logical_view()
+            for item in selected_items:
+                favorite = str(item.data(Qt.UserRole)).strip()
+                if favorite:
+                    view = self._set_logical_item_parent_folder_id(view, favorite, "")
+            self._save_global_favorites_logical_view(view)
+            self._refresh_global_favorites_list()
 
         def _show_global_favorites_context_menu(self, pos: QPoint) -> None:
             item = self.global_favorites_list.itemAt(pos)
@@ -1918,17 +2814,36 @@ class SourcesMixin:
                 self.global_favorites_list.clearSelection()
                 item.setSelected(True)
                 self.global_favorites_list.setCurrentItem(item)
+            current_item = self.global_favorites_list.currentItem()
+            is_folder = current_item is not None and str(current_item.data(Qt.UserRole + 1)) == "folder"
             menu = QMenu(self)
-            open_action = menu.addAction("Open Selected")
+            open_action = menu.addAction("Open Folder" if is_folder else "Open Selected")
+            new_folder_action = menu.addAction("New Folder")
+            up_folder_action = menu.addAction("Up Folder")
+            root_action = menu.addAction("Go Root")
+            rename_folder_action = menu.addAction("Rename Folder")
+            delete_folder_action = menu.addAction("Delete Folder")
             view_location_action = menu.addAction("View Location")
             load_location_action = menu.addAction("Load Location")
             add_action = menu.addAction("Add Favorite")
             add_project_action = menu.addAction("Add Selected To Project Favorites")
+            move_to_folder_action = menu.addAction("Move Selected To Folder")
+            move_to_root_action = menu.addAction("Move Selected To Root")
             remove_action = menu.addAction("Remove Selected")
             customize_action = menu.addAction("Customize/Organize")
             chosen = menu.exec(self.global_favorites_list.mapToGlobal(pos))
             if chosen == open_action:
                 self._open_selected_global_favorites()
+            elif chosen == new_folder_action:
+                self._create_global_favorites_folder()
+            elif chosen == up_folder_action:
+                self._go_up_global_favorites_folder()
+            elif chosen == root_action:
+                self._go_root_global_favorites_folder()
+            elif chosen == rename_folder_action and current_item is not None:
+                self._rename_global_favorites_folder(str(current_item.data(Qt.UserRole)).strip())
+            elif chosen == delete_folder_action and current_item is not None:
+                self._delete_global_favorites_folder(str(current_item.data(Qt.UserRole)).strip())
             elif chosen == view_location_action:
                 self._view_selected_file_locations_from_list(self.global_favorites_list)
             elif chosen == load_location_action:
@@ -1937,14 +2852,208 @@ class SourcesMixin:
                 self._browse_and_add_global_favorites()
             elif chosen == add_project_action:
                 self._add_selected_global_favorites_to_project()
+            elif chosen == move_to_folder_action:
+                self._move_selected_global_favorites_to_folder()
+            elif chosen == move_to_root_action:
+                self._move_selected_global_favorites_to_root()
             elif chosen == remove_action:
                 self._remove_selected_global_favorites()
             elif chosen == customize_action:
                 self._customize_organize_selected(self.global_favorites_list)
 
+        def _record_logical_view(self, scope: str) -> Dict[str, List[Dict[str, object]]]:
+            return self._project_logical_view(scope)
+
+        def _save_record_logical_view(self, scope: str, view: Dict[str, List[Dict[str, object]]]) -> None:
+            self._save_project_logical_view(scope, view)
+
+        def _prompt_for_record_folder_name(self, title: str, current_name: str = "") -> Optional[str]:
+            name, accepted = QInputDialog.getText(self, title, "Folder name:", text=current_name)
+            if not accepted:
+                return None
+            normalized = " ".join(name.strip().split())
+            if not normalized:
+                self._error("Folder name is required.")
+                return None
+            return normalized
+
+        def _create_record_folder(self, scope: str, title: str) -> None:
+            name = self._prompt_for_record_folder_name(title)
+            if not name:
+                return
+            view = self._record_logical_view(scope)
+            current_folder_id = self._current_logical_folder_id(scope)
+            siblings = self._logical_child_folders(view, current_folder_id)
+            for sibling in siblings:
+                if str(sibling.get("name", "")).strip().lower() == name.lower():
+                    self._error("A folder with that name already exists here.")
+                    return
+            folders = [dict(folder) for folder in view.get("folders", [])]
+            folders.append(
+                {
+                    "id": f"fld_{uuid4().hex[:12]}",
+                    "name": name,
+                    "parent_id": current_folder_id,
+                    "sort_order": len(siblings),
+                }
+            )
+            view["folders"] = folders
+            self._save_record_logical_view(scope, view)
+            self._refresh_project_local_files_lists()
+
+        def _rename_record_folder(self, scope: str, folder_id: str, title: str) -> None:
+            view = self._record_logical_view(scope)
+            folder_map = self._logical_view_folder_map(view)
+            folder = folder_map.get(folder_id.strip())
+            if not folder:
+                self._error("Selected folder could not be found.")
+                return
+            name = self._prompt_for_record_folder_name(title, str(folder.get("name", "")))
+            if not name:
+                return
+            siblings = self._logical_child_folders(view, str(folder.get("parent_id", "")).strip())
+            for sibling in siblings:
+                if str(sibling.get("id", "")).strip() == folder_id.strip():
+                    continue
+                if str(sibling.get("name", "")).strip().lower() == name.lower():
+                    self._error("A folder with that name already exists here.")
+                    return
+            folders = [dict(entry) for entry in view.get("folders", [])]
+            for entry in folders:
+                if str(entry.get("id", "")).strip() == folder_id.strip():
+                    entry["name"] = name
+                    break
+            view["folders"] = folders
+            self._save_record_logical_view(scope, view)
+            self._refresh_project_local_files_lists()
+
+        def _delete_record_folder(self, scope: str, folder_id: str, title: str, item_label: str) -> None:
+            confirm = QMessageBox.question(
+                self,
+                title,
+                f"Delete this folder and its subfolders? {item_label} inside will return to the root list.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+            view = self._delete_logical_folder_tree(self._record_logical_view(scope), folder_id)
+            if self._current_logical_folder_id(scope) == folder_id.strip():
+                self._set_current_logical_folder_id(scope, "")
+            self._save_record_logical_view(scope, view)
+            self._refresh_project_local_files_lists()
+
+        def _choose_record_target_folder(self, scope: str, title: str, missing_message: str) -> Optional[str]:
+            view = self._record_logical_view(scope)
+            folders = [dict(folder) for folder in view.get("folders", [])]
+            if not folders:
+                self._error(missing_message)
+                return None
+            dialog = QDialog(self)
+            dialog.setWindowTitle(title)
+            dialog.resize(420, 360)
+            layout = QVBoxLayout(dialog)
+            folder_list = QListWidget()
+            root_item = QListWidgetItem("Root")
+            root_item.setData(Qt.UserRole, "")
+            folder_list.addItem(root_item)
+            ordered_folders = sorted(
+                folders,
+                key=lambda entry: " / ".join(
+                    self._logical_view_folder_path(view, str(entry.get("id", "")).strip())
+                ).lower(),
+            )
+            for folder in ordered_folders:
+                folder_id = str(folder.get("id", "")).strip()
+                path_text = " / ".join(self._logical_view_folder_path(view, folder_id))
+                item = QListWidgetItem(path_text or str(folder.get("name", "")))
+                item.setData(Qt.UserRole, folder_id)
+                folder_list.addItem(item)
+            folder_list.setCurrentRow(0)
+            layout.addWidget(folder_list, stretch=1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.Accepted:
+                return None
+            current_item = folder_list.currentItem()
+            return str(current_item.data(Qt.UserRole)).strip() if current_item is not None else ""
+
+        def _move_selected_record_items_to_folder(
+            self, list_widget: QListWidget, scope: str, title: str, missing_message: str
+        ) -> None:
+            selected_items = list_widget.selectedItems()
+            if not selected_items:
+                self._error("Select at least one item.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
+                self._error("Select file rows only.")
+                return
+            target_folder_id = self._choose_record_target_folder(scope, title, missing_message)
+            if target_folder_id is None:
+                return
+            view = self._record_logical_view(scope)
+            for item in selected_items:
+                record = self._record_for_list_item(item)
+                if record and record.id:
+                    view = self._set_logical_item_parent_folder_id(view, record.id, target_folder_id)
+            self._save_record_logical_view(scope, view)
+            self._refresh_project_local_files_lists()
+
+        def _move_selected_record_items_to_root(self, list_widget: QListWidget, scope: str) -> None:
+            selected_items = list_widget.selectedItems()
+            if not selected_items:
+                self._error("Select at least one item.")
+                return
+            if any(str(item.data(Qt.UserRole + 1)) == "folder" for item in selected_items):
+                self._error("Select file rows only.")
+                return
+            view = self._record_logical_view(scope)
+            for item in selected_items:
+                record = self._record_for_list_item(item)
+                if record and record.id:
+                    view = self._set_logical_item_parent_folder_id(view, record.id, "")
+            self._save_record_logical_view(scope, view)
+            self._refresh_project_local_files_lists()
+
+        def _go_up_project_checked_out_folder(self) -> None:
+            view = self._record_logical_view("project_checked_out")
+            current_folder_id = self._current_logical_folder_id("project_checked_out")
+            if not current_folder_id:
+                return
+            folder = self._logical_view_folder_map(view).get(current_folder_id, {})
+            self._set_current_logical_folder_id("project_checked_out", str(folder.get("parent_id", "")).strip())
+            self._refresh_project_local_files_lists()
+
+        def _go_root_project_checked_out_folder(self) -> None:
+            self._set_current_logical_folder_id("project_checked_out", "")
+            self._refresh_project_local_files_lists()
+
+        def _create_project_checked_out_folder(self) -> None:
+            self._create_record_folder("project_checked_out", "New Checked Out Folder")
+
+        def _go_up_project_reference_folder(self) -> None:
+            view = self._record_logical_view("project_reference")
+            current_folder_id = self._current_logical_folder_id("project_reference")
+            if not current_folder_id:
+                return
+            folder = self._logical_view_folder_map(view).get(current_folder_id, {})
+            self._set_current_logical_folder_id("project_reference", str(folder.get("parent_id", "")).strip())
+            self._refresh_project_local_files_lists()
+
+        def _go_root_project_reference_folder(self) -> None:
+            self._set_current_logical_folder_id("project_reference", "")
+            self._refresh_project_local_files_lists()
+
+        def _create_project_reference_folder(self) -> None:
+            self._create_record_folder("project_reference", "New Reference Folder")
+
         def _selected_record_indexes_from_list_widget(self, list_widget: QListWidget) -> List[int]:
             indexes: List[int] = []
             for item in list_widget.selectedItems():
+                if str(item.data(Qt.UserRole + 1)) == "folder":
+                    continue
                 record_idx = item.data(Qt.UserRole)
                 if isinstance(record_idx, int):
                     indexes.append(record_idx)
@@ -1956,10 +3065,19 @@ class SourcesMixin:
                 self.project_checked_out_list.clearSelection()
                 item.setSelected(True)
                 self.project_checked_out_list.setCurrentItem(item)
+            current_item = self.project_checked_out_list.currentItem()
+            is_folder = current_item is not None and str(current_item.data(Qt.UserRole + 1)) == "folder"
             menu = QMenu(self)
-            open_action = menu.addAction("Open Selected")
+            open_action = menu.addAction("Open Folder" if is_folder else "Open Selected")
+            new_folder_action = menu.addAction("New Folder")
+            up_folder_action = menu.addAction("Up Folder")
+            root_action = menu.addAction("Go Root")
+            rename_folder_action = menu.addAction("Rename Folder")
+            delete_folder_action = menu.addAction("Delete Folder")
             view_location_action = menu.addAction("View Location")
             load_location_action = menu.addAction("Load Location")
+            move_to_folder_action = menu.addAction("Move Selected To Folder")
+            move_to_root_action = menu.addAction("Move Selected To Root")
             checkin_action = menu.addAction("Check In Selected")
             view_revision_action = menu.addAction("View Revision")
             snapshot_action = menu.addAction("Create Revision Snapshot")
@@ -1967,17 +3085,39 @@ class SourcesMixin:
             customize_action = menu.addAction("Customize/Organize")
             chosen = menu.exec(self.project_checked_out_list.mapToGlobal(pos))
             if chosen == open_action:
-                self._open_paths(
-                    [
-                        Path(self.records[idx].local_file)
-                        for idx in self._selected_record_indexes_from_list_widget(self.project_checked_out_list)
-                        if 0 <= idx < len(self.records)
-                    ]
-                )
+                if is_folder and current_item is not None:
+                    self._open_project_local_checked_out_item(current_item)
+                else:
+                    self._open_paths(
+                        [
+                            Path(self.records[idx].local_file)
+                            for idx in self._selected_record_indexes_from_list_widget(self.project_checked_out_list)
+                            if 0 <= idx < len(self.records)
+                        ]
+                    )
+            elif chosen == new_folder_action:
+                self._create_project_checked_out_folder()
+            elif chosen == up_folder_action:
+                self._go_up_project_checked_out_folder()
+            elif chosen == root_action:
+                self._go_root_project_checked_out_folder()
+            elif chosen == rename_folder_action and current_item is not None:
+                self._rename_record_folder("project_checked_out", str(current_item.data(Qt.UserRole)).strip(), "Rename Checked Out Folder")
+            elif chosen == delete_folder_action and current_item is not None:
+                self._delete_record_folder("project_checked_out", str(current_item.data(Qt.UserRole)).strip(), "Delete Checked Out Folder", "Checked-out files")
             elif chosen == view_location_action:
                 self._view_selected_file_locations_from_list(self.project_checked_out_list)
             elif chosen == load_location_action:
                 self._load_selected_file_location_from_list(self.project_checked_out_list)
+            elif chosen == move_to_folder_action:
+                self._move_selected_record_items_to_folder(
+                    self.project_checked_out_list,
+                    "project_checked_out",
+                    "Move Checked Out Items To Folder",
+                    "Create a checked-out folder first.",
+                )
+            elif chosen == move_to_root_action:
+                self._move_selected_record_items_to_root(self.project_checked_out_list, "project_checked_out")
             elif chosen == checkin_action:
                 if not self._validate_identity():
                     return
@@ -2007,25 +3147,56 @@ class SourcesMixin:
                 self.project_reference_list.clearSelection()
                 item.setSelected(True)
                 self.project_reference_list.setCurrentItem(item)
+            current_item = self.project_reference_list.currentItem()
+            is_folder = current_item is not None and str(current_item.data(Qt.UserRole + 1)) == "folder"
             menu = QMenu(self)
-            open_action = menu.addAction("Open Selected")
+            open_action = menu.addAction("Open Folder" if is_folder else "Open Selected")
+            new_folder_action = menu.addAction("New Folder")
+            up_folder_action = menu.addAction("Up Folder")
+            root_action = menu.addAction("Go Root")
+            rename_folder_action = menu.addAction("Rename Folder")
+            delete_folder_action = menu.addAction("Delete Folder")
             view_location_action = menu.addAction("View Location")
             load_location_action = menu.addAction("Load Location")
+            move_to_folder_action = menu.addAction("Move Selected To Folder")
+            move_to_root_action = menu.addAction("Move Selected To Root")
             remove_ref_action = menu.addAction("Remove Selected Ref")
             customize_action = menu.addAction("Customize/Organize")
             chosen = menu.exec(self.project_reference_list.mapToGlobal(pos))
             if chosen == open_action:
-                self._open_paths(
-                    [
-                        Path(self.records[idx].local_file)
-                        for idx in self._selected_record_indexes_from_list_widget(self.project_reference_list)
-                        if 0 <= idx < len(self.records)
-                    ]
-                )
+                if is_folder and current_item is not None:
+                    self._open_project_local_reference_item(current_item)
+                else:
+                    self._open_paths(
+                        [
+                            Path(self.records[idx].local_file)
+                            for idx in self._selected_record_indexes_from_list_widget(self.project_reference_list)
+                            if 0 <= idx < len(self.records)
+                        ]
+                    )
+            elif chosen == new_folder_action:
+                self._create_project_reference_folder()
+            elif chosen == up_folder_action:
+                self._go_up_project_reference_folder()
+            elif chosen == root_action:
+                self._go_root_project_reference_folder()
+            elif chosen == rename_folder_action and current_item is not None:
+                self._rename_record_folder("project_reference", str(current_item.data(Qt.UserRole)).strip(), "Rename Reference Folder")
+            elif chosen == delete_folder_action and current_item is not None:
+                self._delete_record_folder("project_reference", str(current_item.data(Qt.UserRole)).strip(), "Delete Reference Folder", "Reference files")
             elif chosen == view_location_action:
                 self._view_selected_file_locations_from_list(self.project_reference_list)
             elif chosen == load_location_action:
                 self._load_selected_file_location_from_list(self.project_reference_list)
+            elif chosen == move_to_folder_action:
+                self._move_selected_record_items_to_folder(
+                    self.project_reference_list,
+                    "project_reference",
+                    "Move Reference Items To Folder",
+                    "Create a reference folder first.",
+                )
+            elif chosen == move_to_root_action:
+                self._move_selected_record_items_to_root(self.project_reference_list, "project_reference")
             elif chosen == remove_ref_action:
                 errors = self._remove_record_indexes(
                     self._selected_record_indexes_from_list_widget(self.project_reference_list)

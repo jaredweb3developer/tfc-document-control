@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
 
 APP_ROOT = Path(__file__).resolve().parent
 APP_NAME = "TFC Document Control"
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 USER_DATA_DIR_NAME = "TFC Project Control"
 SETTINGS_SCHEMA_VERSION = 1
 TRACKED_PROJECTS_SCHEMA_VERSION = 1
@@ -89,6 +89,15 @@ ITEM_CUSTOMIZATIONS_FILE = USER_DATA_ROOT / "item_customizations.json"
 ITEM_CUSTOMIZATIONS_SCHEMA_VERSION = 1
 NOTE_PRESETS_FILE = USER_DATA_ROOT / "note_presets.json"
 NOTE_PRESETS_SCHEMA_VERSION = 1
+PROJECT_LOGICAL_VIEW_SCOPES = [
+    "project_favorites",
+    "project_notes",
+    "project_checked_out",
+    "project_reference",
+]
+GLOBAL_LOGICAL_VIEW_SCOPES = [
+    "global_favorites",
+]
 
 
 @dataclass
@@ -101,6 +110,7 @@ class CheckoutRecord:
     project_dir: str
     source_root: str
     checked_out_at: str = ""
+    id: str = ""
     record_type: str = "checked_out"
     file_id: str = ""
 
