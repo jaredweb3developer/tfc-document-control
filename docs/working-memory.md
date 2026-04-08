@@ -101,3 +101,11 @@ If a future task changes architecture, persistence formats, feature scope, or te
 
 - On Windows 11, the user will manually run `pytest` and write the results to `pytest-manual-output.txt`. Future verification steps should reference that file when available instead of assuming local automated pytest execution succeeded in this environment.
 - When a change is ready for verification, include the appropriate manual test command in the response so the user can run it on Windows 11 and capture the output in `pytest-manual-output.txt`.
+
+### 2026-04-08
+
+- Goal: Prepare a concrete implementation plan for the `0.2.3` Reference Files refresh and bulk-update feature before coding begins.
+- Files/areas changed: `docs/0.2.3/0.2.3-reference-files-refresh-and-update-plan.md`, `docs/working-memory.md`.
+- Behavior changed: No application behavior change; the `0.2.3` docs now include a build-ready plan with phased execution, file touch points, test strategy, and an implementation checklist for `Refresh Selected Ref`, `Refresh Selected Ref (If Unchanged)`, `Check Reference Status`, and `Update All References`.
+- Tests run: Not run; planning-only change.
+- Risks or follow-up: Implementation should start with Phase 1 metadata groundwork so status and refresh behavior can be built on a stable persisted baseline.
