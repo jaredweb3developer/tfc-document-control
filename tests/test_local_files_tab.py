@@ -57,6 +57,26 @@ def test_load_project_refreshes_local_roots_and_files(app_env):
     assert app.local_files_list.rowCount() == 2
 
 
+def test_source_files_list_defaults_to_name_ascending(app_env):
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    source_root = tmp / "source-root-sort"
+    source_root.mkdir(parents=True)
+    (source_root / "zeta.pdf").write_text("z", encoding="utf-8")
+    (source_root / "alpha.pdf").write_text("a", encoding="utf-8")
+    (source_root / "Middle.pdf").write_text("m", encoding="utf-8")
+
+    app._set_directory_tree_root(source_root)
+    app._set_current_directory(source_root)
+
+    assert [app.files_list.item(row, 0).text() for row in range(app.files_list.rowCount())] == [
+        "alpha.pdf",
+        "Middle.pdf",
+        "zeta.pdf",
+    ]
+
+
 def test_add_selected_local_files_to_source_copies_to_chosen_destination(app_env, monkeypatch):
     app = app_env["app"]
     tmp = app_env["tmp"]
@@ -113,6 +133,26 @@ def test_local_files_list_excludes_directories(app_env):
     assert app.local_files_list.rowCount() == 1
     assert app.local_files_list.item(0, 0).text() == "A.txt"
     assert all(app.local_files_list.item(row, 0).text() != "child" for row in range(app.local_files_list.rowCount()))
+
+
+def test_local_files_list_defaults_to_name_ascending(app_env):
+    app = app_env["app"]
+    tmp = app_env["tmp"]
+
+    local_root = tmp / "local-root-sort"
+    local_root.mkdir(parents=True)
+    (local_root / "zeta.pdf").write_text("z", encoding="utf-8")
+    (local_root / "alpha.pdf").write_text("a", encoding="utf-8")
+    (local_root / "Middle.pdf").write_text("m", encoding="utf-8")
+
+    app._set_local_directory_tree_root(local_root)
+    app._set_local_current_directory(local_root)
+
+    assert [app.local_files_list.item(row, 0).text() for row in range(app.local_files_list.rowCount())] == [
+        "alpha.pdf",
+        "Middle.pdf",
+        "zeta.pdf",
+    ]
 
 
 def test_local_directory_create_rename_move_and_delete(app_env, monkeypatch):
