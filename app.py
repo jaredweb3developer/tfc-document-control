@@ -85,7 +85,6 @@ DEBUG_EVENTS_FILE = USER_DATA_ROOT / "debug_events.log"
 FILE_VERSIONS_FILE = "file_versions.json"
 FILE_VERSIONS_DIR = "file_versions"
 GLOBAL_FAVORITES_FILE = USER_DATA_ROOT / "global_favorites.json"
-GLOBAL_NOTES_FILE = USER_DATA_ROOT / "global_notes.json"
 ITEM_CUSTOMIZATIONS_FILE = USER_DATA_ROOT / "item_customizations.json"
 ITEM_CUSTOMIZATIONS_SCHEMA_VERSION = 1
 NOTE_PRESETS_FILE = USER_DATA_ROOT / "note_presets.json"

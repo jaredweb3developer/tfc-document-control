@@ -18,8 +18,14 @@
 2. Confirm the target area in `docs/architecture.md`.
 3. Check `docs/features.md` for the affected workflows and invariants.
 4. Make the code change.
-5. Run the narrowest useful tests first, then broader regression coverage.
+5. On Windows, do not assume local automated pytest execution will work reliably in-session; instead, provide the narrowest useful pytest command for the user to run manually first, then broader regression coverage as needed.
 6. Record the result in `docs/working-memory.md`.
+
+## Windows Verification Rule
+
+- In a Windows environment, prefer asking the user to run the desired `pytest` command manually instead of repeatedly attempting to automate pytest inside the session.
+- When verification is needed, provide a concrete command that targets the changed area as narrowly as practical.
+- If the user runs the command, reference the result they provide or the contents of `pytest-manual-output.txt` rather than claiming an automated local pytest run succeeded.
 
 ## Rule For Future Refactors
 

@@ -118,7 +118,7 @@ def test_add_selected_local_files_to_source_copies_to_chosen_destination(app_env
     assert infos == ["Added 1 local file(s) to source."]
 
 
-def test_local_files_list_excludes_directories(app_env):
+def test_local_files_list_includes_directories_for_local_item_actions(app_env):
     app = app_env["app"]
     tmp = app_env["tmp"]
 
@@ -130,9 +130,11 @@ def test_local_files_list_excludes_directories(app_env):
     app._set_local_directory_tree_root(local_root)
     app._set_local_current_directory(local_root)
 
-    assert app.local_files_list.rowCount() == 1
-    assert app.local_files_list.item(0, 0).text() == "A.txt"
-    assert all(app.local_files_list.item(row, 0).text() != "child" for row in range(app.local_files_list.rowCount()))
+    assert app.local_files_list.rowCount() == 2
+    assert sorted(app.local_files_list.item(row, 0).text() for row in range(app.local_files_list.rowCount())) == [
+        "A.txt",
+        "child",
+    ]
 
 
 def test_local_files_list_defaults_to_name_ascending(app_env):

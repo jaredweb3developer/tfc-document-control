@@ -4,6 +4,16 @@ import app as app_module
 from app import *
 
 
+class CompatibilityTableWidget(QTableWidget):
+        def count(self) -> int:
+            return self.rowCount()
+
+        def item(self, row: int, column: Optional[int] = None):  # type: ignore[override]
+            if column is None:
+                column = 0
+            return super().item(row, column)
+
+
 class UiMixin:
         def _build_ui(self) -> None:
             root = QWidget()
@@ -14,13 +24,13 @@ class UiMixin:
 
             main_tab = QWidget()
             main_layout = QVBoxLayout(main_tab)
-            self.projects_section = self._build_collapsible_section("Projects", self._build_projects_group())
-            self.files_section = self._build_collapsible_section(
-                "Files", self._build_source_files_group()
-            )
-            main_layout.addWidget(self.projects_section, stretch=1)
-            main_layout.addWidget(self.files_section, stretch=1)
-            # Backward-compatible alias kept for legacy tests and persisted UI references.
+            main_splitter = QSplitter(Qt.Horizontal)
+            self.projects_section = self._build_projects_group()
+            self.files_section = self._build_source_files_group()
+            main_splitter.addWidget(self.projects_section)
+            main_splitter.addWidget(self.files_section)
+            main_splitter.setSizes([540, 960])
+            main_layout.addWidget(main_splitter, stretch=1)
             self.source_files_section = self.files_section
 
             configuration_tab = QWidget()
@@ -178,6 +188,7 @@ class UiMixin:
             return group
 
         def _build_projects_group(self) -> QGroupBox:
+            return self._build_projects_group_v024()
             group = QGroupBox("Projects")
             layout = QVBoxLayout(group)
 
@@ -440,6 +451,7 @@ class UiMixin:
             return group
 
         def _build_source_files_group(self) -> QGroupBox:
+            return self._build_source_files_group_v024()
             group = QGroupBox("Files")
             layout = QVBoxLayout(group)
 
@@ -790,6 +802,799 @@ class UiMixin:
             layout.addWidget(self.files_scope_tabs, stretch=1)
             return group
 
+        def _build_projects_group_v024(self) -> QGroupBox:
+            group = QGroupBox("Projects")
+            layout = QVBoxLayout(group)
+
+            column_splitter = QSplitter(Qt.Vertical)
+            column_splitter.addWidget(self._build_navigation_tabs_group_v024())
+            column_splitter.addWidget(self._build_directories_group_v024())
+            column_splitter.setSizes([430, 330])
+            layout.addWidget(column_splitter, stretch=1)
+            return group
+
+        def _build_navigation_tabs_group_v024(self) -> QWidget:
+            container = QWidget()
+            layout = QVBoxLayout(container)
+
+            self.navigation_tabs = QTabWidget()
+            self.navigation_tabs.addTab(self._build_projects_tab_v024(), "Projects")
+            self.navigation_tabs.addTab(self._build_project_favorites_tab_v024(), "Project Favorites")
+            self.navigation_tabs.addTab(self._build_global_favorites_tab_v024(), "Global Favorites")
+            self.navigation_tabs.addTab(self._build_checked_out_navigation_tab_v024(), "Checked Out")
+            self.navigation_tabs.addTab(self._build_reference_files_navigation_tab_v024(), "Reference Files")
+            self.navigation_tabs.addTab(self._build_notes_tab_v024(), "Notes")
+            self.navigation_tabs.currentChanged.connect(self._sync_compatibility_favorites_tabs_from_navigation)
+            layout.addWidget(self.navigation_tabs, stretch=1)
+
+            self.favorites_tabs = QTabWidget()
+            self.favorites_tabs.hide()
+            for title in ["Project Favorites", "Global Favorites", "Checked Out", "Reference Files"]:
+                self.favorites_tabs.addTab(QWidget(), title)
+            self.favorites_tabs.currentChanged.connect(self._sync_navigation_from_compatibility_favorites_tabs)
+            layout.addWidget(self.favorites_tabs)
+            self._sync_compatibility_favorites_tabs_from_navigation()
+            return container
+
+        def _build_projects_tab_v024(self) -> QWidget:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+
+            self.tracked_projects_list = QListWidget()
+            self.tracked_projects_list.itemDoubleClicked.connect(self._load_tracked_project_item)
+            self.tracked_projects_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.tracked_projects_list.customContextMenuRequested.connect(
+                self._show_tracked_projects_context_menu
+            )
+
+            self.current_project_label = QLabel("Current Project: -")
+            self.current_project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.project_search_edit = QLineEdit()
+            self.project_search_edit.setPlaceholderText("Search projects by name, client, or year")
+            self.project_search_edit.textChanged.connect(self._on_project_search_changed)
+
+            header = QHBoxLayout()
+            header.addWidget(self.current_project_label)
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("New Project", self._show_new_project_dialog),
+                        ("Load Selected", self._load_selected_tracked_project),
+                        ("Project Files Manager", self._open_project_files_manager_for_selected_project),
+                        ("Track Existing", self._add_existing_project),
+                        ("Edit Selected", self._edit_selected_project),
+                        ("Open Location", self._open_selected_project_location),
+                        ("Untrack Selected", self._remove_selected_project),
+                        ("---", self._load_selected_tracked_project),
+                        ("Move Up", self._move_selected_project_up),
+                        ("Move Down", self._move_selected_project_down),
+                        ("Move to Top", self._move_selected_project_top),
+                        ("Move to Bottom", self._move_selected_project_bottom),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            layout.addWidget(self.project_search_edit)
+            layout.addWidget(self.tracked_projects_list, stretch=1)
+            return tab
+
+        def _build_project_favorites_tab_v024(self) -> QWidget:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            header = QHBoxLayout()
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Add Project Favorite", self._browse_and_add_favorites),
+                        ("Add Global Favorite", self._browse_and_add_global_favorites),
+                        ("Add Selected Global -> Project", self._add_selected_global_favorites_to_project),
+                        ("New Folder", self._create_project_favorites_folder),
+                        ("Up Folder", self._go_up_project_favorites_folder),
+                        ("Go Root", self._go_root_project_favorites_folder),
+                        ("Open Selected", self._open_selected_favorites_from_active_tab),
+                        ("Remove Selected", self._remove_selected_favorites_from_active_tab),
+                        ("Refresh Selected Ref", self._refresh_selected_references_from_active_tab),
+                        ("Refresh Selected Ref (If Unchanged)", self._refresh_selected_references_if_unchanged_from_active_tab),
+                        ("Check Reference Status", self._check_selected_references_status_from_active_tab),
+                        ("Update All References", self._update_all_references_from_active_tab),
+                        ("---", self._open_selected_favorites_from_active_tab),
+                        ("Move Selected To Folder", self._move_selected_items_to_folder_from_active_tab),
+                        ("Move Selected To Root", self._move_selected_items_to_root_from_active_tab),
+                        ("Move Up", self._move_selected_favorite_up),
+                        ("Move Down", self._move_selected_favorite_down),
+                        ("Move to Top", self._move_selected_favorite_top),
+                        ("Move to Bottom", self._move_selected_favorite_bottom),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            layout.addWidget(self._build_project_favorites_panel_v024(), stretch=1)
+            return tab
+
+        def _build_project_favorites_panel_v024(self) -> QWidget:
+            project_favorites_tab = QWidget()
+            project_favorites_layout = QVBoxLayout(project_favorites_tab)
+            self.project_favorites_search_edit = QLineEdit()
+            self.project_favorites_search_edit.setPlaceholderText("Search project favorites")
+            self.project_favorites_search_edit.textChanged.connect(
+                lambda _text: self._refresh_favorites_list(self._current_project_favorites())
+            )
+            project_favorites_layout.addWidget(self.project_favorites_search_edit)
+            project_favorites_nav = QHBoxLayout()
+            self.project_favorites_folder_label = QLabel("Favorites Folder: Root")
+            self.project_favorites_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.project_favorites_up_btn = QPushButton("Up")
+            self.project_favorites_root_btn = QPushButton("Root")
+            self.project_favorites_new_folder_btn = QPushButton("New Folder")
+            self.project_favorites_up_btn.clicked.connect(self._go_up_project_favorites_folder)
+            self.project_favorites_root_btn.clicked.connect(self._go_root_project_favorites_folder)
+            self.project_favorites_new_folder_btn.clicked.connect(self._create_project_favorites_folder)
+            project_favorites_nav.addWidget(self.project_favorites_folder_label, stretch=1)
+            project_favorites_nav.addWidget(self.project_favorites_up_btn)
+            project_favorites_nav.addWidget(self.project_favorites_root_btn)
+            project_favorites_nav.addWidget(self.project_favorites_new_folder_btn)
+            project_favorites_layout.addLayout(project_favorites_nav)
+            self.favorites_list = QListWidget()
+            self.favorites_list.itemDoubleClicked.connect(self._open_favorite_item)
+            self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.favorites_list.customContextMenuRequested.connect(self._show_favorites_context_menu)
+            project_favorites_layout.addWidget(self.favorites_list, stretch=1)
+            return project_favorites_tab
+
+        def _build_global_favorites_tab_v024(self) -> QWidget:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            header = QHBoxLayout()
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Add Global Favorite", self._browse_and_add_global_favorites),
+                        ("Add Selected Global -> Project", self._add_selected_global_favorites_to_project),
+                        ("New Folder", self._create_global_favorites_folder),
+                        ("Up Folder", self._go_up_global_favorites_folder),
+                        ("Go Root", self._go_root_global_favorites_folder),
+                        ("Open Selected", self._open_selected_favorites_from_active_tab),
+                        ("Remove Selected", self._remove_selected_favorites_from_active_tab),
+                        ("Move Selected To Folder", self._move_selected_items_to_folder_from_active_tab),
+                        ("Move Selected To Root", self._move_selected_items_to_root_from_active_tab),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            layout.addWidget(self._build_global_favorites_panel_v024(), stretch=1)
+            return tab
+
+        def _build_global_favorites_panel_v024(self) -> QWidget:
+            global_favorites_tab = QWidget()
+            global_favorites_layout = QVBoxLayout(global_favorites_tab)
+            self.global_favorites_search_edit = QLineEdit()
+            self.global_favorites_search_edit.setPlaceholderText("Search global favorites")
+            self.global_favorites_search_edit.textChanged.connect(self._refresh_global_favorites_list)
+            global_favorites_layout.addWidget(self.global_favorites_search_edit)
+            global_favorites_nav = QHBoxLayout()
+            self.global_favorites_folder_label = QLabel("Global Favorites Folder: Root")
+            self.global_favorites_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.global_favorites_up_btn = QPushButton("Up")
+            self.global_favorites_root_btn = QPushButton("Root")
+            self.global_favorites_new_folder_btn = QPushButton("New Folder")
+            self.global_favorites_up_btn.clicked.connect(self._go_up_global_favorites_folder)
+            self.global_favorites_root_btn.clicked.connect(self._go_root_global_favorites_folder)
+            self.global_favorites_new_folder_btn.clicked.connect(self._create_global_favorites_folder)
+            global_favorites_nav.addWidget(self.global_favorites_folder_label, stretch=1)
+            global_favorites_nav.addWidget(self.global_favorites_up_btn)
+            global_favorites_nav.addWidget(self.global_favorites_root_btn)
+            global_favorites_nav.addWidget(self.global_favorites_new_folder_btn)
+            global_favorites_layout.addLayout(global_favorites_nav)
+            self.global_favorites_list = QListWidget()
+            self.global_favorites_list.setSelectionMode(QListWidget.ExtendedSelection)
+            self.global_favorites_list.itemDoubleClicked.connect(self._open_global_favorite_item)
+            self.global_favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.global_favorites_list.customContextMenuRequested.connect(
+                self._show_global_favorites_context_menu
+            )
+            global_favorites_layout.addWidget(self.global_favorites_list, stretch=1)
+            return global_favorites_tab
+
+        def _build_checked_out_navigation_tab_v024(self) -> QWidget:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            header = QHBoxLayout()
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Open Selected", self._open_selected_favorites_from_active_tab),
+                        ("Remove Selected", self._remove_selected_favorites_from_active_tab),
+                        ("Refresh Selected Ref", self._refresh_selected_references_from_active_tab),
+                        ("Refresh Selected Ref (If Unchanged)", self._refresh_selected_references_if_unchanged_from_active_tab),
+                        ("Check Reference Status", self._check_selected_references_status_from_active_tab),
+                        ("Update All References", self._update_all_references_from_active_tab),
+                        ("---", self._open_selected_favorites_from_active_tab),
+                        ("Move Selected To Folder", self._move_selected_items_to_folder_from_active_tab),
+                        ("Move Selected To Root", self._move_selected_items_to_root_from_active_tab),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            layout.addWidget(self._build_checked_out_panel_v024(), stretch=1)
+            return tab
+
+        def _build_checked_out_panel_v024(self) -> QWidget:
+            checked_out_tab = QWidget()
+            checked_out_layout = QVBoxLayout(checked_out_tab)
+            self.project_checked_out_search_edit = QLineEdit()
+            self.project_checked_out_search_edit.setPlaceholderText("Search checked out files")
+            self.project_checked_out_search_edit.textChanged.connect(self._refresh_project_local_files_lists)
+            checked_out_layout.addWidget(self.project_checked_out_search_edit)
+            checked_out_nav = QHBoxLayout()
+            self.project_checked_out_folder_label = QLabel("Checked Out Folder: Root")
+            self.project_checked_out_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.project_checked_out_up_btn = QPushButton("Up")
+            self.project_checked_out_root_btn = QPushButton("Root")
+            self.project_checked_out_new_folder_btn = QPushButton("New Folder")
+            self.project_checked_out_up_btn.clicked.connect(self._go_up_project_checked_out_folder)
+            self.project_checked_out_root_btn.clicked.connect(self._go_root_project_checked_out_folder)
+            self.project_checked_out_new_folder_btn.clicked.connect(self._create_project_checked_out_folder)
+            checked_out_nav.addWidget(self.project_checked_out_folder_label, stretch=1)
+            checked_out_nav.addWidget(self.project_checked_out_up_btn)
+            checked_out_nav.addWidget(self.project_checked_out_root_btn)
+            checked_out_nav.addWidget(self.project_checked_out_new_folder_btn)
+            checked_out_layout.addLayout(checked_out_nav)
+            self.project_checked_out_list = QListWidget()
+            self.project_checked_out_list.setSelectionMode(QListWidget.ExtendedSelection)
+            self.project_checked_out_list.itemDoubleClicked.connect(self._open_project_local_checked_out_item)
+            self.project_checked_out_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.project_checked_out_list.customContextMenuRequested.connect(
+                self._show_project_checked_out_context_menu
+            )
+            checked_out_layout.addWidget(self.project_checked_out_list, stretch=1)
+            return checked_out_tab
+
+        def _build_reference_files_navigation_tab_v024(self) -> QWidget:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            header = QHBoxLayout()
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Open Selected", self._open_selected_favorites_from_active_tab),
+                        ("Remove Selected", self._remove_selected_favorites_from_active_tab),
+                        ("Refresh Selected Ref", self._refresh_selected_references_from_active_tab),
+                        ("Refresh Selected Ref (If Unchanged)", self._refresh_selected_references_if_unchanged_from_active_tab),
+                        ("Check Reference Status", self._check_selected_references_status_from_active_tab),
+                        ("Update All References", self._update_all_references_from_active_tab),
+                        ("---", self._open_selected_favorites_from_active_tab),
+                        ("Move Selected To Folder", self._move_selected_items_to_folder_from_active_tab),
+                        ("Move Selected To Root", self._move_selected_items_to_root_from_active_tab),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            layout.addWidget(self._build_reference_files_panel_v024(), stretch=1)
+            return tab
+
+        def _build_reference_files_panel_v024(self) -> QWidget:
+            reference_tab = QWidget()
+            reference_layout = QVBoxLayout(reference_tab)
+            self.project_reference_search_edit = QLineEdit()
+            self.project_reference_search_edit.setPlaceholderText("Search reference files")
+            self.project_reference_search_edit.textChanged.connect(self._refresh_project_local_files_lists)
+            reference_layout.addWidget(self.project_reference_search_edit)
+            reference_nav = QHBoxLayout()
+            self.project_reference_folder_label = QLabel("Reference Folder: Root")
+            self.project_reference_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.project_reference_up_btn = QPushButton("Up")
+            self.project_reference_root_btn = QPushButton("Root")
+            self.project_reference_new_folder_btn = QPushButton("New Folder")
+            self.project_reference_up_btn.clicked.connect(self._go_up_project_reference_folder)
+            self.project_reference_root_btn.clicked.connect(self._go_root_project_reference_folder)
+            self.project_reference_new_folder_btn.clicked.connect(self._create_project_reference_folder)
+            reference_nav.addWidget(self.project_reference_folder_label, stretch=1)
+            reference_nav.addWidget(self.project_reference_up_btn)
+            reference_nav.addWidget(self.project_reference_root_btn)
+            reference_nav.addWidget(self.project_reference_new_folder_btn)
+            reference_layout.addLayout(reference_nav)
+            self.project_reference_list = QListWidget()
+            self.project_reference_list.setSelectionMode(QListWidget.ExtendedSelection)
+            self.project_reference_list.itemDoubleClicked.connect(self._open_project_local_reference_item)
+            self.project_reference_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.project_reference_list.customContextMenuRequested.connect(
+                self._show_project_reference_context_menu
+            )
+            reference_layout.addWidget(self.project_reference_list, stretch=1)
+            return reference_tab
+
+        def _build_notes_tab_v024(self) -> QWidget:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            header = QHBoxLayout()
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("New Note", self._create_note),
+                        ("New Folder", self._create_project_notes_folder),
+                        ("Up Folder", self._go_up_project_notes_folder),
+                        ("Go Root", self._go_root_project_notes_folder),
+                        ("Presets", self._show_note_presets_dialog),
+                        ("Edit Selected", self._edit_selected_note),
+                        ("Copy Selected To Project", self._copy_selected_note_to_project),
+                        ("Move Selected To Project", self._move_selected_note_to_project),
+                        ("Remove Selected", self._remove_selected_note),
+                        ("---", self._create_note),
+                        ("Move Selected To Folder", self._move_selected_notes_to_folder),
+                        ("Move Selected To Root", self._move_selected_notes_to_root),
+                        ("Move Up", self._move_selected_note_up),
+                        ("Move Down", self._move_selected_note_down),
+                        ("Move to Top", self._move_selected_note_top),
+                        ("Move to Bottom", self._move_selected_note_bottom),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            layout.addWidget(self._build_notes_panel_v024(), stretch=1)
+            return tab
+
+        def _build_notes_panel_v024(self) -> QWidget:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            self.project_notes_search_edit = QLineEdit()
+            self.project_notes_search_edit.setPlaceholderText("Search notes")
+            self.project_notes_search_edit.textChanged.connect(
+                lambda _text: self._refresh_notes_list(self._current_project_notes())
+            )
+            layout.addWidget(self.project_notes_search_edit)
+            nav = QHBoxLayout()
+            self.project_notes_folder_label = QLabel("Notes Folder: Root")
+            self.project_notes_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.project_notes_up_btn = QPushButton("Up")
+            self.project_notes_root_btn = QPushButton("Root")
+            self.project_notes_new_folder_btn = QPushButton("New Folder")
+            self.project_notes_up_btn.clicked.connect(self._go_up_project_notes_folder)
+            self.project_notes_root_btn.clicked.connect(self._go_root_project_notes_folder)
+            self.project_notes_new_folder_btn.clicked.connect(self._create_project_notes_folder)
+            nav.addWidget(self.project_notes_folder_label, stretch=1)
+            nav.addWidget(self.project_notes_up_btn)
+            nav.addWidget(self.project_notes_root_btn)
+            nav.addWidget(self.project_notes_new_folder_btn)
+            layout.addLayout(nav)
+            self.notes_list = QListWidget()
+            self.notes_list.itemDoubleClicked.connect(self._edit_note_item)
+            self.notes_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.notes_list.customContextMenuRequested.connect(self._show_notes_context_menu)
+            layout.addWidget(self.notes_list, stretch=1)
+            return panel
+
+        def _build_directories_group_v024(self) -> QGroupBox:
+            group = QGroupBox("Directories")
+            layout = QVBoxLayout(group)
+
+            self.directory_scope_tabs = QTabWidget()
+            self.directory_scope_tabs.currentChanged.connect(self._sync_files_scope_tab_from_directories)
+            self.directory_scope_tabs.addTab(self._build_source_directories_tab_v024(), "Source")
+            self.directory_scope_tabs.addTab(self._build_local_directories_tab_v024(), "Local")
+            layout.addWidget(self.directory_scope_tabs, stretch=1)
+            return group
+
+        def _build_source_directories_tab_v024(self) -> QWidget:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            splitter = QSplitter(Qt.Horizontal)
+            splitter.addWidget(self._build_source_directories_panel_v024())
+            splitter.addWidget(self._build_source_directory_browser_panel_v024())
+            splitter.setSizes([180, 280])
+            layout.addWidget(splitter, stretch=1)
+            return tab
+
+        def _build_local_directories_tab_v024(self) -> QWidget:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            splitter = QSplitter(Qt.Horizontal)
+            splitter.addWidget(self._build_local_directories_panel_v024())
+            splitter.addWidget(self._build_local_directory_browser_panel_v024())
+            splitter.setSizes([180, 280])
+            layout.addWidget(splitter, stretch=1)
+            return tab
+
+        def _build_source_directories_panel_v024(self) -> QWidget:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            header = QHBoxLayout()
+            header.addWidget(QLabel("Tracked Directories"))
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Track Dir (Browse)", self._add_source_directory),
+                        ("Track Directory", self._track_current_directory),
+                        ("Relink Directory", self._relink_selected_source_directory),
+                        ("View Location", self._view_selected_source_directory_location),
+                        ("Untrack Dir", self._remove_source_directory),
+                        ("---", self._track_current_directory),
+                        ("Move Up", self._move_selected_source_up),
+                        ("Move Down", self._move_selected_source_down),
+                        ("Move to Top", self._move_selected_source_top),
+                        ("Move to Bottom", self._move_selected_source_bottom),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            self.source_roots_list = QListWidget()
+            self.source_roots_list.currentItemChanged.connect(self._on_source_root_changed)
+            self.source_roots_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.source_roots_list.customContextMenuRequested.connect(self._show_source_roots_context_menu)
+            layout.addWidget(self.source_roots_list, stretch=1)
+            return panel
+
+        def _build_source_directory_browser_panel_v024(self) -> QWidget:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            header = QHBoxLayout()
+            header.addWidget(QLabel("Directory Browser"))
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Browse", self._browse_directory_tree_root),
+                        ("Refresh", self._refresh_directory_browser),
+                        ("Up Directory", self._go_to_parent_source_directory),
+                        ("Create Directory", self._create_directory_in_current_source),
+                        ("View Location", self._view_current_directory_location),
+                        ("Track Directory", self._track_current_directory),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            self.directory_tree = QTreeWidget()
+            self.directory_tree.setColumnCount(1)
+            self.directory_tree.setHeaderHidden(True)
+            self.directory_tree.itemExpanded.connect(self._on_tree_item_expanded)
+            self.directory_tree.itemClicked.connect(self._on_directory_selected)
+            self.directory_tree.setAnimated(False)
+            self.directory_tree.setUniformRowHeights(True)
+            layout.addWidget(self.directory_tree, stretch=1)
+            return panel
+
+        def _build_local_directories_panel_v024(self) -> QWidget:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            header = QHBoxLayout()
+            header.addWidget(QLabel("Tracked Directories"))
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Track Dir (Browse)", self._add_local_directory),
+                        ("Track Directory", self._track_current_local_directory),
+                        ("View Location", self._view_selected_local_directory_location),
+                        ("Untrack Dir", self._remove_local_directory),
+                        ("---", self._track_current_local_directory),
+                        ("Move Up", self._move_selected_local_root_up),
+                        ("Move Down", self._move_selected_local_root_down),
+                        ("Move to Top", self._move_selected_local_root_top),
+                        ("Move to Bottom", self._move_selected_local_root_bottom),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            self.local_roots_list = QListWidget()
+            self.local_roots_list.currentItemChanged.connect(self._on_local_root_changed)
+            self.local_roots_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.local_roots_list.customContextMenuRequested.connect(self._show_local_roots_context_menu)
+            layout.addWidget(self.local_roots_list, stretch=1)
+            return panel
+
+        def _build_local_directory_browser_panel_v024(self) -> QWidget:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            header = QHBoxLayout()
+            header.addWidget(QLabel("Directory Browser"))
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Browse", self._browse_local_directory_tree_root),
+                        ("Refresh", self._refresh_local_directory_browser),
+                        ("Up Directory", self._go_to_parent_local_directory),
+                        ("Create Directory", self._create_directory_in_current_local),
+                        ("View Location", self._view_local_current_directory_location),
+                        ("Track Directory", self._track_current_local_directory),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            self.local_directory_tree = QTreeWidget()
+            self.local_directory_tree.setColumnCount(1)
+            self.local_directory_tree.setHeaderHidden(True)
+            self.local_directory_tree.itemExpanded.connect(self._on_local_tree_item_expanded)
+            self.local_directory_tree.itemClicked.connect(self._on_local_directory_selected)
+            self.local_directory_tree.setAnimated(False)
+            self.local_directory_tree.setUniformRowHeights(True)
+            layout.addWidget(self.local_directory_tree, stretch=1)
+            return panel
+
+        def _build_source_files_group_v024(self) -> QGroupBox:
+            group = QGroupBox("Files")
+            layout = QVBoxLayout(group)
+
+            self.files_scope_tabs = QTabWidget()
+            self.files_scope_tabs.tabBar().hide()
+
+            source_tab = QWidget()
+            source_layout = QVBoxLayout(source_tab)
+            self.current_folder_label = QLabel("Current source folder: -")
+            self.current_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            source_layout.addWidget(self.current_folder_label)
+            source_layout.addLayout(self._build_source_files_toolbar_v024())
+            self.files_list = self._build_file_table_widget_v024()
+            source_layout.addWidget(self.files_list, stretch=1)
+            self.files_scope_tabs.addTab(source_tab, "Source")
+
+            local_tab = QWidget()
+            local_layout = QVBoxLayout(local_tab)
+            self.local_current_folder_label = QLabel("Current local folder: -")
+            self.local_current_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            local_layout.addWidget(self.local_current_folder_label)
+            local_layout.addWidget(self._build_local_files_panel_v024(), stretch=1)
+            self.files_scope_tabs.addTab(local_tab, "Local")
+
+            self._build_directory_details_window_v024()
+            layout.addWidget(self.files_scope_tabs, stretch=1)
+            return group
+
+        def _build_source_files_toolbar_v024(self) -> QHBoxLayout:
+            toolbar = QHBoxLayout()
+            toolbar.addWidget(
+                self._build_options_button(
+                    [
+                        ("Refresh", self._refresh_source_files),
+                        ("Open Selected", self._open_selected_source_files),
+                        ("Rename Selected", self._rename_selected_source_file),
+                        ("Delete Selected", self._delete_selected_source_files),
+                        ("Check Out Selected", self._checkout_selected),
+                        ("Check In Selected (If Mine)", self._checkin_selected_source_files_if_owned),
+                        ("View History", self._show_selected_file_history),
+                        ("View File Notes", self._open_notes_for_selected_source_file),
+                        ("Directory Details", self._show_directory_details_window),
+                        ("---", self._open_selected_source_files),
+                        ("Add Selected To Favorites", self._add_selected_source_files_to_favorites),
+                        ("Copy As Reference", self._copy_selected_as_reference),
+                        ("Add Local File(s) To Here", self._add_new_files_to_source),
+                    ]
+                )
+            )
+            self.extension_filter_button = QPushButton("Extension Filter")
+            self.extension_filter_button.clicked.connect(self._show_extension_filter_dialog_v024)
+            self.extension_filter_summary_label = QLabel("No Filter")
+            self.extension_filter_summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.extension_filter_summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            toolbar.addWidget(self.extension_filter_button)
+            toolbar.addWidget(self.extension_filter_summary_label, stretch=1)
+
+            self.file_search_edit = QLineEdit()
+            self.file_search_edit.setPlaceholderText("Search files")
+            self.file_search_edit.textChanged.connect(self._on_file_search_changed)
+            self.file_search_edit.setMinimumWidth(420)
+            self.file_search_edit.setMaximumWidth(720)
+            toolbar.addWidget(self.file_search_edit)
+
+            self._build_extension_filter_dialog_v024()
+            self._update_extension_filter_summary_label()
+            return toolbar
+
+        def _build_local_files_panel_v024(self) -> QWidget:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            header = QHBoxLayout()
+            header.addWidget(QLabel("Local Files"))
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Refresh", self._refresh_local_files),
+                        ("Open Selected", self._open_selected_local_files),
+                        ("Create Directory", self._create_directory_in_current_local),
+                        ("Rename Selected", self._rename_selected_local_item),
+                        ("Move Selected", self._move_selected_local_items),
+                        ("Delete Selected", self._delete_selected_local_items),
+                        ("View Location", self._view_local_current_directory_location),
+                        ("Add Selected To Favorites", self._add_selected_local_files_to_favorites),
+                        ("Copy As Reference", self._copy_selected_local_files_as_reference),
+                        ("Add Local File(s) To Source", self._add_selected_local_files_to_source),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+            self.local_file_search_edit = QLineEdit()
+            self.local_file_search_edit.setPlaceholderText("Search local files")
+            self.local_file_search_edit.textChanged.connect(self._on_local_file_search_changed)
+            layout.addWidget(self.local_file_search_edit)
+
+            self.local_files_list = QTableWidget(0, 4)
+            self.local_files_list.setHorizontalHeaderLabels(["Name", "Date modified", "Type", "Size"])
+            self.local_files_list.setSelectionBehavior(QTableWidget.SelectRows)
+            self.local_files_list.setSelectionMode(QTableWidget.ExtendedSelection)
+            self.local_files_list.setEditTriggers(QTableWidget.NoEditTriggers)
+            self.local_files_list.setSortingEnabled(True)
+            self.local_files_list.itemDoubleClicked.connect(self._open_local_item)
+            self.local_files_list.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.local_files_list.customContextMenuRequested.connect(self._show_local_file_context_menu)
+            local_header = self.local_files_list.horizontalHeader()
+            local_header.setSortIndicatorShown(True)
+            local_header.setSortIndicator(0, Qt.AscendingOrder)
+            local_header.setSectionResizeMode(0, QHeaderView.Stretch)
+            local_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            local_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            local_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            layout.addWidget(self.local_files_list, stretch=1)
+            return panel
+
+        def _build_file_table_widget_v024(self) -> QTableWidget:
+            table = CompatibilityTableWidget(0, 4)
+            table.setHorizontalHeaderLabels(["Name", "Date modified", "Type", "Size"])
+            table.setSelectionBehavior(QTableWidget.SelectRows)
+            table.setSelectionMode(QTableWidget.ExtendedSelection)
+            table.setEditTriggers(QTableWidget.NoEditTriggers)
+            table.setSortingEnabled(True)
+            table.setContextMenuPolicy(Qt.CustomContextMenu)
+            table.customContextMenuRequested.connect(self._show_source_file_context_menu)
+            table.itemDoubleClicked.connect(self._open_source_item)
+            header = table.horizontalHeader()
+            header.setSortIndicatorShown(True)
+            header.setSortIndicator(0, Qt.AscendingOrder)
+            header.setSectionResizeMode(0, QHeaderView.Stretch)
+            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            return table
+
+        def _build_extension_filter_dialog_v024(self) -> None:
+            self.extension_filter_dialog = QDialog(self)
+            self.extension_filter_dialog.setWindowTitle("Extension Filter")
+            self.extension_filter_dialog.resize(520, 180)
+            layout = QVBoxLayout(self.extension_filter_dialog)
+
+            top_row = QHBoxLayout()
+            presets_btn = QPushButton("Presets")
+            presets_btn.clicked.connect(self._show_filter_presets_dialog)
+            self.file_extension_combo = QComboBox()
+            self.file_extension_combo.setEditable(True)
+            self.file_extension_combo.addItems(
+                [".dwg", ".dxf", ".pdf", ".xlsx", ".xls", ".doc", ".docx", ".txt", ".csv", ".png", ".jpg", ".jpeg", ".zip"]
+            )
+            self.file_extension_combo.currentTextChanged.connect(self._update_extension_filter_summary_label)
+            add_extension_btn = QPushButton("Add")
+            add_extension_btn.clicked.connect(self._add_filter_extension)
+            remove_extension_btn = QPushButton("Remove")
+            remove_extension_btn.clicked.connect(self._remove_filter_extension)
+            clear_extensions_btn = QPushButton("Clear")
+            clear_extensions_btn.clicked.connect(self._clear_filter_extensions)
+            top_row.addWidget(presets_btn)
+            top_row.addWidget(self.file_extension_combo)
+            top_row.addWidget(add_extension_btn)
+            top_row.addWidget(remove_extension_btn)
+            top_row.addWidget(clear_extensions_btn)
+            layout.addLayout(top_row)
+
+            bottom_row = QHBoxLayout()
+            bottom_row.addWidget(QLabel("Filter Mode"))
+            self.file_filter_mode_combo = QComboBox()
+            self.file_filter_mode_combo.addItems(["No Filter", "Include Only", "Exclude"])
+            self.file_filter_mode_combo.currentIndexChanged.connect(self._on_filter_mode_changed)
+            bottom_row.addWidget(self.file_filter_mode_combo)
+            self.file_extension_list_edit = QLineEdit()
+            self.file_extension_list_edit.setPlaceholderText(".dwg, .pdf, .xlsx")
+            self.file_extension_list_edit.textChanged.connect(self._on_extension_list_changed)
+            bottom_row.addWidget(self.file_extension_list_edit, stretch=1)
+            layout.addLayout(bottom_row)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Close)
+            buttons.rejected.connect(self.extension_filter_dialog.close)
+            buttons.accepted.connect(self.extension_filter_dialog.close)
+            buttons.button(QDialogButtonBox.Close).clicked.connect(self.extension_filter_dialog.close)
+            layout.addWidget(buttons)
+
+        def _show_extension_filter_dialog_v024(self) -> None:
+            self.extension_filter_dialog.show()
+            self.extension_filter_dialog.raise_()
+            self.extension_filter_dialog.activateWindow()
+
+        def _update_extension_filter_summary_label(self) -> None:
+            if not hasattr(self, "extension_filter_summary_label") or not hasattr(self, "file_filter_mode_combo"):
+                return
+            mode = self.file_filter_mode_combo.currentText().strip()
+            filters = []
+            if hasattr(self, "file_extension_list_edit"):
+                filters = [value.strip() for value in self.file_extension_list_edit.text().split(",") if value.strip()]
+            if mode == "No Filter" or not filters:
+                summary = "No Filter"
+            else:
+                summary = f"{mode}: {', '.join(filters)}"
+            self.extension_filter_summary_label.setText(summary)
+            self.extension_filter_summary_label.setToolTip(summary)
+
+        def _build_directory_details_window_v024(self) -> None:
+            self.directory_details_dialog = QDialog(self)
+            self.directory_details_dialog.setWindowTitle("Directory Details")
+            self.directory_details_dialog.resize(760, 420)
+            self.directory_details_dialog.setModal(False)
+            layout = QVBoxLayout(self.directory_details_dialog)
+
+            header = QHBoxLayout()
+            header.addWidget(QLabel("Current source directory details"))
+            header.addStretch()
+            header.addWidget(
+                self._build_options_button(
+                    [
+                        ("Refresh", self._refresh_controlled_files),
+                        ("Force Check In", self._force_checkin_selected),
+                        ("View File Notes", self._open_notes_for_selected_source_file),
+                    ]
+                )
+            )
+            layout.addLayout(header)
+
+            self.directory_tabs = QTabWidget()
+            self.controlled_files_table = QTableWidget(0, 3)
+            self.controlled_files_table.setHorizontalHeaderLabels(["File Name", "Initials", "Checked Out"])
+            self.controlled_files_table.setSelectionBehavior(QTableWidget.SelectRows)
+            self.controlled_files_table.setSelectionMode(QTableWidget.ExtendedSelection)
+            self.controlled_files_table.setEditTriggers(QTableWidget.NoEditTriggers)
+            self.controlled_files_table.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.controlled_files_table.customContextMenuRequested.connect(self._show_controlled_files_context_menu)
+            controlled_header = self.controlled_files_table.horizontalHeader()
+            controlled_header.setSectionResizeMode(0, QHeaderView.Stretch)
+            controlled_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            controlled_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
+            self.directory_notes_table = QTableWidget(0, 3)
+            self.directory_notes_table.setHorizontalHeaderLabels(["File Name", "Notes", "Last Modified"])
+            self.directory_notes_table.setSelectionBehavior(QTableWidget.SelectRows)
+            self.directory_notes_table.setSelectionMode(QTableWidget.ExtendedSelection)
+            self.directory_notes_table.setEditTriggers(QTableWidget.NoEditTriggers)
+            self.directory_notes_table.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.directory_notes_table.customContextMenuRequested.connect(self._show_directory_notes_context_menu)
+            notes_header = self.directory_notes_table.horizontalHeader()
+            notes_header.setSectionResizeMode(0, QHeaderView.Stretch)
+            notes_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            notes_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
+            self.directory_tabs.addTab(self.controlled_files_table, "Controlled Files")
+            self.directory_tabs.addTab(self.directory_notes_table, "File Notes")
+            layout.addWidget(self.directory_tabs, stretch=1)
+
+        def _show_directory_details_window(self) -> None:
+            self.directory_details_dialog.show()
+            self.directory_details_dialog.raise_()
+            self.directory_details_dialog.activateWindow()
+            self._refresh_controlled_files()
+
+        def _sync_files_scope_tab_from_directories(self, index: int) -> None:
+            if hasattr(self, "files_scope_tabs"):
+                self.files_scope_tabs.setCurrentIndex(max(0, index))
+
+        def _sync_compatibility_favorites_tabs_from_navigation(self, _index: int = -1) -> None:
+            if not hasattr(self, "favorites_tabs") or not hasattr(self, "navigation_tabs"):
+                return
+            navigation_index = self.navigation_tabs.currentIndex()
+            navigation_map = {1: 0, 2: 1, 3: 2, 4: 3}
+            target_index = navigation_map.get(navigation_index, 0)
+            self.favorites_tabs.blockSignals(True)
+            self.favorites_tabs.setCurrentIndex(target_index)
+            self.favorites_tabs.blockSignals(False)
+
+        def _sync_navigation_from_compatibility_favorites_tabs(self, index: int) -> None:
+            if not hasattr(self, "navigation_tabs"):
+                return
+            self.navigation_tabs.blockSignals(True)
+            navigation_map = {0: 1, 1: 2, 2: 3, 3: 4}
+            self.navigation_tabs.setCurrentIndex(navigation_map.get(index, 0))
+            self.navigation_tabs.blockSignals(False)
+
         def _build_checked_out_group(self) -> QGroupBox:
             group = QGroupBox("Checked Out Files")
             layout = QVBoxLayout(group)
@@ -876,36 +1681,6 @@ class UiMixin:
                         ("Open Selected", self._open_selected_global_favorites),
                         ("Remove Selected", self._remove_selected_global_favorites),
                         ("Refresh", self._refresh_global_favorites_list),
-                    ]
-                )
-            )
-            controls.addStretch()
-            layout.addLayout(controls)
-            return group
-
-        def _build_global_notes_group(self) -> QGroupBox:
-            group = QGroupBox("Global Notes")
-            layout = QVBoxLayout(group)
-
-            self.global_notes_search_edit = QLineEdit()
-            self.global_notes_search_edit.setPlaceholderText("Search global notes")
-            self.global_notes_search_edit.textChanged.connect(self._refresh_global_notes_list)
-            layout.addWidget(self.global_notes_search_edit)
-
-            self.global_notes_list = QListWidget()
-            self.global_notes_list.itemDoubleClicked.connect(self._show_global_notes_context_menu_for_item)
-            self.global_notes_list.setContextMenuPolicy(Qt.CustomContextMenu)
-            self.global_notes_list.customContextMenuRequested.connect(self._show_global_notes_context_menu)
-            layout.addWidget(self.global_notes_list, stretch=1)
-
-            controls = QHBoxLayout()
-            controls.addWidget(
-                self._build_options_button(
-                    [
-                        ("New Note", self._create_global_note),
-                        ("Edit Selected", self._edit_selected_global_note),
-                        ("Remove Selected", self._remove_selected_global_note),
-                        ("Refresh", self._refresh_global_notes_list),
                     ]
                 )
             )

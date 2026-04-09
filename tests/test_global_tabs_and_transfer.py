@@ -3,8 +3,8 @@ from pathlib import Path
 from app import CheckoutRecord
 
 
-def test_global_favorites_and_notes_persist(app_env, monkeypatch):
-    # Global favorites/notes should persist to dedicated root-level files.
+def test_global_favorites_persist(app_env, monkeypatch):
+    # Global favorites should persist to a dedicated root-level file.
     app = app_env["app"]
     paths = app_env["paths"]
 
@@ -21,17 +21,7 @@ def test_global_favorites_and_notes_persist(app_env, monkeypatch):
             ],
         }
     }
-    app.global_notes = [
-        {
-            "id": "n1",
-            "subject": "Global note",
-            "body": "Body",
-            "created_at": "2026-03-06T10:00:00-05:00",
-            "updated_at": "2026-03-06T10:00:00-05:00",
-        }
-    ]
     app._save_global_favorites()
-    app._save_global_notes()
 
     reloaded = app_env["create_app"]()
     try:
@@ -41,9 +31,7 @@ def test_global_favorites_and_notes_persist(app_env, monkeypatch):
             reloaded.global_favorites_logical_views["global_favorites"]["placements"][0]["item_key"]
             == str(fake_file)
         )
-        assert any(note.get("subject") == "Global note" for note in reloaded.global_notes)
         assert paths["global_favorites"].exists()
-        assert paths["global_notes"].exists()
     finally:
         reloaded.close()
         reloaded.deleteLater()

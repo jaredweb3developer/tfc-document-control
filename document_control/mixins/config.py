@@ -111,9 +111,6 @@ class ConfigMixin:
         def _default_global_favorites_file(self) -> Path:
             return app_module.GLOBAL_FAVORITES_FILE
 
-        def _default_global_notes_file(self) -> Path:
-            return app_module.GLOBAL_NOTES_FILE
-
         def _default_note_presets_file(self) -> Path:
             return app_module.NOTE_PRESETS_FILE
 
@@ -194,9 +191,13 @@ class ConfigMixin:
 
         def _current_source_root(self) -> Optional[Path]:
             item = self.source_roots_list.currentItem()
-            if not item:
-                return None
-            return Path(item.data(Qt.UserRole))
+            if item:
+                return Path(item.data(Qt.UserRole))
+            if getattr(self, "directory_tree_root", None):
+                return self.directory_tree_root
+            if getattr(self, "current_directory", None):
+                return self.current_directory
+            return None
 
         def _current_source_root_value(self) -> str:
             source_root = self._current_source_root()
@@ -444,7 +445,7 @@ class ConfigMixin:
             )
 
         def _apply_startup_tab(self) -> None:
-            self.main_tabs.setCurrentIndex(1 if self.show_configuration_tab_on_startup else 0)
+            self.main_tabs.setCurrentIndex(2 if self.show_configuration_tab_on_startup else 0)
 
         def _load_settings(self) -> None:
             self.local_path_edit.setText(str(self._default_projects_dir()))

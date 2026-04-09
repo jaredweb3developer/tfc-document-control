@@ -7,10 +7,12 @@ Update it at the end of any meaningful change so the next session does not need 
 
 ## Current Snapshot
 
-- Active maintainability milestone: `0.2.2`.
+- Active maintainability milestone: `0.2.4`.
 - `app.py` has been reduced to a compatibility entrypoint plus shared constants/dataclasses.
-- The application behavior still lives primarily inside `DocumentControlApp`, but the implementation is now split across mixins under `document_control/mixins/`.
-- Automated pytest remains constrained in this environment by Windows temp-directory cleanup permissions; current branch confidence is based on targeted manual testing on copied project/source data.
+- The application behavior still lives primarily inside `DocumentControlApp`, but the implementation is split across mixins under `document_control/mixins/`.
+- The `Main` tab now uses the `0.2.4` 2-column layout with flattened left navigation tabs (`Projects`, `Project Favorites`, `Global Favorites`, `Checked Out`, `Reference Files`, `Notes`), lower `Directories` tabs, a right-side file workspace, an extension-filter dialog, and a modeless directory-details popup.
+- `Global Notes` has been retired from runtime and persistence; project notes and file notes remain active features.
+- On Windows, verification should be user-run via explicit `pytest` commands that write to `pytest-manual-output.txt`.
 
 ## What Must Stay Stable
 
@@ -125,3 +127,11 @@ If a future task changes architecture, persistence formats, feature scope, or te
 - Behavior changed: No application behavior change; the repo now includes a concrete `0.2.4` plan covering the 2-column layout, left-column navigation tabs, right-column files workspace, extension-filter dialog conversion, and the move of directory details into a popup window.
 - Tests run: Not run; planning-only change.
 - Risks or follow-up: Follow-up clarification resolved that the directory-details popup should be modeless and that the dormant `Global Notes` feature should be removed entirely rather than carried into the new layout. File notes remain in scope and are not part of that removal.
+
+### 2026-04-09 (`0.2.4` implementation)
+
+- Goal: Deliver the `0.2.4` Main-tab UI restructure, retire `Global Notes`, and finish the corresponding compatibility/documentation cleanup.
+- Files/areas changed: `app.py`, `document_control/window.py`, `document_control/mixins/ui.py`, `document_control/mixins/config.py`, `document_control/mixins/sources.py`, `document_control/mixins/notes.py`, `tests/conftest.py`, `tests/test_global_tabs_and_transfer.py`, `tests/test_local_files_tab.py`, `docs/architecture.md`, `docs/development-workflow.md`, `docs/features.md`, `docs/working-memory.md`.
+- Behavior changed: The Main tab now uses a 2-column layout with flattened left navigation tabs (`Projects`, `Project Favorites`, `Global Favorites`, `Checked Out`, `Reference Files`, `Notes`), lower `Directories` tabs (`Source`, `Local`), and a right-side file workspace. Source extension filtering moved into a dialog with an inline summary label, and the `Search files` input now uses a wider minimum width in the toolbar. Directory-specific `Controlled Files` and `File Notes` moved into a modeless popup launched from the Files actions menu. Compatibility shims preserve legacy list-style test interactions on the source file table and keep favorites/reference action routing stable. `Global Notes` was removed from runtime and persistence.
+- Tests run: User-run manual pytest coverage written to `pytest-manual-output.txt` passed for the targeted `0.2.4` slice, the broader settings/source/directory-notes slice, and the final wide regression command covering reference refresh, reference copies, file revisions, history actions/storage, project file manager, project note transfer, favorites/global-favorites, context menus, local files, logical grouping, project-group search, settings/formats, selected source, relink, ordering controls, and directory notes/tables. Repo virtualenv `py_compile` also passed for the touched Python modules.
+- Risks or follow-up: The source file table still carries compatibility behavior (`item(row)` / `count()` / legacy selection handling) to avoid breaking older tests and call sites; if that shim is ever removed, the dependent tests and helper assumptions must be updated in the same change.

@@ -5,16 +5,6 @@ from app import *
 
 
 class NotesMixin:
-        def _save_global_notes(self) -> None:
-            path = self._default_global_notes_file()
-            self._ensure_parent_dir(path)
-            payload = {
-                "schema_version": 1,
-                "app_version": app_module.APP_VERSION,
-                "notes": self.global_notes,
-            }
-            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
         def _normalize_note_preset_note(self, entry: object) -> Optional[Dict[str, object]]:
             if not isinstance(entry, dict):
                 return None
@@ -1026,84 +1016,6 @@ class NotesMixin:
 
             self._save_item_customizations()
             self._refresh_projects_customization_scope(scope)
-
-        def _refresh_global_notes_list(self) -> None:
-            if not hasattr(self, "global_notes_list"):
-                return
-            self.global_notes_list.clear()
-            search = self.global_notes_search_edit.text().strip().lower()
-            for note in self.global_notes:
-                subject = note.get("subject", "")
-                body = note.get("body", "")
-                if search and search not in subject.lower() and search not in body.lower():
-                    continue
-                item = QListWidgetItem(subject)
-                item.setData(Qt.UserRole, note.get("id", ""))
-                item.setToolTip(self._note_tooltip(note))
-                self.global_notes_list.addItem(item)
-
-        def _selected_global_note_id(self) -> str:
-            item = self.global_notes_list.currentItem()
-            return str(item.data(Qt.UserRole)).strip() if item else ""
-
-        def _create_global_note(self) -> None:
-            note = self._show_note_dialog()
-            if not note:
-                return
-            self.global_notes.append(note)
-            self._save_global_notes()
-            self._refresh_global_notes_list()
-
-        def _edit_selected_global_note(self, _item: Optional[QListWidgetItem] = None) -> None:
-            note_id = self._selected_global_note_id()
-            if not note_id:
-                self._error("Select a note to edit.")
-                return
-            for idx, note in enumerate(self.global_notes):
-                if note.get("id", "") != note_id:
-                    continue
-                updated = self._show_note_dialog(note)
-                if not updated:
-                    return
-                self.global_notes[idx] = updated
-                self._save_global_notes()
-                self._refresh_global_notes_list()
-                return
-            self._error("Selected note could not be found.")
-
-        def _remove_selected_global_note(self) -> None:
-            note_id = self._selected_global_note_id()
-            if not note_id:
-                self._error("Select a note to remove.")
-                return
-            self.global_notes = [note for note in self.global_notes if note.get("id", "") != note_id]
-            self._save_global_notes()
-            self._refresh_global_notes_list()
-
-        def _show_global_notes_context_menu_for_item(self, item: QListWidgetItem) -> None:
-            self.global_notes_list.setCurrentItem(item)
-            item.setSelected(True)
-            rect = self.global_notes_list.visualItemRect(item)
-            self._show_global_notes_context_menu(rect.center())
-
-        def _show_global_notes_context_menu(self, pos: QPoint) -> None:
-            item = self.global_notes_list.itemAt(pos)
-            if item is not None and not item.isSelected():
-                self.global_notes_list.clearSelection()
-                item.setSelected(True)
-                self.global_notes_list.setCurrentItem(item)
-            menu = QMenu(self)
-            new_action = menu.addAction("New Note")
-            presets_action = menu.addAction("Presets")
-            edit_action = menu.addAction("Edit Selected")
-            remove_action = menu.addAction("Remove Selected")
-            chosen = menu.exec(self.global_notes_list.mapToGlobal(pos))
-            if chosen == new_action:
-                self._create_global_note()
-            elif chosen == edit_action:
-                self._edit_selected_global_note()
-            elif chosen == remove_action:
-                self._remove_selected_global_note()
 
         def _note_tooltip(self, note: Dict[str, str]) -> str:
             body = note.get("body", "").strip()
@@ -2508,11 +2420,17 @@ class NotesMixin:
             self.file_extension_list_edit.blockSignals(True)
             self.file_extension_list_edit.setText(", ".join(normalized_filters))
             self.file_extension_list_edit.blockSignals(False)
+            if hasattr(self, "_update_extension_filter_summary_label"):
+                self._update_extension_filter_summary_label()
 
         def _on_filter_mode_changed(self) -> None:
+            if hasattr(self, "_update_extension_filter_summary_label"):
+                self._update_extension_filter_summary_label()
             self._save_current_project_filters(show_busy=True)
 
         def _on_extension_list_changed(self) -> None:
+            if hasattr(self, "_update_extension_filter_summary_label"):
+                self._update_extension_filter_summary_label()
             self.extension_filter_debounce.start()
 
         def _apply_debounced_extension_filters(self) -> None:

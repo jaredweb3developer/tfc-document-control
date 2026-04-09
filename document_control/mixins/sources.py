@@ -27,13 +27,20 @@ class SourcesMixin:
             return f"Modified: {modified_text}   Size: {size_text}"
 
         def _selected_source_file_items(self) -> List[QTableWidgetItem]:
-            selection_model = self.files_list.selectionModel() if hasattr(self, "files_list") else None
-            if selection_model is None:
+            if not hasattr(self, "files_list"):
                 return []
+            selection_model = self.files_list.selectionModel()
             items: List[QTableWidgetItem] = []
-            for index in selection_model.selectedRows():
-                item = self.files_list.item(index.row(), 0)
-                if item is not None:
+            seen_rows: set[int] = set()
+            if selection_model is not None:
+                for index in selection_model.selectedRows():
+                    item = self.files_list.item(index.row(), 0)
+                    if item is not None:
+                        items.append(item)
+                        seen_rows.add(index.row())
+            for row in range(self.files_list.rowCount()):
+                item = self.files_list.item(row, 0)
+                if item is not None and item.isSelected() and row not in seen_rows:
                     items.append(item)
             return items
 
@@ -593,7 +600,7 @@ class SourcesMixin:
             shown_count = 0
             entries: List[Path] = []
             try:
-                entries = [entry for entry in self.local_current_directory.iterdir() if entry.is_file()]
+                entries = [entry for entry in self.local_current_directory.iterdir()]
             except OSError:
                 entries = []
             entries.sort(key=lambda item: item.name.lower())
@@ -609,20 +616,23 @@ class SourcesMixin:
                 size_text = ""
                 modified_sort_value = 0.0
                 size_sort_value = -1
-                if stat is not None:
+                if stat is not None and item.is_file():
                     modified_sort_value = float(stat.st_mtime)
                     size_sort_value = int(stat.st_size)
                     modified_text = datetime.fromtimestamp(stat.st_mtime).astimezone().strftime(
                         "%Y-%m-%d %I:%M %p"
                     )
                     size_text = self._format_source_file_size(int(stat.st_size))
-                suffix = item.suffix.lower()
-                file_type = f"{suffix[1:].upper()} File" if suffix else "File"
+                if item.is_dir():
+                    file_type = "Directory"
+                else:
+                    suffix = item.suffix.lower()
+                    file_type = f"{suffix[1:].upper()} File" if suffix else "File"
                 row_idx = self.local_files_list.rowCount()
                 self.local_files_list.insertRow(row_idx)
                 name_item = SortableTableWidgetItem(item.name, item.name.lower())
                 name_item.setData(Qt.UserRole, str(item))
-                name_item.setData(Qt.UserRole + 1, "file")
+                name_item.setData(Qt.UserRole + 1, "directory" if item.is_dir() else "file")
                 tooltip_lines = [str(item)]
                 if modified_text:
                     tooltip_lines.append(f"Modified: {modified_text}")
@@ -3436,24 +3446,3 @@ class SourcesMixin:
                     self._selected_record_indexes_from_list_widget(self.project_reference_list)
                 )
 
-        def _load_global_notes(self) -> None:
-            data = self._read_json_candidates([self._default_global_notes_file()])
-            raw = data.get("notes", []) if isinstance(data, dict) else data
-            self.global_notes = []
-            if isinstance(raw, list):
-                for entry in raw:
-                    if not isinstance(entry, dict):
-                        continue
-                    subject = str(entry.get("subject", "")).strip()
-                    if not subject:
-                        continue
-                    self.global_notes.append(
-                        {
-                            "id": str(entry.get("id", "")).strip() or str(uuid4()),
-                            "subject": subject,
-                            "body": str(entry.get("body", "")),
-                            "created_at": str(entry.get("created_at", "")),
-                            "updated_at": str(entry.get("updated_at", "")),
-                        }
-                    )
-            self._refresh_global_notes_list()

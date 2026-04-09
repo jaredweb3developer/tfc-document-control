@@ -58,7 +58,6 @@ class DocumentControlApp(
             self._startup_splash_label: Optional[QLabel] = None
             self.global_favorites: List[str] = []
             self.global_favorites_logical_views: Dict[str, Dict[str, List[Dict[str, object]]]] = {}
-            self.global_notes: List[Dict[str, str]] = []
             self.logical_view_current_folder_ids: Dict[str, str] = {}
             self.note_presets_notes: List[Dict[str, object]] = []
             self.note_preset_groups: List[Dict[str, object]] = []
@@ -93,9 +92,8 @@ class DocumentControlApp(
                 self._load_tracked_projects()
                 self._update_startup_splash("Loading checkout records...")
                 self._load_records()
-                self._update_startup_splash("Loading global favorites and notes...")
+                self._update_startup_splash("Loading global favorites...")
                 self._load_global_favorites()
-                self._load_global_notes()
                 self._load_note_presets()
                 self._update_startup_splash("Loading current project...")
                 self._load_last_or_default_project()
@@ -114,7 +112,6 @@ class DocumentControlApp(
             self._save_tracked_projects()
             self._save_records()
             self._save_global_favorites()
-            self._save_global_notes()
             self._save_note_presets()
             self._save_item_customizations()
             super().closeEvent(event)
