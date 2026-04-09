@@ -117,3 +117,11 @@ If a future task changes architecture, persistence formats, feature scope, or te
 - Behavior changed: `reference_copy` records now store baseline source/local fingerprint metadata; the app can classify reference status; `Reference Files` now supports `Refresh Selected Ref`, `Refresh Selected Ref (If Unchanged)`, `Check Reference Status`, and `Update All References` with per-row actions plus apply-to-remaining helpers. Dialog and status wording were tightened to be user-facing rather than enum-like. Existing logical-folder placement and search behavior remain intact after refresh operations.
 - Tests run: Manual Windows 11 pytest runs recorded in `pytest-manual-output.txt`; targeted runs progressed through `5 passed`, `13 passed`, `33 passed`, and `37 passed` for the final Phase 4+5 targeted set.
 - Risks or follow-up: `local_missing` currently remains a skip-only state rather than offering `Recreate`; if users want that later, implement it as an explicit follow-on rather than making overwrite behavior more implicit.
+
+### 2026-04-09 (`0.2.4` planning)
+
+- Goal: Convert the saved `0.2.4` UI restructure request into a build-ready implementation plan before changing the application layout.
+- Files/areas changed: `docs/0.2.4/0.2.4-ui-restructure.md`, `docs/0.2.4/0.2.4-ui-restructure-implementation-plan.md`, `docs/development-workflow.md`, `docs/working-memory.md`.
+- Behavior changed: No application behavior change; the repo now includes a concrete `0.2.4` plan covering the 2-column layout, left-column navigation tabs, right-column files workspace, extension-filter dialog conversion, and the move of directory details into a popup window.
+- Tests run: Not run; planning-only change.
+- Risks or follow-up: Follow-up clarification resolved that the directory-details popup should be modeless and that the dormant `Global Notes` feature should be removed entirely rather than carried into the new layout. File notes remain in scope and are not part of that removal.
