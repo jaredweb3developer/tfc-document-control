@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QListWidgetItem, QMessageBox
 
 from app import CheckoutRecord
@@ -119,6 +120,22 @@ def test_source_file_search_filters_file_list(app_env):
 
     assert app.files_list.rowCount() == 1
     assert app.files_list.item(0, 0).text() == "plan-A.dwg"
+
+
+def test_source_history_highlight_sets_dark_foreground_for_readability(app_env):
+    # History-highlighted source rows should force a readable dark foreground in dark themes.
+    app = app_env["app"]
+    item = QListWidgetItem("plan-A.dwg")
+
+    app.initials_edit.setText("JH")
+    app._apply_file_history_style(
+        item,
+        Path("/tmp/plan-A.dwg"),
+        {"action": "CHECK_OUT", "user_initials": "JH", "user_full_name": "Jared Hodgkins"},
+    )
+
+    assert item.background().color() == QColor("#dcfce7")
+    assert item.foreground().color() == QColor("#111827")
 
 
 def test_loading_project_without_sources_clears_controlled_files(app_env):

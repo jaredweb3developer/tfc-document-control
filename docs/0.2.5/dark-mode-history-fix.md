@@ -1,0 +1,1 @@
+It has come to my attention that when using dark mode (windows or mac and possibly linux?) that the current file highlighting scheme is making it impossible to read file names. The font becomes white on a light color highlight. Review `dark-mode-issue.png` to see the problem.

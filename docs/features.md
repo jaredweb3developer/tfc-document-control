@@ -76,6 +76,7 @@
 - Rename now appends `RENAME` history linked by `file_id` instead of rewriting old history rows by filename.
 - Delete now retires the file in the source index and appends `DELETE_FILE` history without erasing attached note/history records.
 - Checked-out source files still remain rename/delete-blocked in the current slice while checkout and revision path handling finish migrating.
+- History-highlighted source-file names use an explicit dark foreground with the existing pastel status backgrounds so the text remains readable in dark mode.
 
 ## Persistence Files
 

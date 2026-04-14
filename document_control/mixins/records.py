@@ -1296,17 +1296,21 @@ class RecordsMixin:
             initials = latest_row.get("user_initials", "")
             full_name = latest_row.get("user_full_name", "")
             tooltip_lines = [str(source_file)]
+            history_foreground = QColor("#111827")
 
             if action == "CHECK_OUT":
                 if initials == self._normalize_initials():
                     item.setBackground(QColor("#dcfce7"))
+                    item.setForeground(history_foreground)
                     tooltip_lines.append(f"Checked out by you ({initials})")
                 else:
                     item.setBackground(QColor("#fef3c7"))
+                    item.setForeground(history_foreground)
                     who = full_name or initials or "another user"
                     tooltip_lines.append(f"Checked out by {who}")
             else:
                 item.setBackground(QColor("#dbeafe"))
+                item.setForeground(history_foreground)
                 tooltip_lines.append("Has document history")
 
             item.setToolTip("\n".join(tooltip_lines))

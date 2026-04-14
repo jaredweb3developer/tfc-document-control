@@ -58,7 +58,7 @@ from PySide6.QtWidgets import (
 
 APP_ROOT = Path(__file__).resolve().parent
 APP_NAME = "TFC Document Control"
-APP_VERSION = "0.2.4"
+APP_VERSION = "0.2.5"
 USER_DATA_DIR_NAME = "TFC Project Control"
 SETTINGS_SCHEMA_VERSION = 1
 TRACKED_PROJECTS_SCHEMA_VERSION = 1
